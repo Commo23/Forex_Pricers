@@ -321,15 +321,15 @@ const RiskAnalysis = () => {
     <Layout 
       breadcrumbs={[
         { label: "Dashboard", href: "/" },
-        { label: "Analyse des Risques" }
+        { label: "Risk Analysis" }
       ]}
     >
-      {/* En-tête avec contrôles */}
+      {/* Header with controls */}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-3xl font-bold">Analyse des Risques</h1>
+          <h1 className="text-3xl font-bold">Risk Analysis</h1>
           <p className="text-muted-foreground">
-            Surveillance en temps réel du risque de change
+            Real-time FX risk monitoring
           </p>
         </div>
         <div className="flex gap-2">
@@ -339,7 +339,7 @@ const RiskAnalysis = () => {
             size="sm"
           >
             <Activity className="h-4 w-4 mr-2" />
-            {isLiveMode ? "Live" : "Statique"}
+            {isLiveMode ? "Live" : "Static"}
           </Button>
           <Button
             variant="outline"
@@ -347,7 +347,7 @@ const RiskAnalysis = () => {
             size="sm"
           >
             <RefreshCw className="h-4 w-4 mr-2" />
-            Actualiser
+            Refresh
           </Button>
         </div>
       </div>
@@ -364,7 +364,7 @@ const RiskAnalysis = () => {
               {formatCurrency(riskMetrics.var95)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Value at Risk 1 jour
+              Value at Risk 1 day
             </p>
           </CardContent>
         </Card>
@@ -379,14 +379,14 @@ const RiskAnalysis = () => {
               {formatCurrency(riskMetrics.expectedShortfall95)}
             </div>
             <p className="text-xs text-muted-foreground">
-              CVaR (95%) conditionnel
+              Conditional CVaR (95%)
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Risque Non Couvert</CardTitle>
+            <CardTitle className="text-sm font-medium">Unhedged Risk</CardTitle>
             <AlertTriangle className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -394,14 +394,14 @@ const RiskAnalysis = () => {
               {formatCurrency(riskMetrics.unhedgedRisk)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Exposition non protégée
+              Unprotected exposure
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Ratio de Couverture</CardTitle>
+            <CardTitle className="text-sm font-medium">Hedge Ratio</CardTitle>
             <Target className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -409,7 +409,7 @@ const RiskAnalysis = () => {
               {formatPercentage(riskMetrics.hedgeRatio)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Taux de couverture global
+              Overall hedge ratio
             </p>
           </CardContent>
         </Card>
@@ -419,27 +419,27 @@ const RiskAnalysis = () => {
       <div className="grid gap-4 lg:grid-cols-3 mb-6">
         <Card className="lg:col-span-1">
           <CardHeader>
-            <CardTitle>Configuration des Analyses</CardTitle>
-            <CardDescription>Paramètres de stress test et de simulation</CardDescription>
+            <CardTitle>Analysis Configuration</CardTitle>
+            <CardDescription>Stress test and simulation parameters</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
               <div>
-              <Label>Type de Scénario</Label>
+              <Label>Scenario Type</Label>
                 <Select value={selectedScenario} onValueChange={setSelectedScenario}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                  <SelectItem value="stress-test">Test de Stress</SelectItem>
+                  <SelectItem value="stress-test">Stress Test</SelectItem>
                     <SelectItem value="monte-carlo">Monte Carlo</SelectItem>
-                  <SelectItem value="historical">Historique</SelectItem>
-                  <SelectItem value="correlation">Analyse de Corrélation</SelectItem>
+                  <SelectItem value="historical">Historical</SelectItem>
+                  <SelectItem value="correlation">Correlation Analysis</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div>
-              <Label>Niveau de Confiance</Label>
+              <Label>Confidence Level</Label>
               <Select value={confidenceLevel} onValueChange={setConfidenceLevel}>
                 <SelectTrigger>
                   <SelectValue />
@@ -454,7 +454,7 @@ const RiskAnalysis = () => {
               </div>
 
               <div>
-              <Label>Choc de Volatilité: {volatilityShock[0]}%</Label>
+              <Label>Volatility Shock: {volatilityShock[0]}%</Label>
                 <Slider
                   value={volatilityShock}
                   onValueChange={setVolatilityShock}
@@ -466,7 +466,7 @@ const RiskAnalysis = () => {
               </div>
 
               <div>
-              <Label>Choc de Change: {currencyShock[0]}%</Label>
+              <Label>Currency Shock: {currencyShock[0]}%</Label>
                 <Slider
                   value={currencyShock}
                   onValueChange={setCurrencyShock}
@@ -478,7 +478,7 @@ const RiskAnalysis = () => {
               </div>
 
               <div>
-              <Label>Horizon Temporel: {timeHorizon[0]} jours</Label>
+              <Label>Time Horizon: {timeHorizon[0]} days</Label>
                 <Slider
                   value={timeHorizon}
                   onValueChange={setTimeHorizon}
@@ -500,7 +500,7 @@ const RiskAnalysis = () => {
                 ) : (
                   <Play className="h-4 w-4 mr-2" />
                 )}
-                {isAnalysisRunning ? "Analyse..." : "Lancer l'Analyse"}
+                {isAnalysisRunning ? "Analyzing..." : "Run Analysis"}
                 </Button>
                 <Button variant="outline">
                   <Settings className="h-4 w-4" />
@@ -509,11 +509,11 @@ const RiskAnalysis = () => {
           </CardContent>
         </Card>
 
-        {/* Répartition VaR par Niveau de Confiance */}
+        {/* VaR Distribution by Confidence Level */}
         <Card>
           <CardHeader>
-            <CardTitle>VaR par Niveau de Confiance</CardTitle>
-            <CardDescription>Distribution des risques</CardDescription>
+            <CardTitle>VaR by Confidence Level</CardTitle>
+            <CardDescription>Risk distribution</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -524,8 +524,8 @@ const RiskAnalysis = () => {
               ].map((item) => (
                 <div key={item.confidence} className="flex items-center justify-between p-3 border rounded-lg">
                   <div>
-                    <div className="font-medium">Confiance {item.confidence}</div>
-                    <div className="text-sm text-muted-foreground">Horizon 1 jour</div>
+                    <div className="font-medium">Confidence {item.confidence}</div>
+                    <div className="text-sm text-muted-foreground">1 day horizon</div>
                   </div>
                   <div className="text-right">
                     <div className="text-lg font-bold text-red-600">
@@ -541,40 +541,40 @@ const RiskAnalysis = () => {
           </CardContent>
         </Card>
 
-        {/* Métriques de Performance du Portefeuille */}
+        {/* Portfolio Performance Metrics */}
         <Card>
           <CardHeader>
-            <CardTitle>Performance du Portefeuille</CardTitle>
-            <CardDescription>Métriques clés en temps réel</CardDescription>
+            <CardTitle>Portfolio Performance</CardTitle>
+            <CardDescription>Real-time key metrics</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Exposition Totale</span>
+                <span className="text-sm font-medium">Total Exposure</span>
                 <span className="font-bold">{formatCurrency(riskMetrics.totalExposure)}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Montant Couvert</span>
+                <span className="text-sm font-medium">Hedged Amount</span>
                 <span className="font-bold text-green-600">{formatCurrency(riskMetrics.hedgedAmount)}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Impact MTM</span>
+                <span className="text-sm font-medium">MTM Impact</span>
                 <span className={`font-bold ${getPnLColor(riskMetrics.mtmImpact)}`}>
                   {riskMetrics.mtmImpact >= 0 ? '+' : ''}{formatCurrency(riskMetrics.mtmImpact)}
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Nb. Expositions</span>
+                <span className="text-sm font-medium">No. Exposures</span>
                 <span className="font-bold">{exposures.length}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Nb. Instruments</span>
+                <span className="text-sm font-medium">No. Instruments</span>
                 <span className="font-bold">{instruments.length}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium">Dernière MAJ</span>
+                <span className="text-sm font-medium">Last Update</span>
                 <span className="text-xs text-muted-foreground">
-                  {new Date().toLocaleTimeString('fr-FR')}
+                  {new Date().toLocaleTimeString('en-US')}
                 </span>
               </div>
             </div>
@@ -582,13 +582,13 @@ const RiskAnalysis = () => {
         </Card>
       </div>
 
-      {/* Graphiques de l'analyse de risque */}
+      {/* Risk analysis charts */}
       <div className="grid gap-4 lg:grid-cols-2 mb-6">
-        {/* Série temporelle P&L et VaR */}
+        {/* P&L and VaR time series */}
         <Card>
           <CardHeader>
-            <CardTitle>Évolution Historique des Risques</CardTitle>
-            <CardDescription>P&L historique et VaR sur 30 jours</CardDescription>
+            <CardTitle>Historical Risk Evolution</CardTitle>
+            <CardDescription>Historical P&L and VaR over 30 days</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
@@ -616,11 +616,11 @@ const RiskAnalysis = () => {
           </CardContent>
         </Card>
 
-        {/* Répartition des Risques par Devise */}
+        {/* Risk Distribution by Currency */}
         <Card>
           <CardHeader>
-            <CardTitle>Répartition des Risques par Devise</CardTitle>
-            <CardDescription>Contribution VaR par paire de devises</CardDescription>
+            <CardTitle>Risk Distribution by Currency</CardTitle>
+            <CardDescription>VaR contribution by currency pair</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
@@ -648,11 +648,11 @@ const RiskAnalysis = () => {
 
       {/* Graphique de Corrélation et Analyse de Stress */}
       <div className="grid gap-4 lg:grid-cols-2 mb-6">
-        {/* Graphique de Corrélation */}
+        {/* Correlation Chart */}
         <Card>
           <CardHeader>
-            <CardTitle>Matrice de Corrélation</CardTitle>
-            <CardDescription>Corrélations entre paires de devises</CardDescription>
+            <CardTitle>Correlation Matrix</CardTitle>
+            <CardDescription>Correlations between currency pairs</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
@@ -686,11 +686,11 @@ const RiskAnalysis = () => {
           </CardContent>
         </Card>
 
-        {/* Graphique de Couverture par Devise */}
+        {/* Coverage Chart by Currency */}
         <Card>
           <CardHeader>
-            <CardTitle>Efficacité de Couverture</CardTitle>
-            <CardDescription>Exposition vs Couverture par devise</CardDescription>
+            <CardTitle>Hedge Effectiveness</CardTitle>
+            <CardDescription>Exposure vs Coverage by currency</CardDescription>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
@@ -708,26 +708,26 @@ const RiskAnalysis = () => {
         </Card>
       </div>
 
-      {/* Résultats des Tests de Stress */}
+      {/* Stress Test Results */}
       <Card>
         <CardHeader>
           <div className="flex justify-between items-center">
             <div>
-              <CardTitle>Résultats des Tests de Stress</CardTitle>
-              <CardDescription>Impact potentiel des scénarios de marché</CardDescription>
+              <CardTitle>Stress Test Results</CardTitle>
+              <CardDescription>Potential impact of market scenarios</CardDescription>
             </div>
             <Button variant="outline" size="sm">
               <Download className="h-4 w-4 mr-2" />
-              Exporter
+              Export
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="scenarios">
             <TabsList>
-              <TabsTrigger value="scenarios">Scénarios de Marché</TabsTrigger>
-              <TabsTrigger value="stress-tests">Tests de Stress</TabsTrigger>
-              <TabsTrigger value="sensitivity">Analyse de Sensibilité</TabsTrigger>
+              <TabsTrigger value="scenarios">Market Scenarios</TabsTrigger>
+              <TabsTrigger value="stress-tests">Stress Tests</TabsTrigger>
+              <TabsTrigger value="sensitivity">Sensitivity Analysis</TabsTrigger>
             </TabsList>
             
             <TabsContent value="scenarios" className="mt-4">
@@ -754,7 +754,7 @@ const RiskAnalysis = () => {
                           {formatCurrency(scenario.unhedged_impact)}
                         </div>
                         <div className="text-sm text-muted-foreground">
-                          Après couverture: {formatCurrency(scenario.hedged_impact)}
+                          After hedging: {formatCurrency(scenario.hedged_impact)}
                         </div>
                       </div>
                     </div>
@@ -762,8 +762,8 @@ const RiskAnalysis = () => {
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
                     <AlertTriangle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>Aucun scénario de stress disponible</p>
-                    <p className="text-sm">Ajoutez des expositions pour générer des tests de stress</p>
+                    <p>No stress scenarios available</p>
+                    <p className="text-sm">Add exposures to generate stress tests</p>
                   </div>
                 )}
               </div>
@@ -774,17 +774,17 @@ const RiskAnalysis = () => {
                 {/* Tests de stress configurés */}
                 {[
                   { 
-                    name: `Choc EUR/USD -${currencyShock[0]}%`, 
+                    name: `EUR/USD Shock -${currencyShock[0]}%`, 
                     impact: -riskMetrics.totalExposure * (currencyShock[0] / 100) * 0.6,
                     hedged_impact: -riskMetrics.totalExposure * (currencyShock[0] / 100) * 0.6 * (1 - riskMetrics.hedgeRatio / 100)
                   },
                   { 
-                    name: `Choc de Volatilité +${volatilityShock[0]}%`, 
+                    name: `Volatility Shock +${volatilityShock[0]}%`, 
                     impact: -riskMetrics.var95 * (volatilityShock[0] / 20),
                     hedged_impact: -riskMetrics.var95 * (volatilityShock[0] / 20) * 0.5
                   },
                   { 
-                    name: "Crise de Liquidité", 
+                    name: "Liquidity Crisis", 
                     impact: -riskMetrics.totalExposure * 0.15,
                     hedged_impact: -riskMetrics.totalExposure * 0.15 * 0.3
                   }
@@ -793,7 +793,7 @@ const RiskAnalysis = () => {
                     <div>
                       <div className="font-medium">{test.name}</div>
                       <div className="text-sm text-muted-foreground">
-                        Scénario de stress configuré
+                        Configured stress scenario
                       </div>
                     </div>
                     <div className="text-right">
@@ -801,7 +801,7 @@ const RiskAnalysis = () => {
                         {formatCurrency(test.impact)}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        Après couverture: {formatCurrency(test.hedged_impact)}
+                        After hedging: {formatCurrency(test.hedged_impact)}
                       </div>
                     </div>
                   </div>
@@ -813,7 +813,7 @@ const RiskAnalysis = () => {
               <div className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="p-4 border rounded-lg">
-                    <h4 className="font-medium mb-2">Sensibilité aux Taux de Change</h4>
+                    <h4 className="font-medium mb-2">Exchange Rate Sensitivity</h4>
                     <div className="space-y-2">
                       {portfolioBreakdown.slice(0, 4).map((curr, index) => (
                         <div key={index} className="flex justify-between">
@@ -827,16 +827,16 @@ const RiskAnalysis = () => {
                   </div>
                   
                   <div className="p-4 border rounded-lg">
-                    <h4 className="font-medium mb-2">Sensibilité à la Volatilité</h4>
+                    <h4 className="font-medium mb-2">Volatility Sensitivity</h4>
                     <div className="space-y-2">
                       <div className="flex justify-between">
-                        <span className="text-sm">Volatilité +10%</span>
+                        <span className="text-sm">Volatility +10%</span>
                         <span className="text-sm font-medium text-red-600">
                           {formatCurrency(-riskMetrics.var95 * 0.1)}
                         </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-sm">Volatilité -10%</span>
+                        <span className="text-sm">Volatility -10%</span>
                         <span className="text-sm font-medium text-green-600">
                           {formatCurrency(riskMetrics.var95 * 0.05)}
                         </span>

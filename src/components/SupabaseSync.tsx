@@ -36,8 +36,8 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
   const syncToSupabase = async () => {
     if (!isConnected) {
       toast({
-        title: "Erreur de connexion",
-        description: "Impossible de se connecter à Supabase",
+        title: "Connection Error",
+        description: "Unable to connect to Supabase",
         variant: "destructive"
       })
       return
@@ -57,7 +57,7 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
         const state = JSON.parse(calculatorState)
         const strategyData = {
           name: `Strategy ${new Date().toLocaleDateString()}`,
-          description: 'Stratégie synchronisée depuis l\'application locale',
+          description: 'Strategy synchronized from local application',
           start_date: state.params?.startDate || new Date().toISOString().split('T')[0],
           strategy_start_date: state.params?.strategyStartDate || new Date().toISOString().split('T')[0],
           months_to_hedge: state.params?.monthsToHedge || 12,
@@ -150,8 +150,8 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
       setSyncStatus('success')
       
       toast({
-        title: "Synchronisation réussie",
-        description: "Toutes les données ont été sauvegardées sur Supabase",
+        title: "Synchronization Successful",
+        description: "All data has been saved to Supabase",
       })
 
       if (onDataSaved) {
@@ -159,12 +159,12 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
       }
 
     } catch (err) {
-      console.error('Erreur lors de la synchronisation:', err)
+      console.error('Error during synchronization:', err)
       setSyncStatus('error')
       
       toast({
-        title: "Erreur de synchronisation",
-        description: error || "Une erreur est survenue lors de la sauvegarde",
+        title: "Synchronization Error",
+        description: error || "An error occurred during save",
         variant: "destructive"
       })
     }
@@ -174,8 +174,8 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
   const loadFromSupabase = async () => {
     if (!isConnected) {
       toast({
-        title: "Erreur de connexion",
-        description: "Impossible de se connecter à Supabase",
+        title: "Connection Error",
+        description: "Unable to connect to Supabase",
         variant: "destructive"
       })
       return
@@ -301,10 +301,10 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Database className="h-5 w-5" />
-          Synchronisation Supabase
+          Supabase Synchronization
         </CardTitle>
         <CardDescription>
-          Synchronisez vos données avec la base de données cloud
+          Synchronize your data with the cloud database
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -315,7 +315,7 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
               <CheckCircle className="h-4 w-4 text-green-500" />
               <Badge variant="outline" className="text-green-600">
                 <Cloud className="h-3 w-3 mr-1" />
-                Connecté
+                Connected
               </Badge>
             </>
           ) : (
@@ -323,16 +323,16 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
               <AlertCircle className="h-4 w-4 text-red-500" />
               <Badge variant="outline" className="text-red-600">
                 <CloudOff className="h-3 w-3 mr-1" />
-                Déconnecté
+                Disconnected
               </Badge>
             </>
           )}
         </div>
 
-        {/* Dernière synchronisation */}
+        {/* Last synchronization */}
         {lastSync && (
           <div className="text-sm text-muted-foreground">
-            Dernière synchronisation: {lastSync.toLocaleString()}
+            Last synchronization: {lastSync.toLocaleString()}
           </div>
         )}
 
@@ -352,7 +352,7 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
             className="flex items-center gap-2"
           >
             <Upload className="h-4 w-4" />
-            Sauvegarder
+            Save
           </Button>
           
           <Button
@@ -362,14 +362,14 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
             className="flex items-center gap-2"
           >
             <Download className="h-4 w-4" />
-            Charger
+            Load
           </Button>
         </div>
 
-        {/* Statut de synchronisation */}
+        {/* Synchronization status */}
         {loading && (
           <div className="text-sm text-muted-foreground">
-            Synchronisation en cours...
+            Synchronizing...
           </div>
         )}
 
@@ -377,7 +377,7 @@ export const SupabaseSync: React.FC<SupabaseSyncProps> = ({ onDataLoaded, onData
           <Alert>
             <CheckCircle className="h-4 w-4" />
             <AlertDescription>
-              Synchronisation réussie !
+              Synchronization successful!
             </AlertDescription>
           </Alert>
         )}

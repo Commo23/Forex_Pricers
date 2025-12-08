@@ -119,28 +119,28 @@ const Exposures = () => {
       let message = '';
       
       if (count > 0) {
-        message += `${count} exposition(s) créée(s)`;
+        message += `${count} exposure${count > 1 ? 's' : ''} created`;
       }
       
       if (updated > 0) {
         if (message) message += ' • ';
-        message += `${updated} exposition(s) mise(s) à jour`;
+        message += `${updated} exposure${updated > 1 ? 's' : ''} updated`;
       }
       
       if (newCurrencies && newCurrencies.length > 0) {
-        message += `\n• Nouvelles devises: ${newCurrencies.join(', ')}`;
+        message += `\n• New currencies: ${newCurrencies.join(', ')}`;
       }
       
       if (newMaturities && newMaturities.length > 0) {
-        message += `\n• Nouvelles échéances: ${newMaturities.length}`;
+        message += `\n• New maturities: ${newMaturities.length}`;
       }
       
       if (newCurrencyMaturityPairs && newCurrencyMaturityPairs.length > 0) {
-        message += `\n• Nouvelles combinaisons: ${newCurrencyMaturityPairs.length}`;
+        message += `\n• New combinations: ${newCurrencyMaturityPairs.length}`;
       }
       
       toast({
-        title: "Synchronisation Automatique",
+        title: "Auto Synchronization",
         description: message,
         duration: 8000,
       });
@@ -646,7 +646,7 @@ const Exposures = () => {
                 <div className="flex items-center gap-2">
                   <Globe className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                   <CardTitle className="text-lg text-blue-800 dark:text-blue-200">
-                    Nouvelles Devises Détectées
+                    New Currencies Detected
                   </CardTitle>
                 </div>
                 <Button
@@ -662,7 +662,7 @@ const Exposures = () => {
             <CardContent>
               <div className="space-y-2">
                 <p className="text-sm text-blue-700 dark:text-blue-300">
-                  Les nouvelles devises suivantes ont été détectées lors de l'import de stratégies :
+                  The following new currencies were detected during strategy import:
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {newCurrencies.map((currency) => (
@@ -672,7 +672,7 @@ const Exposures = () => {
                   ))}
                 </div>
                 <p className="text-xs text-blue-600 dark:text-blue-400 mt-2">
-                  Des expositions ont été automatiquement créées pour ces devises.
+                  Exposures have been automatically created for these currencies.
                 </p>
               </div>
             </CardContent>
@@ -686,7 +686,7 @@ const Exposures = () => {
                 <div className="flex items-center gap-2">
                   <Calendar className="h-5 w-5 text-green-600 dark:text-green-400" />
                   <CardTitle className="text-lg text-green-800 dark:text-green-200">
-                    Nouvelles Échéances Détectées
+                    New Maturities Detected
                   </CardTitle>
                 </div>
                 <Button
@@ -702,22 +702,22 @@ const Exposures = () => {
             <CardContent>
               <div className="space-y-2">
                 <p className="text-sm text-green-700 dark:text-green-300">
-                  {newMaturities.length} nouvelle(s) échéance(s) détectée(s) :
+                  {newMaturities.length} new maturit{newMaturities.length > 1 ? 'ies' : 'y'} detected:
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {newMaturities.slice(0, 5).map((maturity) => (
                     <Badge key={maturity} variant="outline" className="border-green-300 text-green-700 dark:border-green-600 dark:text-green-300">
-                      {new Date(maturity).toLocaleDateString('fr-FR')}
+                      {new Date(maturity).toLocaleDateString('en-US')}
                     </Badge>
                   ))}
                   {newMaturities.length > 5 && (
                     <Badge variant="outline" className="border-green-300 text-green-700 dark:border-green-600 dark:text-green-300">
-                      +{newMaturities.length - 5} autres
+                      +{newMaturities.length - 5} more
                     </Badge>
                   )}
                 </div>
                 <p className="text-xs text-green-600 dark:text-green-400 mt-2">
-                  Les expositions ont été organisées par échéance pour un meilleur suivi.
+                  Exposures have been organized by maturity for better tracking.
                 </p>
               </div>
             </CardContent>
@@ -1135,10 +1135,10 @@ const Exposures = () => {
                                 </TableCell>
                                 <TableCell>
                                   <Badge 
-                                    variant={exposure.type === 'receivable' ? 'default' : 'secondary'}
-                                    className={exposure.type === 'receivable' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}
+                                    variant={exposure.type === 'Receivable' ? 'default' : 'secondary'}
+                                    className={exposure.type === 'Receivable' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}
                                   >
-                                    {exposure.type === 'receivable' ? 'Receivable' : 'Payable'}
+                                    {exposure.type === 'Receivable' ? 'Receivable' : 'Payable'}
                                   </Badge>
                                 </TableCell>
                                 <TableCell className="font-mono">

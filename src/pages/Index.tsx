@@ -862,7 +862,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter }
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash, Upload, BarChart3, Calculator, Shield, Calendar } from 'lucide-react';
+import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash, Upload, BarChart3, Calculator, Shield, Calendar, RefreshCw } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
 import { CalculatorState, CustomPeriod } from '@/types/CalculatorState';
@@ -880,8 +880,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useToast } from "@/hooks/use-toast";
 import ZeroCostStrategies from '@/components/ZeroCostStrategies';
 import ZeroCostTab from '@/components/ZeroCostTab';
-import ForexDashboard from '@/components/ForexDashboard';
 import { PricingService } from '@/services/PricingService';
+import ExchangeRateService from '@/services/ExchangeRateService';
 
 // Currency Pair interface
 interface CurrencyPair {
@@ -1127,10 +1127,73 @@ export const CURRENCY_PAIRS: CurrencyPair[] = [
 const Index = () => {
   const { toast } = useToast();
   
+  // Get ExchangeRateService instance for real-time rate fetching
+  const exchangeRateService = React.useMemo(() => {
+    return ExchangeRateService.getInstance();
+  }, []);
+  
   const [customCurrencyPairs, setCustomCurrencyPairs] = useState<CurrencyPair[]>(() => {
     const savedPairs = localStorage.getItem('customCurrencyPairs');
     return savedPairs ? JSON.parse(savedPairs) : [];
   });
+  
+  // Sync custom pairs from localStorage (shared with ForexMarket)
+  React.useEffect(() => {
+    const handleStorageChange = () => {
+      try {
+        const savedPairs = localStorage.getItem('customCurrencyPairs');
+        if (savedPairs) {
+          const pairs = JSON.parse(savedPairs);
+          setCustomCurrencyPairs(pairs);
+        }
+      } catch (error) {
+        console.warn('Error syncing custom currency pairs:', error);
+      }
+    };
+    
+    // Listen for storage changes
+    window.addEventListener('storage', handleStorageChange);
+    
+    // Also check periodically (in case changes are made in same window)
+    const interval = setInterval(handleStorageChange, 1000);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
+  
+  // Function to fetch real-time rate from Market Data
+  const fetchRealTimeRate = async (currencyPair: CurrencyPair): Promise<number | null> => {
+    try {
+      const { base, quote } = currencyPair;
+      
+      // Get exchange rates from API
+      const exchangeData = await exchangeRateService.getExchangeRates('USD');
+      const rates = exchangeData.rates;
+      
+      // Calculate the cross rate for the selected pair
+      let rate: number;
+      
+      if (base === 'USD') {
+        // Direct rate: USD/XXX
+        rate = rates[quote] || currencyPair.defaultSpotRate;
+      } else if (quote === 'USD') {
+        // Inverted rate: XXX/USD = 1 / (USD/XXX)
+        rate = rates[base] ? 1 / rates[base] : currencyPair.defaultSpotRate;
+      } else {
+        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
+        const baseRate = rates[base] || 1;
+        const quoteRate = rates[quote] || 1;
+        rate = quoteRate / baseRate;
+      }
+      
+      return rate;
+    } catch (error) {
+      console.error('Error fetching real-time rate:', error);
+      return null;
+    }
+  };
 
   // Fonction pour sauvegarder les paires personnalisées
   const saveCustomCurrencyPairs = (pairs: CurrencyPair[]) => {
@@ -3751,7 +3814,10 @@ const Index = () => {
     savedScenarios.push(scenario);
     localStorage.setItem('optionScenarios', JSON.stringify(savedScenarios));
 
-    alert('Scenario saved successfully!');
+    toast({
+      title: "Scenario Saved",
+      description: "Your strategy scenario has been saved successfully!",
+    });
   };
 
   const importToHedgingInstruments = () => {
@@ -3916,9 +3982,9 @@ const Index = () => {
         quoteVolume: params.quoteVolume,
         domesticRate: params.domesticRate,
         foreignRate: params.foreignRate,
+        volumeType: params.volumeType,
         useCustomPeriods: params.useCustomPeriods,
         customPeriods: params.customPeriods,
-        volumeType: params.volumeType, // ✅ Transmettre le type de volume
       }, enrichedDetailedResults); // Passer TOUS les résultats enrichis
 
       // Dispatch custom event to notify HedgingInstruments page
@@ -5400,8 +5466,8 @@ const Index = () => {
 
   // Modifier l'affichage du tableau de la matrice de risque
   {riskMatrixResults.length > 0 && (
-    <div className="mt-8 overflow-x-auto">
-      <h3 className="text-lg font-semibold mb-4">Risk Matrix Results</h3>
+    <div className="mt-4 overflow-x-auto">
+      <h3 className="text-base font-semibold mb-2">Risk Matrix Results</h3>
       <table className="w-full border-collapse">
         <thead>
           <tr>
@@ -6371,7 +6437,7 @@ const pricingFunctions = {
   };
 
   return (
-    <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
+    <div id="content-to-pdf" className="w-full mx-auto p-2 space-y-3">
       <style type="text/css" media="print">
         {`
           @page {
@@ -6398,7 +6464,18 @@ const pricingFunctions = {
       </style>
       {/* Add Clear Scenario button if a scenario is loaded */}
       {displayResults && (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button
+            onClick={saveScenario}
+            className="flex items-center gap-2"
+          >
+            <Save size={16} /> Save Scenario
+          </Button>
+          <Link to="/reports">
+            <Button variant="outline" className="flex items-center gap-2">
+              View Saved Scenarios
+            </Button>
+          </Link>
           <Button
             variant="destructive"
             onClick={clearLoadedScenario}
@@ -6409,78 +6486,140 @@ const pricingFunctions = {
         </div>
       )}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-6 mb-4">
-          <TabsTrigger value="parameters" className="py-2.5">Strategy Parameters</TabsTrigger>
-          <TabsTrigger value="stress" className="py-2.5">Stress Testing</TabsTrigger>
-          <TabsTrigger value="backtest" className="py-2.5">Historical Backtest</TabsTrigger>
-          <TabsTrigger value="riskmatrix" className="py-2.5">Risk Matrix Generator</TabsTrigger>
-          <TabsTrigger value="zerocost" className="py-2.5">Zero-Cost FX Strategies</TabsTrigger>
-          <TabsTrigger value="forexdashboard" className="py-2.5">Forex Market</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-5 mb-2">
+          <TabsTrigger value="parameters" className="py-2 text-xs sm:text-sm">Strategy Parameters</TabsTrigger>
+          <TabsTrigger value="stress" className="py-2 text-xs sm:text-sm">Stress Testing</TabsTrigger>
+          <TabsTrigger value="backtest" className="py-2 text-xs sm:text-sm">Historical Backtest</TabsTrigger>
+          <TabsTrigger value="riskmatrix" className="py-2 text-xs sm:text-sm">Risk Matrix Generator</TabsTrigger>
+          <TabsTrigger value="zerocost" className="py-2 text-xs sm:text-sm">Zero-Cost FX Strategies</TabsTrigger>
         </TabsList>
         
-        <TabsContent value="parameters">
+        <TabsContent value="parameters" className="mt-2">
           <Card className="shadow-md">
             <CardHeader className="pb-2 border-b">
-              <CardTitle className="text-xl font-bold text-primary">FX Options Strategy Parameters</CardTitle>
+              <CardTitle className="text-lg sm:text-xl font-bold text-primary">FX Options Strategy Parameters</CardTitle>
             </CardHeader>
-            <CardContent className="pt-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <CardContent className="pt-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div className="compact-form-group">
-                  <label className="compact-label">Currency Pair</label>
-                  <div className="relative">
+                  <label className="compact-label flex items-center gap-2">
+                    Currency Pair
+                    <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Synced with Market Data</span>
+                  </label>
+                  <div className="relative flex items-center gap-1">
                   <Select 
                     value={params.currencyPair?.symbol || 'EUR/USD'} 
-                    onValueChange={(value) => {
+                    onValueChange={async (value) => {
                         // Chercher dans les paires standard et personnalisées
                         const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
                         const selectedPair = allPairs.find(pair => pair.symbol === value);
                       if (selectedPair) {
-                        setParams({
-                          ...params, 
+                        // Get current base volume to recalculate quote volume
+                        const currentBaseVolume = params.baseVolume || 10000000;
+                        
+                        // First set the pair with default rate and recalculate quote volume
+                        setParams(prev => ({
+                          ...prev, 
                           currencyPair: selectedPair,
-                          spotPrice: selectedPair.defaultSpotRate
-                        });
-                        // Also update the initial spot price for calculations
+                          spotPrice: selectedPair.defaultSpotRate,
+                          quoteVolume: currentBaseVolume * selectedPair.defaultSpotRate
+                        }));
                         setInitialSpotPrice(selectedPair.defaultSpotRate);
+                        
+                        // Show loading toast
+                        const loadingToast = toast({
+                          title: "Fetching Rate...",
+                          description: `Loading real-time rate for ${selectedPair.symbol} from Market Data...`,
+                        });
+                        
+                        // Then fetch real-time rate from Market Data
+                        try {
+                          const realTimeRate = await fetchRealTimeRate(selectedPair);
+                          if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+                            setParams(prev => ({
+                              ...prev,
+                              spotPrice: realTimeRate,
+                              quoteVolume: prev.baseVolume * realTimeRate // Recalculate quote volume with new rate
+                            }));
+                            setInitialSpotPrice(realTimeRate);
+                            
+                            // Update the pair's defaultSpotRate if it's a custom pair
+                            if (customCurrencyPairs.some(p => p.symbol === selectedPair.symbol)) {
+                              const updatedCustomPairs = customCurrencyPairs.map(pair =>
+                                pair.symbol === selectedPair.symbol
+                                  ? { ...pair, defaultSpotRate: realTimeRate }
+                                  : pair
+                              );
+                              saveCustomCurrencyPairs(updatedCustomPairs);
+                            }
+                            
+                            toast({
+                              title: "Rate Updated",
+                              description: `Real-time rate for ${selectedPair.symbol}: ${realTimeRate.toFixed(4)}`,
+                            });
+                          } else {
+                            toast({
+                              title: "Rate Fetch Failed",
+                              description: `Using default rate for ${selectedPair.symbol}`,
+                              variant: "default"
+                            });
+                          }
+                        } catch (error) {
+                          console.error('Error fetching rate:', error);
+                          toast({
+                            title: "Rate Fetch Error",
+                            description: `Could not fetch rate. Using default value.`,
+                            variant: "destructive"
+                          });
+                        }
                       }
                     }}
                   >
                     <SelectTrigger className="compact-input">
-                      <SelectValue placeholder="Select currency pair" />
+                      <SelectValue placeholder="Select currency pair">
+                        {params.currencyPair && (
+                          <div className="flex items-center justify-between w-full">
+                            <span>{params.currencyPair.symbol}</span>
+                            <span className="text-xs text-muted-foreground font-mono ml-2">
+                              {params.spotPrice.toFixed(4)}
+                            </span>
+                          </div>
+                        )}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      <div className="p-2 text-xs font-medium text-muted-foreground border-b">Major Pairs</div>
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b flex items-center gap-2">
+                        <span>Major Pairs</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
                       {CURRENCY_PAIRS.filter(pair => pair.category === 'majors').map(pair => (
                         <SelectItem key={pair.symbol} value={pair.symbol}>
                           <div className="flex flex-col">
-                            <div className="flex justify-between items-center w-full">
-                              <span>{pair.symbol}</span>
-                              <span className="text-xs text-muted-foreground font-mono">{pair.defaultSpotRate}</span>
-                            </div>
+                            <span className="font-medium">{pair.symbol}</span>
                             <span className="text-xs text-muted-foreground">{pair.name}</span>
                           </div>
                         </SelectItem>
                       ))}
-                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t">Cross Rates</div>
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Cross Rates</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
                       {CURRENCY_PAIRS.filter(pair => pair.category === 'crosses').map(pair => (
                         <SelectItem key={pair.symbol} value={pair.symbol}>
                           <div className="flex flex-col">
-                            <div className="flex justify-between items-center w-full">
-                              <span>{pair.symbol}</span>
-                              <span className="text-xs text-muted-foreground font-mono">{pair.defaultSpotRate}</span>
-                            </div>
+                            <span className="font-medium">{pair.symbol}</span>
                             <span className="text-xs text-muted-foreground">{pair.name}</span>
                           </div>
                         </SelectItem>
                       ))}
-                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t">Other Currencies</div>
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Other Currencies</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
                       {CURRENCY_PAIRS.filter(pair => pair.category === 'others').map(pair => (
                         <SelectItem key={pair.symbol} value={pair.symbol}>
                           <div className="flex flex-col">
-                            <div className="flex justify-between items-center w-full">
-                              <span>{pair.symbol}</span>
-                              <span className="text-xs text-muted-foreground font-mono">{pair.defaultSpotRate}</span>
-                            </div>
+                            <span className="font-medium">{pair.symbol}</span>
                             <span className="text-xs text-muted-foreground">{pair.name}</span>
                           </div>
                         </SelectItem>
@@ -6488,14 +6627,14 @@ const pricingFunctions = {
                         
                         {customCurrencyPairs.length > 0 && (
                           <>
-                            <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t">Custom Pairs</div>
+                            <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                              <span>Custom Pairs</span>
+                              <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                            </div>
                             {customCurrencyPairs.map(pair => (
                               <SelectItem key={pair.symbol} value={pair.symbol}>
                                 <div className="flex flex-col">
-                                  <div className="flex justify-between items-center w-full">
-                                    <span>{pair.symbol}</span>
-                                    <span className="text-xs text-muted-foreground font-mono">{pair.defaultSpotRate}</span>
-                                  </div>
+                                  <span className="font-medium">{pair.symbol}</span>
                                   <span className="text-xs text-muted-foreground">{pair.name}</span>
                                 </div>
                               </SelectItem>
@@ -6636,6 +6775,55 @@ const pricingFunctions = {
                       </Button>
                     )}
                   </div>
+                  {params.currencyPair && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="absolute right-8 top-1/2 transform -translate-y-1/2 h-6 w-6 p-0"
+                      onClick={async () => {
+                        if (!params.currencyPair) return;
+                        
+                        const loadingToast = toast({
+                          title: "Refreshing Rate...",
+                          description: `Fetching latest rate for ${params.currencyPair.symbol}...`,
+                        });
+                        
+                        try {
+                          const realTimeRate = await fetchRealTimeRate(params.currencyPair);
+                          if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+                            setParams(prev => ({
+                              ...prev,
+                              spotPrice: realTimeRate,
+                              quoteVolume: prev.baseVolume * realTimeRate // Recalculate quote volume with new rate
+                            }));
+                            setInitialSpotPrice(realTimeRate);
+                            
+                            toast({
+                              title: "Rate Refreshed",
+                              description: `Updated rate for ${params.currencyPair.symbol}: ${realTimeRate.toFixed(4)}`,
+                            });
+                          } else {
+                            toast({
+                              title: "Refresh Failed",
+                              description: `Could not fetch rate. Using current value.`,
+                              variant: "default"
+                            });
+                          }
+                        } catch (error) {
+                          console.error('Error refreshing rate:', error);
+                          toast({
+                            title: "Refresh Error",
+                            description: `Could not refresh rate.`,
+                            variant: "destructive"
+                          });
+                        }
+                      }}
+                      title="Refresh rate from Market Data"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
                 <div className="compact-form-group">
                   <label className="compact-label">Strategy Start Date</label>
@@ -6713,8 +6901,8 @@ const pricingFunctions = {
                   </div>
                 </div>
                 {/* Volume & Spot Rate - Compact Grid Layout */}
-                <div className="bg-muted/20 p-3 rounded-lg space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="bg-muted/20 p-2 rounded-lg space-y-2">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                     {/* Base Volume */}
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">
@@ -6787,8 +6975,8 @@ const pricingFunctions = {
                     </div>
                     
                     {/* Spot Rate */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-foreground">
                         Spot Rate ({params.currencyPair?.symbol || 'EUR/USD'})
                       </label>
                       <div className="flex items-center gap-2">
@@ -6796,7 +6984,7 @@ const pricingFunctions = {
                           type="number"
                           value={params.spotPrice}
                           onChange={(e) => handleSpotPriceChange(Number(e.target.value))}
-                          className="h-10 text-base font-mono flex-1 min-w-[120px]"
+                          className="h-8 text-sm font-mono flex-1 min-w-[100px]"
                           step="0.0001"
                           placeholder={`${params.currencyPair?.defaultSpotRate || 1.0850}`}
                         />
@@ -6809,7 +6997,7 @@ const pricingFunctions = {
                               setInitialSpotPrice(params.currencyPair.defaultSpotRate);
                             }
                           }}
-                          className="h-10 px-3 text-sm"
+                          className="h-8 px-2 text-xs"
                           title="Reset to default market rate"
                         >
                           Reset
@@ -6819,7 +7007,7 @@ const pricingFunctions = {
               </div>
 
                   {/* Auto-sync Status */}
-                  <div className="text-xs text-muted-foreground flex items-center gap-1 justify-center bg-primary/5 p-2 rounded border border-primary/10">
+                  <div className="text-xs text-muted-foreground flex items-center gap-1 justify-center bg-primary/5 p-1.5 rounded border border-primary/10">
                     <span>💱</span>
                     <span>Volumes auto-sync at current spot rate: <span className="font-mono font-medium">{params.spotPrice.toFixed(4)}</span></span>
                   </div>
@@ -6911,11 +7099,11 @@ const pricingFunctions = {
               </div>
 
               {/* Pricing Configuration - Compact Layout */}
-              <div className="mt-3 space-y-4">
+              <div className="mt-2 space-y-2">
                 {/* Real Price Simulation & Option Pricing Model - Combined Row */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                   {/* Real Price Simulation */}
-                  <div className="bg-muted/30 p-3 rounded-lg space-y-2">
+                  <div className="bg-muted/30 p-2 rounded-lg space-y-1.5">
                     <h4 className="text-sm font-semibold text-primary flex items-center gap-2">
                       <BarChart3 size={16} />
                       Real Price Simulation
@@ -6958,12 +7146,12 @@ const pricingFunctions = {
               </div>
               
                   {/* Option Pricing Model */}
-                  <div className="bg-muted/30 p-3 rounded-lg space-y-2">
-                    <h4 className="text-sm font-semibold text-primary flex items-center gap-2">
-                      <Calculator size={16} />
+                  <div className="bg-muted/30 p-2 rounded-lg space-y-1.5">
+                    <h4 className="text-xs font-semibold text-primary flex items-center gap-2">
+                      <Calculator size={14} />
                       Option Pricing Model
                     </h4>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <label className="text-xs text-muted-foreground">Model Selection</label>
                   <Select 
                     value={optionPricingModel} 
@@ -6986,12 +7174,12 @@ const pricingFunctions = {
               </div>
 
                 {/* Barrier Option Pricing - Full Width Compact */}
-                <div className="bg-muted/30 p-3 rounded-lg">
-                  <h4 className="text-sm font-semibold text-primary flex items-center gap-2 mb-3">
-                    <Shield size={16} />
+                <div className="bg-muted/30 p-2 rounded-lg">
+                  <h4 className="text-xs font-semibold text-primary flex items-center gap-2 mb-2">
+                    <Shield size={14} />
                     Barrier Option Pricing
                   </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {/* Simulations */}
                     <div className="space-y-2">
                       <label className="text-xs text-muted-foreground">Number of Simulations</label>
@@ -7041,34 +7229,34 @@ const pricingFunctions = {
             </CardContent>
           </Card>
 
-          <Card className="shadow-md mt-4">
+          <Card className="shadow-md mt-2">
             <CardHeader className="pb-2 border-b flex flex-row items-center justify-between">
-              <CardTitle className="text-xl font-bold text-primary">Strategy Components</CardTitle>
-              <div className="flex gap-2">
-                <Button onClick={addOption} size="sm" className="h-8 px-3 text-sm flex items-center gap-1">
-                  <Plus size={14} /> Add Option
+              <CardTitle className="text-lg sm:text-xl font-bold text-primary">Strategy Components</CardTitle>
+              <div className="flex gap-1.5 flex-wrap">
+                <Button onClick={addOption} size="sm" className="h-7 px-2 text-xs flex items-center gap-1">
+                  <Plus size={12} /> Add Option
                 </Button>
-                <Button onClick={addSwap} size="sm" variant="outline" className="h-8 px-3 text-sm flex items-center gap-1">
-                  <Plus size={14} /> Add Swap
+                <Button onClick={addSwap} size="sm" variant="outline" className="h-7 px-2 text-xs flex items-center gap-1">
+                  <Plus size={12} /> Add Swap
                 </Button>
-                <Button onClick={addForward} size="sm" variant="outline" className="h-8 px-3 text-sm flex items-center gap-1">
-                  <Plus size={14} /> Add Forward
+                <Button onClick={addForward} size="sm" variant="outline" className="h-7 px-2 text-xs flex items-center gap-1">
+                  <Plus size={12} /> Add Forward
                 </Button>
                 {strategy.length > 0 && (
-                  <Button onClick={importToHedgingInstruments} size="sm" variant="secondary" className="h-8 px-3 text-sm flex items-center gap-1">
-                    <Upload size={14} /> Export to Hedging
+                  <Button onClick={importToHedgingInstruments} size="sm" variant="secondary" className="h-7 px-2 text-xs flex items-center gap-1">
+                    <Upload size={12} /> Export to Hedging
                   </Button>
                 )}
               </div>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
+            <CardContent className="pt-2">
+              <div className="space-y-2">
                 {strategy.map((component, index) => (
-                  <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
+                  <div key={index} className="grid grid-cols-6 gap-2 items-center p-2 border rounded text-xs">
                     <div>
-                      <label className="block text-sm font-medium mb-1">Type</label>
+                      <label className="block text-xs font-medium mb-0.51">Type</label>
                       <select
-                        className="w-full p-2 border rounded"
+                        className="w-full p-1 border rounded text-xs"
                         value={component.type}
                         onChange={(e) => updateOption(index, 'type', e.target.value)}
                         disabled={component.type === 'swap' || component.type === 'forward'}
@@ -7100,7 +7288,7 @@ const pricingFunctions = {
                     {component.type === 'swap' ? (
                       <>
                         <div className="col-span-2">
-                          <label className="block text-sm font-medium mb-1">Swap Price</label>
+                          <label className="block text-xs font-medium mb-0.5">Swap Price</label>
                           <Input
                             type="number"
                             value={component.strike}
@@ -7109,7 +7297,7 @@ const pricingFunctions = {
                           />
                         </div>
                         <div className="col-span-2">
-                          <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                          <label className="block text-xs font-medium mb-0.51">Quantity (%)</label>
                           <Input
                             type="number"
                             value={component.quantity}
@@ -7122,7 +7310,7 @@ const pricingFunctions = {
                     ) : component.type === 'forward' ? (
                       <>
                         <div className="col-span-2">
-                          <label className="block text-sm font-medium mb-1">Forward Rate</label>
+                          <label className="block text-xs font-medium mb-0.51">Forward Rate</label>
                           <Input
                             type="number"
                             value={component.strike}
@@ -7132,7 +7320,7 @@ const pricingFunctions = {
                           />
                         </div>
                         <div className="col-span-2">
-                          <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                          <label className="block text-xs font-medium mb-0.51">Quantity (%)</label>
                           <Input
                             type="number"
                             value={component.quantity}
@@ -7145,7 +7333,7 @@ const pricingFunctions = {
                     ) : (
                       <>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Strike</label>
+                      <label className="block text-xs font-medium mb-0.51">Strike</label>
                       <Input
                         type="number"
                             value={component.strike}
@@ -7153,7 +7341,7 @@ const pricingFunctions = {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Strike Type</label>
+                      <label className="block text-xs font-medium mb-0.51">Strike Type</label>
                       <select
                         className="w-full p-2 border rounded"
                             value={component.strikeType}
@@ -7168,7 +7356,7 @@ const pricingFunctions = {
                     {component.type.includes('knockout') || component.type.includes('knockin') ? (
                       <>
                         <div>
-                          <label className="block text-sm font-medium mb-1">Barrier</label>
+                          <label className="block text-xs font-medium mb-0.51">Barrier</label>
                           <Input
                             type="number"
                             value={component.barrier || 0}
@@ -7176,7 +7364,7 @@ const pricingFunctions = {
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium mb-1">Barrier Type</label>
+                          <label className="block text-xs font-medium mb-0.51">Barrier Type</label>
                           <select
                             className="w-full p-2 border rounded"
                             value={component.barrierType || 'percent'}
@@ -7190,7 +7378,7 @@ const pricingFunctions = {
                         {/* For double barrier options */}
                         {component.type.includes('double') && (
                           <div>
-                            <label className="block text-sm font-medium mb-1">Second Barrier</label>
+                            <label className="block text-xs font-medium mb-0.51">Second Barrier</label>
                             <Input
                               type="number"
                               value={component.secondBarrier || 0}
@@ -7202,7 +7390,7 @@ const pricingFunctions = {
                     ) : null}
                     
                     <div>
-                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                      <label className="block text-xs font-medium mb-0.51">Volatility (%)</label>
                       <Input
                         type="number"
                             value={component.volatility}
@@ -7210,7 +7398,7 @@ const pricingFunctions = {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                      <label className="block text-xs font-medium mb-0.51">Quantity (%)</label>
                       <Input
                         type="number"
                             value={component.quantity}
@@ -7222,7 +7410,7 @@ const pricingFunctions = {
                     {['one-touch','double-touch','no-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
                       <>
                         <div>
-                          <label className="block text-sm font-medium mb-1">Rebate (%)</label>
+                          <label className="block text-xs font-medium mb-0.51">Rebate (%)</label>
                           <Input
                             type="number"
                             value={component.rebate ?? 5}
@@ -7233,7 +7421,7 @@ const pricingFunctions = {
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium mb-1">Barrier</label>
+                          <label className="block text-xs font-medium mb-0.51">Barrier</label>
                           <Input
                             type="number"
                             value={component.barrier ?? 0}
@@ -7241,7 +7429,7 @@ const pricingFunctions = {
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium mb-1">Barrier Type</label>
+                          <label className="block text-xs font-medium mb-0.51">Barrier Type</label>
                           <select
                             className="w-full p-2 border rounded"
                             value={component.barrierType || 'percent'}
@@ -7253,7 +7441,7 @@ const pricingFunctions = {
                         </div>
                         {['double-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
                           <div>
-                            <label className="block text-sm font-medium mb-1">Second Barrier</label>
+                            <label className="block text-xs font-medium mb-0.51">Second Barrier</label>
                             <Input
                               type="number"
                               value={component.secondBarrier ?? 0}
@@ -7303,13 +7491,13 @@ const pricingFunctions = {
             </button>
             {showInputs['strategy'] && (
             <div className="px-3 pb-3">
-              <div className="space-y-4">
+              <div className="space-y-2">
                 {strategy.map((option, index) => (
-                  <div key={index} className="grid grid-cols-5 gap-4 items-end">
+                  <div key={index} className="grid grid-cols-5 gap-2 items-end">
                     <div>
-                      <label className="block text-sm font-medium mb-1">Type</label>
+                      <label className="block text-xs font-medium mb-0.51">Type</label>
                       <select
-                        className="w-full p-2 border rounded"
+                        className="w-full p-1 border rounded text-xs"
                         value={option.type}
                         onChange={(e) => updateOption(index, 'type', e.target.value)}
                       >
@@ -7338,7 +7526,7 @@ const pricingFunctions = {
                       </select>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Strike</label>
+                      <label className="block text-xs font-medium mb-0.51">Strike</label>
                       <Input
                         type="number"
                         value={option.strike}
@@ -7346,7 +7534,7 @@ const pricingFunctions = {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Strike Type</label>
+                      <label className="block text-xs font-medium mb-0.51">Strike Type</label>
                       <select
                         className="w-full p-2 border rounded"
                         value={option.strikeType}
@@ -7357,7 +7545,7 @@ const pricingFunctions = {
                       </select>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                      <label className="block text-xs font-medium mb-0.51">Volatility (%)</label>
                       <Input
                         type="number"
                         value={option.volatility}
@@ -7365,7 +7553,7 @@ const pricingFunctions = {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                      <label className="block text-xs font-medium mb-0.51">Quantity (%)</label>
                       <Input
                         type="number"
                         value={option.quantity}
@@ -7379,11 +7567,11 @@ const pricingFunctions = {
             )}
           </Card>
 
-          <Card className="mt-4">
-            <CardHeader>
+          <Card className="mt-2">
+            <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <CardTitle>FX Stress Test Scenarios</CardTitle>
-                <div className="flex items-center gap-4">
+                <CardTitle className="text-lg sm:text-xl">FX Stress Test Scenarios</CardTitle>
+                <div className="flex items-center gap-2">
                   <div className="text-sm text-muted-foreground">
                     Based on historical events & regulatory stress tests
                   </div>
@@ -7401,9 +7589,9 @@ const pricingFunctions = {
                 </div>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="pt-2">
               {/* Scenarios count indicator */}
-              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium text-blue-800">
                     📊 {Object.keys(stressTestScenarios).length} scenarios available
@@ -7416,7 +7604,7 @@ const pricingFunctions = {
                 </div>
               </div>
               
-              <div className="space-y-6">
+              <div className="space-y-3">
                 {/* Group scenarios by category */}
                 {[
                   { 
@@ -7463,14 +7651,14 @@ const pricingFunctions = {
                   }
                 ].map(({ title, scenarios, color, icon }) => 
                   scenarios.length > 0 && (
-                    <div key={title} className={`p-4 rounded-lg border ${color}`}>
+                    <div key={title} className={`p-2 rounded-lg border ${color}`}>
                       <h4 className="font-medium mb-3 text-sm uppercase tracking-wide flex items-center gap-2">
                         <span>{icon}</span>
                         {title}
                       </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                         {scenarios.map(([key, scenario]) => (
-                          <Card key={key} className={`p-4 transition-all duration-200 ${activeStressTest === key ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:shadow-md'}`}>
+                          <Card key={key} className={`p-2 transition-all duration-200 ${activeStressTest === key ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:shadow-md'}`}>
                             <div className="space-y-3">
                               <div className="flex items-start justify-between">
                                 <div className="flex-1">
@@ -7628,20 +7816,10 @@ const pricingFunctions = {
             </CardContent>
           </Card>
 
-          <div className="flex gap-4 mt-6">
+          <div className="flex gap-2 mt-3">
             <Button onClick={calculateResults} className="flex-1">
               Calculate Results
             </Button>
-            {displayResults && (
-              <>
-                <Button onClick={saveScenario} className="flex items-center gap-2">
-                  <Save size={16} /> Save Scenario
-                </Button>
-                <Link to="/saved">
-                  <Button variant="outline">View Saved Scenarios</Button>
-                </Link>
-              </>
-            )}
           </div>
         </TabsContent>
 
@@ -7710,8 +7888,8 @@ const pricingFunctions = {
                 )}
 
               {showMonthlyStats && monthlyStats.length > 0 && (
-                <div className="mt-8">
-                  <h3 className="text-lg font-semibold mb-4">Monthly Statistics</h3>
+                <div className="mt-4">
+                  <h3 className="text-base font-semibold mb-2">Monthly Statistics</h3>
                   <table className="w-full border-collapse">
                       <thead>
                         <tr>
@@ -7741,8 +7919,8 @@ const pricingFunctions = {
             <div>
               {/* Affichage des résultats... */}
               
-              {/* Ajouter ces boutons ici si nécessaire */}
-              <div className="mt-6 flex flex-col md:flex-row gap-3">
+              {/* Save Backtest button - specific to backtest results */}
+              <div className="mt-3 flex flex-col md:flex-row gap-2">
                 <Button 
                   onClick={saveHistoricalBacktestResults} 
                   variant="outline"
@@ -7751,11 +7929,6 @@ const pricingFunctions = {
                   <Save className="h-4 w-4 mr-2" />
                   Save Backtest
                 </Button>
-                <Link to="/saved" className="flex-1">
-                  <Button variant="secondary" className="w-full">
-                    View Saved Scenarios
-                  </Button>
-                </Link>
               </div>
             </div>
           )}
@@ -7781,7 +7954,7 @@ const pricingFunctions = {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
                 <div className="text-sm">
                   <span className="font-medium text-blue-800">Current Setup:</span> 
                   <span className="text-blue-700"> {params.currencyPair?.symbol} @ {params.spotPrice.toFixed(4)}</span>
@@ -7791,9 +7964,9 @@ const pricingFunctions = {
                 </div>
               </div>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center justify-between mb-2">
                     <h3 className="text-lg font-semibold">FX Rate Ranges</h3>
                     <span className="text-sm text-muted-foreground">
                       ({params.currencyPair?.quote || 'Quote Currency'} per {params.currencyPair?.base || 'Base Currency'})
@@ -7801,7 +7974,7 @@ const pricingFunctions = {
                   </div>
                   <div className="space-y-4">
                     {priceRanges.map((range, index) => (
-                      <div key={index} className="grid grid-cols-3 gap-4">
+                      <div key={index} className="grid grid-cols-3 gap-2">
                         <div>
                           <Label>Min</Label>
                           <Input 
@@ -7848,10 +8021,10 @@ const pricingFunctions = {
                 </div>
 
                 <div>
-                  <h3 className="text-lg font-semibold mb-4">Strategies</h3>
-                  <div className="space-y-4">
+                  <h3 className="text-base font-semibold mb-2">Strategies</h3>
+                  <div className="space-y-2">
                     {matrixStrategies.map((strat, index) => (
-                      <div key={index} className="p-4 border rounded-md">
+                      <div key={index} className="p-2 border rounded-md">
                         <div className="flex justify-between items-center mb-2">
                           <h4 className="font-medium">{strat.name}</h4>
                           <Button
@@ -7890,7 +8063,7 @@ const pricingFunctions = {
                 </div>
               </div>
 
-              <div className="mt-6 flex flex-col gap-2">
+              <div className="mt-3 flex flex-col gap-2">
                 <Button onClick={generateRiskMatrix} className="w-full">
                   Generate Risk Matrix
                 </Button>
@@ -7930,8 +8103,8 @@ const pricingFunctions = {
               </div>
 
               {riskMatrixResults.length > 0 && (
-                <div className="mt-8 overflow-x-auto">
-                  <h3 className="text-lg font-semibold mb-4">Risk Matrix Results</h3>
+                <div className="mt-4 overflow-x-auto">
+                  <h3 className="text-base font-semibold mb-2">Risk Matrix Results</h3>
                   <table className="w-full border-collapse">
                     <thead>
                       <tr>
@@ -8010,50 +8183,12 @@ const pricingFunctions = {
             monthsToHedge={params.monthsToHedge}
           />
         </TabsContent>
-
-        <TabsContent value="forexdashboard">
-          <ForexDashboard 
-            onRateSelected={(pair, rate) => {
-              // Mettre à jour le spot price
-              setParams(prev => ({
-                ...prev,
-                spotPrice: rate
-              }));
-              
-              // Trouver la paire de devises correspondante
-              const currencyPair = CURRENCY_PAIRS.find(cp => cp.symbol === pair);
-              if (currencyPair) {
-                // Mettre à jour la paire de devises sélectionnée
-                setParams(prev => ({
-                  ...prev,
-                  currencyPair: currencyPair
-                }));
-              }
-
-              // Mettre à jour initialSpotPrice qui est utilisé pour calculer les forward rates
-              setInitialSpotPrice(rate);
-              
-              // Réinitialiser les forward rates manuels pour qu'ils soient recalculés
-              setManualForwards({});
-
-              // Recalculer tous les résultats qui dépendent du spot price
-              calculateResults();
-              
-              // Afficher une notification
-              toast({
-                title: "Rate Updated",
-                description: `Spot rate updated to ${rate} for ${pair}`,
-              });
-            }}
-            currentPair={params.currencyPair?.symbol || "EUR/USD"}
-          />
-        </TabsContent>
       </Tabs>
 
       {displayResults && (
-        <div className="mt-6">
+        <div className="mt-3">
           <Tabs value={activeResultsTab} onValueChange={setActiveResultsTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-6">
+            <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-3">
               <TabsTrigger value="detailed" className="text-xs">Detailed Results</TabsTrigger>
               <TabsTrigger value="pnl-evolution" className="text-xs">P&L Evolution</TabsTrigger>
               <TabsTrigger value="fx-rates" className="text-xs">Spot vs Forward</TabsTrigger>
@@ -8066,16 +8201,16 @@ const pricingFunctions = {
 
             <TabsContent value="detailed">
               <Card className="shadow-lg border border-border/40 overflow-hidden">
-                <CardHeader className="bg-gradient-to-r from-primary/10 to-transparent pb-3 border-b">
-                  <CardTitle className="text-xl font-bold text-primary flex items-center gap-2">
-                    <Table className="h-5 w-5" />
+                <CardHeader className="bg-gradient-to-r from-primary/10 to-transparent pb-2 border-b">
+                  <CardTitle className="text-lg sm:text-xl font-bold text-primary flex items-center gap-2">
+                    <Table className="h-4 w-4" />
                     Detailed Results
                   </CardTitle>
                 </CardHeader>
             <CardContent className="p-0">
               {displayResults.length > 0 && (
                 <div>
-                  <div className="flex items-center p-4 bg-muted/30">
+                  <div className="flex items-center p-2 bg-muted/30">
                     <div className="flex items-center">
                       <Switch
                       id="useCustomPrices"
@@ -8392,7 +8527,7 @@ const pricingFunctions = {
                   spot={params.spotPrice}
                   currencyPair={params.currencyPair}
                   includePremium={true}
-                  className="mt-6"
+                  className="mt-3"
                 />
               )}
             </TabsContent>
@@ -8404,8 +8539,8 @@ const pricingFunctions = {
                   <CardTitle>Monte Carlo Simulation</CardTitle>
                   <CardDescription>Visualize price paths and option price evolution</CardDescription>
                 </CardHeader>
-            <CardContent>
-              <div className="flex flex-row justify-between mb-4">
+            <CardContent className="pt-2">
+              <div className="flex flex-row justify-between mb-2">
                 <div>
                   <Button 
                     onClick={() => {
@@ -8456,8 +8591,8 @@ const pricingFunctions = {
 
               {showMonteCarloVisualization && results && simulationData && (
                 <div>
-                  <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                    <h4 className="font-medium text-blue-800 mb-1">Monte Carlo Visualization Information</h4>
+                  <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                    <h4 className="font-medium text-blue-800 mb-1 text-sm">Monte Carlo Visualization Information</h4>
                     <ul className="list-disc ml-5 text-sm text-blue-700">
                       {realPriceParams.useSimulation && (
                         <li>Displaying {Math.min(100, realPriceParams.numSimulations)} random paths out of {realPriceParams.numSimulations} total simulations</li>
@@ -8531,7 +8666,7 @@ const pricingFunctions = {
                   const yearlyResults = calculateYearlyResults(results);
 
                   return (
-                    <table className="w-full border-collapse mb-6">
+                    <table className="w-full border-collapse mb-3">
                       <thead>
                         <tr>
                           <th className="border p-2 text-left">Year</th>

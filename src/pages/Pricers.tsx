@@ -24,6 +24,7 @@ import { useToast } from "@/hooks/use-toast";
 import { CURRENCY_PAIRS } from '@/pages/Index';
 import PayoffChart from '@/components/PayoffChart';
 import { PricingService, Greeks } from '@/services/PricingService';
+import ExchangeRateService from '@/services/ExchangeRateService';
 
 // Réutiliser les types du Strategy Builder
 interface CurrencyPair {
@@ -88,6 +89,80 @@ const INSTRUMENT_TYPES = [
 
 const Pricers = () => {
   const { toast } = useToast();
+  
+  // Get ExchangeRateService instance for real-time rate fetching
+  const exchangeRateService = React.useMemo(() => {
+    return ExchangeRateService.getInstance();
+  }, []);
+  
+  // Sync custom pairs from localStorage (shared with ForexMarket and Strategy Builder)
+  const [customCurrencyPairs, setCustomCurrencyPairs] = React.useState<CurrencyPair[]>(() => {
+    try {
+      const savedPairs = localStorage.getItem('customCurrencyPairs');
+      return savedPairs ? JSON.parse(savedPairs) : [];
+    } catch (error) {
+      console.warn('Error loading custom currency pairs:', error);
+      return [];
+    }
+  });
+  
+  // Sync custom pairs from localStorage
+  React.useEffect(() => {
+    const handleStorageChange = () => {
+      try {
+        const savedPairs = localStorage.getItem('customCurrencyPairs');
+        if (savedPairs) {
+          const pairs = JSON.parse(savedPairs);
+          setCustomCurrencyPairs(pairs);
+        }
+      } catch (error) {
+        console.warn('Error syncing custom currency pairs:', error);
+      }
+    };
+    
+    // Listen for storage changes
+    window.addEventListener('storage', handleStorageChange);
+    
+    // Also check periodically (in case changes are made in same window)
+    const interval = setInterval(handleStorageChange, 1000);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
+  
+  // Function to fetch real-time rate from Market Data
+  const fetchRealTimeRate = async (currencyPair: CurrencyPair): Promise<number | null> => {
+    try {
+      const { base, quote } = currencyPair;
+      
+      // Get exchange rates from API
+      const exchangeData = await exchangeRateService.getExchangeRates('USD');
+      const rates = exchangeData.rates;
+      
+      // Calculate the cross rate for the selected pair
+      let rate: number;
+      
+      if (base === 'USD') {
+        // Direct rate: USD/XXX
+        rate = rates[quote] || currencyPair.defaultSpotRate;
+      } else if (quote === 'USD') {
+        // Inverted rate: XXX/USD = 1 / (USD/XXX)
+        rate = rates[base] ? 1 / rates[base] : currencyPair.defaultSpotRate;
+      } else {
+        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
+        const baseRate = rates[base] || 1;
+        const quoteRate = rates[quote] || 1;
+        rate = quoteRate / baseRate;
+      }
+      
+      return rate;
+    } catch (error) {
+      console.error('Error fetching real-time rate:', error);
+      return null;
+    }
+  };
   
   // État principal
   const [selectedInstrument, setSelectedInstrument] = useState('call');
@@ -166,11 +241,26 @@ const Pricers = () => {
 
   // Mettre à jour le spot price quand la paire de devises change
   useEffect(() => {
-    const pair = CURRENCY_PAIRS.find(p => p.symbol === selectedCurrencyPair);
+    const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+    const pair = allPairs.find(p => p.symbol === selectedCurrencyPair);
     if (pair) {
+      // First set with default rate
       setPricingInputs(prev => ({ ...prev, spotPrice: pair.defaultSpotRate }));
+      
+      // Then fetch real-time rate from Market Data
+      fetchRealTimeRate(pair).then(realTimeRate => {
+        if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+          setPricingInputs(prev => ({ ...prev, spotPrice: realTimeRate }));
+          toast({
+            title: "Rate Updated",
+            description: `Real-time rate for ${pair.symbol}: ${realTimeRate.toFixed(4)}`,
+          });
+        }
+      }).catch(error => {
+        console.error('Error fetching rate:', error);
+      });
     }
-  }, [selectedCurrencyPair]);
+  }, [selectedCurrencyPair, customCurrencyPairs]);
 
   // Mettre à jour le type d'instrument dans le composant stratégie
   useEffect(() => {
@@ -489,7 +579,8 @@ const Pricers = () => {
   };
 
   // Obtenir la paire de devises sélectionnée
-  const selectedPair = CURRENCY_PAIRS.find(p => p.symbol === selectedCurrencyPair);
+  const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+  const selectedPair = allPairs.find(p => p.symbol === selectedCurrencyPair);
 
   // Calculs complémentaires pour l'affichage des résultats
   const notional = notionalBase;
@@ -864,17 +955,109 @@ const Pricers = () => {
 
                 {/* Paire de devises */}
                 <div className="space-y-2">
-                  <Label>Currency Pair</Label>
-                  <Select value={selectedCurrencyPair} onValueChange={setSelectedCurrencyPair}>
+                  <Label className="flex items-center gap-2">
+                    Currency Pair
+                    <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Synced with Market Data</span>
+                  </Label>
+                  <Select 
+                    value={selectedCurrencyPair} 
+                    onValueChange={async (value) => {
+                      setSelectedCurrencyPair(value);
+                      const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+                      const selectedPair = allPairs.find(p => p.symbol === value);
+                      if (selectedPair) {
+                        // First set with default rate
+                        setPricingInputs(prev => ({ ...prev, spotPrice: selectedPair.defaultSpotRate }));
+                        
+                        // Show loading toast
+                        toast({
+                          title: "Fetching Rate...",
+                          description: `Loading real-time rate for ${selectedPair.symbol} from Market Data...`,
+                        });
+                        
+                        // Then fetch real-time rate from Market Data
+                        try {
+                          const realTimeRate = await fetchRealTimeRate(selectedPair);
+                          if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+                            setPricingInputs(prev => ({ ...prev, spotPrice: realTimeRate }));
+                            toast({
+                              title: "Rate Updated",
+                              description: `Real-time rate for ${selectedPair.symbol}: ${realTimeRate.toFixed(4)}`,
+                            });
+                          } else {
+                            toast({
+                              title: "Rate Fetch Failed",
+                              description: `Using default rate for ${selectedPair.symbol}`,
+                              variant: "default"
+                            });
+                          }
+                        } catch (error) {
+                          console.error('Error fetching rate:', error);
+                          toast({
+                            title: "Rate Fetch Error",
+                            description: `Could not fetch rate. Using default value.`,
+                            variant: "destructive"
+                          });
+                        }
+                      }
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {CURRENCY_PAIRS.map((pair) => (
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b flex items-center gap-2">
+                        <span>Major Pairs</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter(pair => pair.category === 'majors').map((pair) => (
                         <SelectItem key={pair.symbol} value={pair.symbol}>
-                          {pair.name}
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
                         </SelectItem>
                       ))}
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Cross Rates</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter(pair => pair.category === 'crosses').map((pair) => (
+                        <SelectItem key={pair.symbol} value={pair.symbol}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Other Currencies</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter(pair => pair.category === 'others').map((pair) => (
+                        <SelectItem key={pair.symbol} value={pair.symbol}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                      {customCurrencyPairs.length > 0 && (
+                        <>
+                          <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                            <span>Custom Pairs</span>
+                            <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                          </div>
+                          {customCurrencyPairs.map((pair) => (
+                            <SelectItem key={pair.symbol} value={pair.symbol}>
+                              <div className="flex flex-col">
+                                <span className="font-medium">{pair.symbol}</span>
+                                <span className="text-xs text-muted-foreground">{pair.name}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>

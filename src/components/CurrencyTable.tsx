@@ -145,7 +145,7 @@ const CurrencyTable: React.FC<CurrencyTableProps> = ({
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Rechercher une devise (code ou nom)..."
+              placeholder="Search currency (code or name)..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10"
@@ -174,7 +174,7 @@ const CurrencyTable: React.FC<CurrencyTableProps> = ({
                     onClick={() => handleSort('name')}
                     className="h-auto p-0 font-semibold hover:bg-transparent"
                   >
-                    Devise
+                    Currency
                     <ArrowUpDown className="ml-1 h-3 w-3" />
                   </Button>
                 </TableHead>
@@ -184,7 +184,7 @@ const CurrencyTable: React.FC<CurrencyTableProps> = ({
                     onClick={() => handleSort('rate')}
                     className="h-auto p-0 font-semibold hover:bg-transparent"
                   >
-                    Taux ({baseCurrency})
+                    Rate ({baseCurrency})
                     <ArrowUpDown className="ml-1 h-3 w-3" />
                   </Button>
                 </TableHead>
@@ -213,7 +213,7 @@ const CurrencyTable: React.FC<CurrencyTableProps> = ({
               ) : filteredAndSortedCurrencies.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
-                    Aucune devise trouvée
+                    No currency found
                   </TableCell>
                 </TableRow>
               ) : (

@@ -509,24 +509,31 @@ const HedgingInstruments = () => {
   const calculateTodayPrice = (instrument: HedgingInstrument): number => {
     // ✅ STRATÉGIE : Utiliser les valeurs CURRENT affichées dans le tableau (modifiables par l'utilisateur)
     
-    // ✅ 1. TIME TO MATURITY : Utiliser la logique Strategy Builder avec dates d'export
-    // Priorité : dates d'export > dates actuelles
-    let effectiveStrategyStartDate = strategyStartDate;
-    let effectiveHedgingStartDate = hedgingStartDate;
+    // ✅ 1. TIME TO MATURITY : Utiliser la Valuation Date pour le calcul MTM
+    // Vérifier si l'option est expirée
+    const valuationDateObj = new Date(valuationDate);
+    const maturityDateObj = new Date(instrument.maturity);
     
-    if (instrument.exportStrategyStartDate && instrument.exportHedgingStartDate) {
-      effectiveStrategyStartDate = instrument.exportStrategyStartDate;
-      effectiveHedgingStartDate = instrument.exportHedgingStartDate;
-      console.log(`[DEBUG] ${instrument.id}: Using export dates - Strategy: ${effectiveStrategyStartDate}, Hedging: ${effectiveHedgingStartDate}`);
+    // Si la Valuation Date est après la Maturity Date, l'option est expirée
+    if (valuationDateObj >= maturityDateObj) {
+      console.log(`[DEBUG] ${instrument.id}: Option expired - Valuation Date (${valuationDate}) >= Maturity Date (${instrument.maturity})`);
+      // Pour les options expirées, retourner la valeur intrinsèque
+      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+      const spotRate = instrument.impliedSpotPrice || marketData.spot;
+      const K = instrument.strike || spotRate;
+      
+      if (instrument.type.toLowerCase().includes('call')) {
+        return Math.max(0, spotRate - K);
+      } else if (instrument.type.toLowerCase().includes('put')) {
+        return Math.max(0, K - spotRate);
+      } else if (instrument.type.toLowerCase() === 'forward') {
+        return spotRate - K;
+      }
+      return 0;
     }
     
-    // ✅ CORRECTION : Utiliser exactement la même logique que Strategy Builder pour les calculs de pricing
-    // Strategy Builder utilise calculationStartDate dérivé de strategyStartDate
-    const strategyStartDateObj = new Date(instrument.exportStrategyStartDate || strategyStartDate);
-    const calculationStartDate = new Date(strategyStartDateObj.getFullYear(), strategyStartDateObj.getMonth(), strategyStartDateObj.getDate());
-    const calculationStartDateStr = calculationStartDate.toISOString().split('T')[0];
-    
-    const calculationTimeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, calculationStartDateStr);
+    // Pour le MTM, on calcule depuis la Valuation Date jusqu'à la maturité
+    const calculationTimeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, valuationDate);
     
     // Utiliser la même base de calcul pour l'affichage et le pricing
     const displayTimeToMaturity = calculationTimeToMaturity;
@@ -1832,25 +1839,22 @@ const HedgingInstruments = () => {
                         // For long positions: MTM = Today's Price - Original Price  
                         mtmValue = todayPrice - unitPrice;
                       }
-                                              // Calculate time to maturity - Utiliser la même logique que Strategy Builder
+                                              // Calculate time to maturity - Utiliser la Valuation Date
                         let timeToMaturity = 0;
                         if (instrument.maturity) {
-                          // ✅ CORRECTION : Affichage Table vs Pricing logic
-                          const effectiveStrategyStartDate = instrument.exportStrategyStartDate || strategyStartDate;
-                          const effectiveHedgingStartDate = instrument.exportHedgingStartDate || hedgingStartDate;
+                          // ✅ Vérifier si l'option est expirée
+                          const valuationDateObj = new Date(valuationDate);
+                          const maturityDateObj = new Date(instrument.maturity);
                           
-                          // ✅ CORRECTION : Utiliser exactement la même logique que Strategy Builder
-                          // Strategy Builder utilise calculationStartDate dérivé de strategyStartDate
-                          const strategyStartDateObj = new Date(instrument.exportStrategyStartDate || strategyStartDate);
-                          const calculationStartDate = new Date(strategyStartDateObj.getFullYear(), strategyStartDateObj.getMonth(), strategyStartDateObj.getDate());
-                          const calculationStartDateStr = calculationStartDate.toISOString().split('T')[0];
-                          
-                          const displayTimeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, calculationStartDateStr);
-                          
-                          // Utiliser la même base de calcul que Strategy Builder
-                          timeToMaturity = displayTimeToMaturity;
-                          
-                          console.log(`[DEBUG] ${instrument.id}: Time to Maturity - Display & Pricing (Strategy Logic ${calculationStartDateStr}): ${displayTimeToMaturity.toFixed(4)}y, Export: ${instrument.exportTimeToMaturity ? instrument.exportTimeToMaturity.toFixed(4) + 'y' : 'N/A'}`);
+                          if (valuationDateObj >= maturityDateObj) {
+                            // Option expirée, Time to Maturity = 0
+                            timeToMaturity = 0;
+                            console.log(`[DEBUG] ${instrument.id}: EXPIRED - Valuation Date (${valuationDate}) >= Maturity Date (${instrument.maturity}) - TTM = 0`);
+                          } else {
+                            // ✅ Calculer depuis la Valuation Date pour l'affichage Current
+                            timeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, valuationDate);
+                            console.log(`[DEBUG] ${instrument.id}: Time to Maturity - Display from Valuation Date ${valuationDate}: ${timeToMaturity.toFixed(4)}y, Export: ${instrument.exportTimeToMaturity ? instrument.exportTimeToMaturity.toFixed(4) + 'y' : 'N/A'}`);
+                          }
                         } else {
                           console.warn(`No maturity date available for instrument ${instrument.id}`);
                           timeToMaturity = 0;
@@ -1984,14 +1988,14 @@ const HedgingInstruments = () => {
                           {/* Time to Maturity - Current */}
                            <TableCell className="text-center bg-green-50/80 border-r border-slate-200">
                             <div className="space-y-1">
-                              <div className="text-sm font-mono font-semibold text-green-700">
+                              <div className={`text-sm font-mono font-semibold ${timeToMaturity === 0 ? 'text-red-600' : 'text-green-700'}`}>
                               {timeToMaturity.toFixed(4)}y
                             </div>
-                              <div className="text-xs text-green-600 bg-green-100/50 px-2 py-1 rounded-md">
-                              {(timeToMaturity * 365).toFixed(0)}d
+                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-600 bg-red-100/50' : 'text-green-600 bg-green-100/50'}`}>
+                              {timeToMaturity === 0 ? 'EXPIRED' : `${(timeToMaturity * 365).toFixed(0)}d`}
                               </div>
-                              <div className="text-xs text-green-500 bg-green-50 px-2 py-1 rounded-md">
-                                Calc from {instrument.exportStrategyStartDate || strategyStartDate} (Strategy Logic)
+                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-500 bg-red-50' : 'text-green-500 bg-green-50'}`}>
+                                {timeToMaturity === 0 ? `Expired on ${instrument.maturity}` : `From ${valuationDate} to ${instrument.maturity}`}
                               </div>
                             </div>
                           </TableCell>

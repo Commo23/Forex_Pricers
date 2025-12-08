@@ -125,15 +125,15 @@
   }
   
   .compact-form-group {
-    @apply flex flex-col space-y-1;
+    @apply flex flex-col space-y-0.5;
   }
   
   .compact-label {
-    @apply text-xs font-medium text-foreground/80;
+    @apply text-xs font-medium text-foreground/80 mb-0.5;
   }
   
   .compact-input {
-    @apply h-9 rounded-md text-sm;
+    @apply h-7 rounded-md text-xs;
   }
   
   .compact-select {

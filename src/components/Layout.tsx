@@ -90,7 +90,7 @@ export function Layout({ children, title, breadcrumbs }: LayoutProps) {
           </div>
         </header>
         <ScrollArea variant="content" orientation="vertical" className="flex-1">
-          <div className="flex flex-1 flex-col gap-4 p-4 pt-6">
+          <div className="flex flex-1 flex-col gap-2 p-2 pt-3">
             {children}
           </div>
         </ScrollArea>

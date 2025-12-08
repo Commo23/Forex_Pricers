@@ -15,7 +15,8 @@ export interface ImportedStrategy {
     quoteVolume: number;
     domesticRate: number;
     foreignRate: number;
-    volumeType?: 'receivable' | 'payable'; // Type de volume
+    // Align with Strategy Builder: receivable vs payable
+    volumeType?: 'receivable' | 'payable';
   };
 }
 
@@ -72,7 +73,8 @@ export interface HedgingInstrument {
   hedgeQuantity?: number;         // Quantité de couverture (quantity du composant)
   exposureVolume?: number;        // Volume d'exposition de la période (monthlyVolume du detailed results)
   rawVolume?: number;             // Volume brut de la période (sans appliquer la quantité)
-  volumeType?: 'receivable' | 'payable'; // Type de volume du Strategy Builder
+  // ✅ Alignement Strategy Builder → Exposures
+  volumeType?: 'receivable' | 'payable'; // Transmet le sens Receivable/Payable de la stratégie
   repricingData?: {           // Complete repricing information
     underlyingPrice: number;
     timeToMaturity: number;
@@ -145,9 +147,9 @@ class StrategyImportService {
       quoteVolume: number;
       domesticRate: number;
       foreignRate: number;
+      volumeType?: 'receivable' | 'payable';
       useCustomPeriods?: boolean;
       customPeriods?: Array<{ maturityDate: string; volume: number }>;
-      volumeType?: 'receivable' | 'payable'; // Type de volume
     },
     detailedResults?: any[] // Optional: results from the Detailed Results table
   ): string {
@@ -170,6 +172,7 @@ class StrategyImportService {
         quoteVolume: params.quoteVolume,
         domesticRate: params.domesticRate,
         foreignRate: params.foreignRate,
+        volumeType: params.volumeType,
       }
     };
 
@@ -207,9 +210,9 @@ class StrategyImportService {
       quoteVolume: number;
       domesticRate: number;
       foreignRate: number;
+      volumeType?: 'receivable' | 'payable';
       useCustomPeriods?: boolean;
       customPeriods?: Array<{ maturityDate: string; volume: number }>;
-      volumeType?: 'receivable' | 'payable'; // Type de volume
     },
     timestamp: number,
     detailedResults?: any[]
@@ -259,7 +262,7 @@ class StrategyImportService {
           hedgeQuantity: hedgeQuantity,
           exposureVolume: exposureVolume,
           rawVolume: rawVolume,
-          volumeType: params.volumeType || 'receivable', // Type de volume du Strategy Builder
+          volumeType: params.volumeType,
           // ✅ Export dates from Strategy Builder
           exportStrategyStartDate: params.strategyStartDate,
           exportHedgingStartDate: params.startDate
@@ -381,6 +384,7 @@ class StrategyImportService {
             hedgeQuantity: hedgeQuantity, // Quantité de couverture du composant
             exposureVolume: exposureVolume, // Volume d'exposition de cette période (après modifications)
             rawVolume: rawVolume, // Volume brut de la période (sans appliquer la quantité)
+            volumeType: params.volumeType,
             // Informations de re-pricing complètes
             repricingData: strategyDetail?.repricingData ? {
               ...strategyDetail.repricingData,

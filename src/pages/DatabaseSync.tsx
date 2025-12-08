@@ -45,7 +45,7 @@ const DatabaseSync: React.FC = () => {
 
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
 
-  // Charger les statistiques
+  // Load statistics
   const loadStats = async () => {
     if (!isConnected) return
 
@@ -66,7 +66,7 @@ const DatabaseSync: React.FC = () => {
 
       setLastRefresh(new Date())
     } catch (err) {
-      console.error('Erreur lors du chargement des statistiques:', err)
+      console.error('Error loading statistics:', err)
     }
   }
 
@@ -79,16 +79,16 @@ const DatabaseSync: React.FC = () => {
   const handleDataLoaded = () => {
     loadStats()
     toast({
-      title: "Données chargées",
-      description: "Les données ont été chargées depuis Supabase",
+      title: "Data Loaded",
+      description: "Data has been loaded from the cloud",
     })
   }
 
   const handleDataSaved = () => {
     loadStats()
     toast({
-      title: "Données sauvegardées",
-      description: "Les données ont été sauvegardées sur Supabase",
+      title: "Data Saved",
+      description: "Data has been saved to the cloud",
     })
   }
 
@@ -100,12 +100,12 @@ const DatabaseSync: React.FC = () => {
       ]}
     >
       <div className="space-y-6">
-        {/* En-tête */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Synchronisation Base de Données</h1>
+            <h1 className="text-3xl font-bold tracking-tight">Database Sync</h1>
             <p className="text-muted-foreground">
-              Gérez la synchronisation de vos données avec Supabase
+              Manage synchronization of your data with the cloud
             </p>
           </div>
           
@@ -113,12 +113,12 @@ const DatabaseSync: React.FC = () => {
             {isConnected ? (
               <Badge variant="outline" className="text-green-600">
                 <CheckCircle className="h-3 w-3 mr-1" />
-                Connecté
+                Connected
               </Badge>
             ) : (
               <Badge variant="outline" className="text-red-600">
                 <AlertCircle className="h-3 w-3 mr-1" />
-                Déconnecté
+                Disconnected
               </Badge>
             )}
             
@@ -129,59 +129,59 @@ const DatabaseSync: React.FC = () => {
               size="sm"
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-              Actualiser
+              Refresh
             </Button>
           </div>
         </div>
 
-        {/* Statut de connexion */}
+        {/* Connection status */}
         {!isConnected && (
           <Alert>
             <AlertCircle className="h-4 w-4" />
             <AlertDescription>
-              Impossible de se connecter à Supabase. Vérifiez votre connexion internet et la configuration.
+              Unable to connect to the cloud database. Please check your internet connection and configuration.
             </AlertDescription>
           </Alert>
         )}
 
-        {/* Statistiques */}
+        {/* Statistics */}
         {isConnected && (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Stratégies</CardTitle>
+                <CardTitle className="text-sm font-medium">Strategies</CardTitle>
                 <Database className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stats.strategies}</div>
                 <p className="text-xs text-muted-foreground">
-                  Stratégies sauvegardées
+                  Saved strategies
                 </p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Scénarios</CardTitle>
+                <CardTitle className="text-sm font-medium">Scenarios</CardTitle>
                 <FileText className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stats.scenarios}</div>
                 <p className="text-xs text-muted-foreground">
-                  Scénarios sauvegardés
+                  Saved scenarios
                 </p>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Matrices de Risque</CardTitle>
+                <CardTitle className="text-sm font-medium">Risk Matrices</CardTitle>
                 <BarChart3 className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stats.riskMatrices}</div>
                 <p className="text-xs text-muted-foreground">
-                  Matrices sauvegardées
+                  Saved matrices
                 </p>
               </CardContent>
             </Card>
@@ -194,18 +194,17 @@ const DatabaseSync: React.FC = () => {
               <CardContent>
                 <div className="text-2xl font-bold">{stats.hedgingInstruments}</div>
                 <p className="text-xs text-muted-foreground">
-                  Instruments de couverture
+                  Hedging instruments
                 </p>
               </CardContent>
             </Card>
           </div>
         )}
 
-        {/* Onglets */}
+        {/* Tabs */}
         <Tabs defaultValue="sync" className="space-y-4">
           <TabsList>
-            <TabsTrigger value="sync">Synchronisation</TabsTrigger>
-            <TabsTrigger value="info">Informations</TabsTrigger>
+            <TabsTrigger value="sync">Synchronization</TabsTrigger>
           </TabsList>
 
           <TabsContent value="sync" className="space-y-4">
@@ -213,52 +212,13 @@ const DatabaseSync: React.FC = () => {
               onDataLoaded={handleDataLoaded}
               onDataSaved={handleDataSaved}
             />
-          </TabsContent>
-
-          <TabsContent value="info" className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Info className="h-5 w-5" />
-                    Configuration Supabase
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="text-sm">
-                    <strong>URL:</strong> https://xxetyvwjawnhnowdunsw.supabase.co
-                  </div>
-                  <div className="text-sm">
-                    <strong>Statut:</strong> {isConnected ? 'Connecté' : 'Déconnecté'}
-                  </div>
-                  <div className="text-sm">
-                    <strong>Dernière actualisation:</strong> {lastRefresh ? lastRefresh.toLocaleString() : 'Jamais'}
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Database className="h-5 w-5" />
-                    Tables Disponibles
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="text-sm">• forex_strategies</div>
-                  <div className="text-sm">• saved_scenarios</div>
-                  <div className="text-sm">• risk_matrices</div>
-                  <div className="text-sm">• hedging_instruments</div>
-                </CardContent>
-              </Card>
-            </div>
-
+            
             <Alert>
               <Info className="h-4 w-4" />
               <AlertDescription>
-                <strong>Note:</strong> La synchronisation sauvegarde automatiquement toutes vos données locales 
-                (stratégies, scénarios, matrices de risque, instruments de couverture) vers Supabase. 
-                Vous pouvez également charger les données depuis la base de données cloud.
+                <strong>Note:</strong> Synchronization automatically saves all your local data 
+                (strategies, scenarios, risk matrices, hedging instruments) to the cloud database. 
+                You can also load data from the cloud database.
               </AlertDescription>
             </Alert>
           </TabsContent>

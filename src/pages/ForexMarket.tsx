@@ -1,21 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Layout } from '@/components/Layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Search, RefreshCw, ChevronUp, ChevronDown, Globe, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { 
+  Search, RefreshCw, ChevronUp, ChevronDown, Globe, TrendingUp, TrendingDown, Minus, 
+  Calculator, Star, StarOff, BarChart3, ArrowUpRight, ArrowDownRight, X, Plus,
+  Activity, Zap
+} from 'lucide-react';
 import ExchangeRateService from '@/services/ExchangeRateService';
 import FinancialDataService from '@/services/FinancialDataService';
 import { useTheme } from '@/hooks/useTheme';
+import { useToast } from '@/hooks/use-toast';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import TradingViewForexHeatmap from '@/components/TradingViewForexHeatmap';
 import '@/styles/forex-market.css';
 
 interface CurrencyData {
   code: string;
   name: string;
   rate: number;
+  previousRate?: number;
+  change?: number;
+  changePercent?: number;
 }
 
 interface CurrencyPair {
@@ -27,17 +40,44 @@ interface CurrencyPair {
   defaultSpotRate: number;
 }
 
+interface HistoricalRate {
+  timestamp: number;
+  rate: number;
+}
+
 const ForexMarket: React.FC = () => {
   const [currencies, setCurrencies] = useState<CurrencyData[]>([]);
+  const [previousCurrencies, setPreviousCurrencies] = useState<CurrencyData[]>([]);
   const [filteredCurrencies, setFilteredCurrencies] = useState<CurrencyData[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [baseCurrency, setBaseCurrency] = useState('USD');
-  const [sortField, setSortField] = useState<'code' | 'name' | 'rate'>('code');
+  const [sortField, setSortField] = useState<'code' | 'name' | 'rate' | 'change'>('code');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [activeTab, setActiveTab] = useState('market-data');
   const [widgetKey, setWidgetKey] = useState(0);
+  
+  // Calculator states
+  const [showCalculator, setShowCalculator] = useState(false);
+  const [calcFromCurrency, setCalcFromCurrency] = useState('USD');
+  const [calcToCurrency, setCalcToCurrency] = useState('EUR');
+  const [calcAmount, setCalcAmount] = useState('1');
+  const [calcResult, setCalcResult] = useState<number | null>(null);
+  
+  // Favorites/Watchlist
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('forexFavorites');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  
+  // Historical data for charts
+  const [historicalData, setHistoricalData] = useState<{ [key: string]: HistoricalRate[] }>({});
+  const [selectedCurrencyForChart, setSelectedCurrencyForChart] = useState<string | null>(null);
   
   // États pour les paires de devises personnalisées
   const [customCurrencyPairs, setCustomCurrencyPairs] = useState<CurrencyPair[]>(() => {
@@ -58,6 +98,12 @@ const ForexMarket: React.FC = () => {
   const exchangeRateService = ExchangeRateService.getInstance();
   const financialDataService = new FinancialDataService();
   const { theme } = useTheme();
+  const { toast } = useToast();
+
+  // Save favorites to localStorage
+  useEffect(() => {
+    localStorage.setItem('forexFavorites', JSON.stringify(favorites));
+  }, [favorites]);
 
   // Fonction pour sauvegarder les paires personnalisées
   const saveCustomCurrencyPairs = (pairs: CurrencyPair[]) => {
@@ -65,16 +111,19 @@ const ForexMarket: React.FC = () => {
       localStorage.setItem('customCurrencyPairs', JSON.stringify(pairs));
       setCustomCurrencyPairs(pairs);
       console.log('✅ Custom currency pairs saved:', pairs);
-      console.log('✅ Total pairs now:', [...getDefaultCurrencyPairs(), ...pairs].length);
     } catch (error) {
       console.error('❌ Error saving custom currency pairs:', error);
     }
   };
 
-  // Fonction pour ajouter une paire de devise personnalisée
+  // Function to add a custom currency pair
   const addCustomCurrencyPair = () => {
     if (!newPairSymbol || !newPairName || !newPairRate) {
-      alert('Veuillez remplir tous les champs');
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all fields",
+        variant: "destructive"
+      });
       return;
     }
 
@@ -82,21 +131,33 @@ const ForexMarket: React.FC = () => {
     const rate = parseFloat(newPairRate);
     
     if (isNaN(rate) || rate <= 0) {
-      alert('Le taux doit être un nombre positif');
+      toast({
+        title: "Invalid Rate",
+        description: "Rate must be a positive number",
+        variant: "destructive"
+      });
       return;
     }
 
-    // Vérifier si la paire existe déjà
+    // Check if the pair already exists
     const allPairs = [...getDefaultCurrencyPairs(), ...customCurrencyPairs];
     if (allPairs.some(pair => pair.symbol === symbol)) {
-      alert(`La paire de devises ${symbol} existe déjà`);
+      toast({
+        title: "Pair Exists",
+        description: `Currency pair ${symbol} already exists`,
+        variant: "destructive"
+      });
       return;
     }
 
-    // Extraire base et quote du symbole
+    // Extract base and quote from symbol
     const [base, quote] = symbol.split('/');
     if (!base || !quote || base.length !== 3 || quote.length !== 3) {
-      alert('Le format du symbole doit être XXX/YYY (ex: EUR/USD)');
+      toast({
+        title: "Invalid Format",
+        description: "Symbol format must be XXX/YYY (e.g., EUR/USD)",
+        variant: "destructive"
+      });
       return;
     }
 
@@ -111,22 +172,16 @@ const ForexMarket: React.FC = () => {
 
     const updated = [...customCurrencyPairs, newPair];
     saveCustomCurrencyPairs(updated);
-    
-    // Sélectionner automatiquement la nouvelle paire ajoutée
     setSelectedCurrencyPair(symbol);
-    
-    // Réinitialiser le formulaire
     setNewPairSymbol('');
     setNewPairName('');
     setNewPairRate('');
     setShowAddPairDialog(false);
     
-    // Afficher un message de succès
-    alert(`✅ Paire ${symbol} ajoutée avec succès !`);
-    
-    console.log('✅ New currency pair added:', newPair);
-    console.log('✅ Updated custom pairs:', updated);
-    console.log('✅ Selected pair set to:', symbol);
+    toast({
+      title: "Success",
+      description: `Pair ${symbol} added successfully!`,
+    });
   };
 
   // Fonction pour obtenir les paires de devises par défaut
@@ -156,43 +211,148 @@ const ForexMarket: React.FC = () => {
     return [...getDefaultCurrencyPairs(), ...customCurrencyPairs];
   };
 
+  // Load market data with proper conversion
+  const loadMarketData = async () => {
+    try {
+      setLoading(true);
+      
+      // Save current rates as previous for change calculation
+      setPreviousCurrencies([...currencies]);
+      
+      // Get exchange rates from ExchangeRateService
+      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+      const formattedData = exchangeRateService.formatCurrencyData(exchangeData);
+      
+      // Transform to CurrencyData format with change calculation
+      const apiCurrencies: CurrencyData[] = formattedData.map(currency => {
+        const previous = previousCurrencies.find(c => c.code === currency.code);
+        const change = previous ? currency.rate - previous.rate : 0;
+        const changePercent = previous && previous.rate !== 0 
+          ? (change / previous.rate) * 100 
+          : 0;
+        
+        return {
+          code: currency.code,
+          name: currency.name,
+          rate: currency.rate,
+          previousRate: previous?.rate,
+          change,
+          changePercent
+        };
+      });
+
+      // Convert custom pairs to match base currency
+      const customCurrencies: CurrencyData[] = customCurrencyPairs.map(pair => {
+        // If custom pair's quote matches base currency, use direct rate
+        if (pair.quote === baseCurrency) {
+          return {
+            code: pair.base,
+            name: `${pair.base} (from ${pair.symbol})`,
+            rate: pair.defaultSpotRate
+          };
+        }
+        // Otherwise, need to convert via base currency
+        // For now, we'll use the default rate (this could be improved with proper cross-rate calculation)
+        return {
+          code: pair.base,
+          name: `${pair.base} (from ${pair.symbol})`,
+          rate: pair.defaultSpotRate
+        };
+      });
+
+      // Combine API and custom currencies, removing duplicates (API takes priority)
+      const allCurrencies = [...apiCurrencies, ...customCurrencies];
+      const uniqueCurrencies = allCurrencies.filter((currency, index, self) => 
+        index === self.findIndex(c => c.code === currency.code)
+      );
+
+      setCurrencies(uniqueCurrencies);
+      setLastUpdated(new Date());
+      
+      // Update historical data
+      updateHistoricalData(uniqueCurrencies);
+    } catch (error) {
+      console.error('Error loading market data:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load market data. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Update historical data for charts
+  const updateHistoricalData = (currencies: CurrencyData[]) => {
+    const now = Date.now();
+    const updated = { ...historicalData };
+    
+    currencies.forEach(currency => {
+      if (!updated[currency.code]) {
+        updated[currency.code] = [];
+      }
+      updated[currency.code].push({
+        timestamp: now,
+        rate: currency.rate
+      });
+      
+      // Keep only last 50 data points
+      if (updated[currency.code].length > 50) {
+        updated[currency.code] = updated[currency.code].slice(-50);
+      }
+    });
+    
+    setHistoricalData(updated);
+  };
+
+  // Calculate conversion
+  const calculateConversion = () => {
+    if (!calcAmount || isNaN(parseFloat(calcAmount))) {
+      setCalcResult(null);
+      return;
+    }
+
+    const amount = parseFloat(calcAmount);
+    if (amount <= 0) {
+      setCalcResult(null);
+      return;
+    }
+
+    // Find rates for both currencies
+    const fromCurrencyData = currencies.find(c => c.code === calcFromCurrency);
+    const toCurrencyData = currencies.find(c => c.code === calcToCurrency);
+
+    if (!fromCurrencyData || !toCurrencyData) {
+      setCalcResult(null);
+      return;
+    }
+
+    // If both are relative to same base, convert directly
+    if (calcFromCurrency === baseCurrency) {
+      setCalcResult(amount * toCurrencyData.rate);
+    } else if (calcToCurrency === baseCurrency) {
+      setCalcResult(amount / fromCurrencyData.rate);
+    } else {
+      // Cross conversion: (amount / fromRate) * toRate
+      setCalcResult((amount / fromCurrencyData.rate) * toCurrencyData.rate);
+    }
+  };
+
+  // Toggle favorite
+  const toggleFavorite = (code: string) => {
+    setFavorites(prev => 
+      prev.includes(code) 
+        ? prev.filter(c => c !== code)
+        : [...prev, code]
+    );
+  };
+
   useEffect(() => {
     loadMarketData();
     const interval = setInterval(loadMarketData, 30000); // Refresh every 30 seconds
     return () => clearInterval(interval);
-  }, [baseCurrency, customCurrencyPairs]); // Ajouter customCurrencyPairs comme dépendance
-
-  // Synchroniser les paires personnalisées avec le localStorage
-  useEffect(() => {
-    const handleStorageChange = () => {
-      try {
-        const savedPairs = localStorage.getItem('customCurrencyPairs');
-        if (savedPairs) {
-          const parsed = JSON.parse(savedPairs);
-          setCustomCurrencyPairs(parsed);
-        }
-      } catch (error) {
-        console.warn('Error syncing custom currency pairs:', error);
-      }
-    };
-
-    // Écouter les changements dans le localStorage
-    window.addEventListener('storage', handleStorageChange);
-    
-    // Vérifier périodiquement les changements (pour les changements dans le même onglet)
-    const interval = setInterval(handleStorageChange, 1000);
-    
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      clearInterval(interval);
-    };
-  }, []);
-
-  // S'assurer que la liste des paires se met à jour quand customCurrencyPairs change
-  useEffect(() => {
-    console.log('🔄 Custom pairs updated:', customCurrencyPairs);
-    console.log('🔄 All pairs now:', getAllCurrencyPairs().map(p => p.symbol));
-  }, [customCurrencyPairs]);
+  }, [baseCurrency, customCurrencyPairs]);
 
   useEffect(() => {
     const filtered = currencies.filter(currency =>
@@ -201,6 +361,12 @@ const ForexMarket: React.FC = () => {
     );
     setFilteredCurrencies(filtered);
   }, [searchTerm, currencies]);
+
+  useEffect(() => {
+    if (showCalculator) {
+      calculateConversion();
+    }
+  }, [calcAmount, calcFromCurrency, calcToCurrency, currencies, showCalculator]);
 
   useEffect(() => {
     // Force widget reload when theme changes
@@ -213,13 +379,11 @@ const ForexMarket: React.FC = () => {
     // Load TradingView widget when advanced-data tab is active
     if (activeTab === 'advanced-data') {
       const loadTradingViewWidget = () => {
-        // Remove existing widget if any
         const existingWidget = document.querySelector('.tradingview-widget-container__widget');
         if (existingWidget) {
           existingWidget.innerHTML = '';
         }
 
-        // Remove any existing TradingView scripts
         const existingScripts = document.querySelectorAll('script[src*="tradingview"]');
         existingScripts.forEach(script => script.remove());
 
@@ -244,49 +408,9 @@ const ForexMarket: React.FC = () => {
         }
       };
 
-      // Wait for the DOM to be ready
       setTimeout(loadTradingViewWidget, 100);
     }
-  }, [activeTab, widgetKey]);
-
-  const loadMarketData = async () => {
-    try {
-      setLoading(true);
-      
-      // Get exchange rates from ExchangeRateService
-      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
-      const formattedData = exchangeRateService.formatCurrencyData(exchangeData);
-      
-      // Transform to CurrencyData format (only code, name, rate)
-      const apiCurrencies: CurrencyData[] = formattedData.map(currency => ({
-        code: currency.code,
-        name: currency.name,
-        rate: currency.rate
-      }));
-
-      // Ajouter les paires personnalisées aux données de marché
-      const customCurrencies: CurrencyData[] = customCurrencyPairs.map(pair => ({
-        code: pair.base,
-        name: `${pair.base} (from ${pair.symbol})`,
-        rate: pair.defaultSpotRate
-      }));
-
-      // Combiner les devises API et personnalisées
-      const allCurrencies = [...apiCurrencies, ...customCurrencies];
-      
-      // Supprimer les doublons (priorité aux données API)
-      const uniqueCurrencies = allCurrencies.filter((currency, index, self) => 
-        index === self.findIndex(c => c.code === currency.code)
-      );
-
-      setCurrencies(uniqueCurrencies);
-      setLastUpdated(new Date());
-    } catch (error) {
-      console.error('Error loading market data:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [activeTab, widgetKey, theme]);
 
   const formatRate = (rate: number): string => {
     if (rate > 100) return rate.toFixed(2);
@@ -296,30 +420,10 @@ const ForexMarket: React.FC = () => {
 
   const getMajorPairs = () => {
     const majorPairs = ['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY'];
-    
-    // Combiner les devises des API avec nos paires personnalisées
-    const allCurrencyCodes = new Set<string>();
-    
-    // Ajouter les devises des API
-    filteredCurrencies.forEach(currency => allCurrencyCodes.add(currency.code));
-    
-    // Ajouter les devises de nos paires personnalisées
-    customCurrencyPairs.forEach(pair => {
-      allCurrencyCodes.add(pair.base);
-      allCurrencyCodes.add(pair.quote);
-    });
-    
-    // Filtrer pour ne garder que les majors
-    return Array.from(allCurrencyCodes)
-      .filter(code => majorPairs.includes(code))
-      .map(code => ({
-        code,
-        name: code, // Nom simple pour l'affichage
-        rate: 1 // Taux par défaut
-      }));
+    return filteredCurrencies.filter(c => majorPairs.includes(c.code));
   };
 
-  const handleSort = (field: 'code' | 'name' | 'rate') => {
+  const handleSort = (field: 'code' | 'name' | 'rate' | 'change') => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
@@ -346,6 +450,10 @@ const ForexMarket: React.FC = () => {
           aValue = a.rate;
           bValue = b.rate;
           break;
+        case 'change':
+          aValue = a.changePercent || 0;
+          bValue = b.changePercent || 0;
+          break;
         default:
           aValue = a.code;
           bValue = b.code;
@@ -363,6 +471,24 @@ const ForexMarket: React.FC = () => {
     });
   };
 
+  // Get chart data for selected currency
+  const getChartData = (currencyCode: string) => {
+    const data = historicalData[currencyCode] || [];
+    return data.map((point, index) => ({
+      time: index,
+      rate: point.rate,
+      timestamp: new Date(point.timestamp).toLocaleTimeString()
+    }));
+  };
+
+  // Get all unique currency codes for calculator
+  const getAllCurrencyCodes = useMemo(() => {
+    const codes = new Set<string>();
+    codes.add(baseCurrency);
+    currencies.forEach(c => codes.add(c.code));
+    return Array.from(codes).sort();
+  }, [currencies, baseCurrency]);
+
   return (
     <Layout title="Forex Market">
       <div className="space-y-6">
@@ -377,6 +503,7 @@ const ForexMarket: React.FC = () => {
           
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-sm text-gray-500">
+              <Activity className="h-4 w-4" />
               <span>Last updated:</span>
               <span className="font-mono">{lastUpdated.toLocaleTimeString()}</span>
             </div>
@@ -391,28 +518,90 @@ const ForexMarket: React.FC = () => {
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
+
+            <Dialog open={showCalculator} onOpenChange={setShowCalculator}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="flex items-center gap-2">
+                  <Calculator className="h-4 w-4" />
+                  Calculator
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Currency Converter</DialogTitle>
+                  <DialogDescription>
+                    Convert between any two currencies
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label>Amount</Label>
+                    <Input
+                      type="number"
+                      value={calcAmount}
+                      onChange={(e) => setCalcAmount(e.target.value)}
+                      placeholder="1"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>From</Label>
+                      <select
+                        value={calcFromCurrency}
+                        onChange={(e) => setCalcFromCurrency(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-md"
+                      >
+                        {getAllCurrencyCodes.map(code => (
+                          <option key={code} value={code}>{code}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>To</Label>
+                      <select
+                        value={calcToCurrency}
+                        onChange={(e) => setCalcToCurrency(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-md"
+                      >
+                        {getAllCurrencyCodes.map(code => (
+                          <option key={code} value={code}>{code}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  {calcResult !== null && (
+                    <div className="p-4 bg-muted rounded-lg">
+                      <div className="text-sm text-muted-foreground">Result</div>
+                      <div className="text-2xl font-bold">
+                        {formatRate(calcResult)} {calcToCurrency}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
 
-        {/* Sync Rapide des Taux */}
+        {/* Quick Rate Sync */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Globe className="h-5 w-5" />
-              Sync Rapide des Taux
+              Quick Rate Sync
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Paire de Devises Sélectionnée
+                  Selected Currency Pair
                   <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
                     {getAllCurrencyPairs().length} total
                   </span>
                   {customCurrencyPairs.length > 0 && (
                     <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
-                      +{customCurrencyPairs.length} personnalisée{customCurrencyPairs.length > 1 ? 's' : ''}
+                      +{customCurrencyPairs.length} custom
                     </span>
                   )}
                 </label>
@@ -422,20 +611,17 @@ const ForexMarket: React.FC = () => {
                   onChange={(e) => setSelectedCurrencyPair(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600"
                 >
-                  {/* Paires par défaut */}
                   {getDefaultCurrencyPairs().map(pair => (
                     <option key={pair.symbol} value={pair.symbol}>
                       {pair.symbol} - {pair.name}
                     </option>
                   ))}
-                  
-                  {/* Paires personnalisées */}
                   {customCurrencyPairs.length > 0 && (
                     <>
-                      <option disabled>--- Paires Personnalisées ---</option>
+                      <option disabled>--- Custom Pairs ---</option>
                       {customCurrencyPairs.map(pair => (
                         <option key={`custom-${pair.symbol}`} value={pair.symbol}>
-                          {pair.symbol} - {pair.name} (Personnalisée)
+                          {pair.symbol} - {pair.name} (Custom)
                         </option>
                       ))}
                     </>
@@ -445,18 +631,14 @@ const ForexMarket: React.FC = () => {
               
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Taux Actuel
+                  Current Rate
                 </label>
                 <div className="px-3 py-2 border border-gray-300 rounded-md text-sm bg-gray-50 dark:bg-gray-800 dark:border-gray-600">
                   {(() => {
-                    // Chercher d'abord dans les paires par défaut
                     let selectedPair = getDefaultCurrencyPairs().find(pair => pair.symbol === selectedCurrencyPair);
-                    
-                    // Si pas trouvé, chercher dans les paires personnalisées
                     if (!selectedPair) {
                       selectedPair = customCurrencyPairs.find(pair => pair.symbol === selectedCurrencyPair);
                     }
-                    
                     return selectedPair ? selectedPair.defaultSpotRate.toFixed(4) : 'N/A';
                   })()}
                 </div>
@@ -470,14 +652,14 @@ const ForexMarket: React.FC = () => {
                 size="sm"
                 className="flex items-center gap-2"
               >
-                <span>+</span>
-                Ajouter une Paire Personnalisée
+                <Plus className="h-4 w-4" />
+                Add Custom Pair
               </Button>
               
               {customCurrencyPairs.length > 0 && (
                 <Button
                   onClick={() => {
-                    if (confirm('Êtes-vous sûr de vouloir supprimer toutes les paires personnalisées ?')) {
+                    if (confirm('Are you sure you want to delete all custom pairs?')) {
                       saveCustomCurrencyPairs([]);
                     }
                   }}
@@ -485,24 +667,24 @@ const ForexMarket: React.FC = () => {
                   size="sm"
                   className="flex items-center gap-2 text-red-600 hover:text-red-700"
                 >
-                  <span>🗑️</span>
-                  Supprimer Toutes les Paires Personnalisées
+                  <X className="h-4 w-4" />
+                  Delete All Custom Pairs
                 </Button>
               )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Dialog pour ajouter une nouvelle paire */}
+        {/* Add Custom Pair Dialog */}
         {showAddPairDialog && (
           <Card className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
             <Card className="w-full max-w-md mx-4">
               <CardHeader>
-                <CardTitle>Ajouter une Paire de Devises Personnalisée</CardTitle>
+                <CardTitle>Add Custom Currency Pair</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Symbole (ex: EUR/USD)</label>
+                  <label className="text-sm font-medium">Symbol (e.g., EUR/USD)</label>
                   <Input
                     value={newPairSymbol}
                     onChange={(e) => setNewPairSymbol(e.target.value.toUpperCase())}
@@ -512,7 +694,7 @@ const ForexMarket: React.FC = () => {
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Nom Complet</label>
+                  <label className="text-sm font-medium">Full Name</label>
                   <Input
                     value={newPairName}
                     onChange={(e) => setNewPairName(e.target.value)}
@@ -521,7 +703,7 @@ const ForexMarket: React.FC = () => {
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Taux de Change</label>
+                  <label className="text-sm font-medium">Exchange Rate</label>
                   <Input
                     type="number"
                     step="0.0001"
@@ -536,13 +718,13 @@ const ForexMarket: React.FC = () => {
                     onClick={() => setShowAddPairDialog(false)}
                     variant="outline"
                   >
-                    Annuler
+                    Cancel
                   </Button>
                   <Button
                     onClick={addCustomCurrencyPair}
                     className="bg-blue-600 hover:bg-blue-700"
                   >
-                    Ajouter
+                    Add
                   </Button>
                 </div>
               </CardContent>
@@ -552,8 +734,9 @@ const ForexMarket: React.FC = () => {
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="market-data">Market Data</TabsTrigger>
+            <TabsTrigger value="heatmap">Forex Heatmap</TabsTrigger>
             <TabsTrigger value="advanced-data">Advanced Forex Data</TabsTrigger>
           </TabsList>
 
@@ -579,16 +762,13 @@ const ForexMarket: React.FC = () => {
                       onChange={(e) => setBaseCurrency(e.target.value)}
                       className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600"
                     >
-                      {/* Extraire toutes les devises uniques des paires disponibles */}
                       {(() => {
                         const allPairs = [...getDefaultCurrencyPairs(), ...customCurrencyPairs];
                         const allCurrencies = new Set<string>();
-                        
                         allPairs.forEach(pair => {
                           allCurrencies.add(pair.base);
                           allCurrencies.add(pair.quote);
                         });
-                        
                         return Array.from(allCurrencies).sort().map(currency => (
                           <option key={currency} value={currency}>
                             {currency}
@@ -639,13 +819,13 @@ const ForexMarket: React.FC = () => {
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Other Pairs</p>
-                      <p className="text-2xl font-bold text-purple-600">
-                        {filteredCurrencies.length - getMajorPairs().length}
+                      <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Favorites</p>
+                      <p className="text-2xl font-bold text-yellow-600">
+                        {favorites.length}
                       </p>
                     </div>
-                    <div className="h-8 w-8 bg-purple-100 dark:bg-purple-900 rounded-lg flex items-center justify-center">
-                      <Minus className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                    <div className="h-8 w-8 bg-yellow-100 dark:bg-yellow-900 rounded-lg flex items-center justify-center">
+                      <Star className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
                     </div>
                   </div>
                 </CardContent>
@@ -655,16 +835,47 @@ const ForexMarket: React.FC = () => {
             {/* Currency Rates Table */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  Currency Exchange Rates
-                  <Badge variant="secondary" className="text-sm">{filteredCurrencies.length}</Badge>
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2">
+                    Currency Exchange Rates
+                    <Badge variant="secondary" className="text-sm">{filteredCurrencies.length}</Badge>
+                  </CardTitle>
+                  {selectedCurrencyForChart && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedCurrencyForChart(null)}
+                    >
+                      <X className="h-4 w-4 mr-2" />
+                      Close Chart
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
+                {/* Chart for selected currency */}
+                {selectedCurrencyForChart && historicalData[selectedCurrencyForChart] && (
+                  <div className="mb-6 p-4 bg-muted/30 rounded-lg">
+                    <h3 className="text-lg font-semibold mb-2">
+                      {selectedCurrencyForChart} Rate Trend
+                    </h3>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={getChartData(selectedCurrencyForChart)}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="time" />
+                        <YAxis />
+                        <Tooltip />
+                        <Line type="monotone" dataKey="rate" stroke="#3b82f6" strokeWidth={2} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
                 <div className="rounded-md border overflow-hidden">
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-gray-50 dark:bg-gray-800">
+                        <TableHead className="w-[50px]"></TableHead>
                         <TableHead 
                           className="w-[120px] cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                           onClick={() => handleSort('code')}
@@ -698,11 +909,40 @@ const ForexMarket: React.FC = () => {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead 
+                          className="text-right cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                          onClick={() => handleSort('change')}
+                        >
+                          <div className="flex items-center justify-end gap-1 font-semibold">
+                            Change %
+                            {sortField === 'change' && (
+                              sortDirection === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
+                            )}
+                          </div>
+                        </TableHead>
+                        <TableHead className="w-[100px] text-center">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {getSortedCurrencies().map((currency) => (
-                        <TableRow key={currency.code} className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
+                        <TableRow 
+                          key={currency.code} 
+                          className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                        >
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => toggleFavorite(currency.code)}
+                              className="h-6 w-6 p-0"
+                            >
+                              {favorites.includes(currency.code) ? (
+                                <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+                              ) : (
+                                <StarOff className="h-4 w-4" />
+                              )}
+                            </Button>
+                          </TableCell>
                           <TableCell className="font-medium">
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-gray-900 dark:text-white">{currency.code}</span>
@@ -718,6 +958,39 @@ const ForexMarket: React.FC = () => {
                             <span className="font-mono font-semibold text-gray-900 dark:text-white">
                               {formatRate(currency.rate)}
                             </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {currency.changePercent !== undefined && currency.changePercent !== 0 && (
+                              <div className={`flex items-center justify-end gap-1 ${
+                                currency.changePercent > 0 ? 'text-green-600' : 'text-red-600'
+                              }`}>
+                                {currency.changePercent > 0 ? (
+                                  <ArrowUpRight className="h-4 w-4" />
+                                ) : (
+                                  <ArrowDownRight className="h-4 w-4" />
+                                )}
+                                <span className="font-semibold">
+                                  {currency.changePercent > 0 ? '+' : ''}{currency.changePercent.toFixed(2)}%
+                                </span>
+                              </div>
+                            )}
+                            {(!currency.changePercent || currency.changePercent === 0) && (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center justify-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setSelectedCurrencyForChart(
+                                  selectedCurrencyForChart === currency.code ? null : currency.code
+                                )}
+                                title="View chart"
+                              >
+                                <BarChart3 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -757,6 +1030,92 @@ const ForexMarket: React.FC = () => {
             )}
           </TabsContent>
 
+          {/* Forex Heatmap Tab */}
+          <TabsContent value="heatmap" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Globe className="h-5 w-5" />
+                  Forex Heatmap
+                </CardTitle>
+                <CardDescription>
+                  Visual representation of currency strength and weakness across major pairs
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Activity className="h-4 w-4" />
+                      <span>Real-time currency strength indicators</span>
+                    </div>
+                    <Button
+                      onClick={() => setWidgetKey(prev => prev + 1)}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                      Refresh
+                    </Button>
+                  </div>
+                  
+                  <div className="bg-muted/30 rounded-lg p-4 border">
+                    <TradingViewForexHeatmap
+                      key={widgetKey}
+                      currencies={[
+                        "EUR", "USD", "JPY", "GBP", "CHF", "AUD", "CAD", "NZD", "CNY",
+                        "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "BGN", "HRK",
+                        "RUB", "TRY", "BRL", "MXN", "ARS", "CLP", "COP", "PEN", "ZAR",
+                        "EGP", "MAD", "NGN", "KES", "INR", "PKR", "IDR", "THB", "MYR",
+                        "SGD", "PHP", "VND", "KRW", "HKD", "TWD"
+                      ]}
+                      width="100%"
+                      height={600}
+                      isTransparent={true}
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="h-3 w-3 rounded-full bg-green-500"></div>
+                          <span className="text-sm font-medium">Strong</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Currency is gaining strength
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="h-3 w-3 rounded-full bg-yellow-500"></div>
+                          <span className="text-sm font-medium">Neutral</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Currency is stable
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                          <span className="text-sm font-medium">Weak</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Currency is losing strength
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* Advanced Forex Data Tab */}
           <TabsContent value="advanced-data" className="h-screen">
             <div key={widgetKey} className="tradingview-widget-container" style={{ height: '80vh', width: '100%', minHeight: '600px' }}>
@@ -769,4 +1128,4 @@ const ForexMarket: React.FC = () => {
   );
 };
 
-export default ForexMarket; 
+export default ForexMarket;

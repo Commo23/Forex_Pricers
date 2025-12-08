@@ -62,10 +62,10 @@ const ForexDashboard: React.FC<ForexDashboardProps> = ({ onRateSelected, current
       updateCurrentRateFromApi(formattedCurrencies);
       
     } catch (error) {
-      console.error('Erreur lors du chargement des taux:', error);
+      console.error('Error loading rates:', error);
       toast({
-        title: "Erreur de chargement",
-        description: "Impossible de charger les taux de change. Utilisation des valeurs par défaut.",
+        title: "Loading Error",
+        description: "Unable to load exchange rates. Using default values.",
         variant: "destructive"
       });
       
@@ -144,8 +144,8 @@ const ForexDashboard: React.FC<ForexDashboardProps> = ({ onRateSelected, current
     if (onRateSelected) {
       onRateSelected(selectedPair, currentRate);
       toast({
-        title: "Taux appliqué",
-        description: `Taux ${currentRate} appliqué pour ${selectedPair}`,
+        title: "Rate Applied",
+        description: `Rate ${currentRate} applied for ${selectedPair}`,
       });
     }
   };
@@ -197,16 +197,16 @@ const ForexDashboard: React.FC<ForexDashboardProps> = ({ onRateSelected, current
       <CardContent className="py-4">
         {/* Section de contrôle rapide */}
         <div className="mb-6 p-4 bg-muted/30 rounded-md border">
-          <h3 className="text-lg font-medium mb-3">Sync Rapide des Taux</h3>
+          <h3 className="text-lg font-medium mb-3">Quick Rate Sync</h3>
           <div className="grid gap-4 md:grid-cols-3">
             <div>
-              <Label htmlFor="pair-select">Paire de Devises Sélectionnée</Label>
+              <Label htmlFor="pair-select">Selected Currency Pair</Label>
               <Select 
                 value={selectedPair} 
                 onValueChange={setSelectedPair}
               >
                 <SelectTrigger id="pair-select" className="w-full">
-                  <SelectValue placeholder="Sélectionner une paire" />
+                  <SelectValue placeholder="Select a pair" />
                 </SelectTrigger>
                 <SelectContent>
                   {CURRENCY_PAIRS.map(pair => (
@@ -269,7 +269,7 @@ const ForexDashboard: React.FC<ForexDashboardProps> = ({ onRateSelected, current
           {lastUpdated && (
             <div className="mt-2 flex items-center text-xs text-muted-foreground">
               <Clock className="h-3 w-3 mr-1" />
-              <span>Dernière mise à jour: {lastUpdated.toLocaleString('fr-FR')}</span>
+              <span>Last update: {lastUpdated.toLocaleString('en-US')}</span>
             </div>
           )}
         </div>
