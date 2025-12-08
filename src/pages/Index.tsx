@@ -866,8 +866,6 @@ import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash, Upload,
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
 import { CalculatorState, CustomPeriod } from '@/types/CalculatorState';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -4268,135 +4266,45 @@ const Index = () => {
     }
   };
 
-  // Add function to prepare content for PDF export
-  const prepareForPDF = () => {
-    // Ensure tables don't break across pages
-    const tables = document.querySelectorAll('table');
-    tables.forEach(table => {
-      (table as HTMLElement).style.pageBreakInside = 'avoid';
-      (table as HTMLElement).style.width = '100%';
-    });
-
-    // Add proper page breaks between sections
-    const sections = document.querySelectorAll('.Card');
-    sections.forEach(section => {
-      (section as HTMLElement).style.pageBreakInside = 'avoid';
-      (section as HTMLElement).style.marginBottom = '20px';
-    });
-  };
-
-  // Modify the PDF export function
+  // PDF export is now handled by Reports page - save scenario first
   const exportToPDF = async () => {
-    prepareForPDF();
+    if (!results || !payoffData) {
+      toast({
+        title: "No Results",
+        description: "Please calculate results first before exporting to PDF.",
+        variant: "destructive"
+      });
+      return;
+    }
 
-    const pdf = new jsPDF({
-      orientation: 'portrait',
-      unit: 'px',
-      compress: true
-    });
-
-    // Define PDF options
-    const options = {
-      margin: [10, 10, 10, 10],
-      autoPaging: 'text'as "text",
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false
-      }
+    // Save the scenario first, then redirect to Reports for PDF export
+    const scenario: SavedScenario = {
+      id: uuidv4(),
+      name: `Scenario ${new Date().toLocaleDateString()}`,
+      timestamp: Date.now(),
+      params,
+      strategy,
+      results,
+      payoffData,
+      stressTest: activeStressTest ? stressTestScenarios[activeStressTest] : null,
+      useImpliedVol,
+      impliedVolatilities,
+      manualForwards,
+      realPrices,
+      customOptionPrices
     };
 
-    // Create a temporary div for PDF content
-    const tempDiv = document.createElement('div');
-    tempDiv.className = 'scenario-pdf-content';
-    tempDiv.innerHTML = `
-      <div class="scenario-header">
-        <h2>Scenario ${new Date().toLocaleDateString()}</h2>
-        <div class="scenario-info">
-          <div class="basic-parameters">
-            <p>Type: ${strategy[0]?.type || ''}</p>
-            <p>Strategy Start Date: ${params.strategyStartDate}</p>
-            <p>Hedging Start Date: ${params.startDate}</p>
-            <p>Spot Price: ${params.spotPrice}</p>
-                            <p>Base Volume ({params.currencyPair?.base || 'BASE'}): {params.baseVolume.toLocaleString()}</p>
-                <p>Quote Volume ({params.currencyPair?.quote || 'QUOTE'}): {Math.round(params.quoteVolume).toLocaleString()}</p>
-                <p>Volume Type: {params.volumeType === 'receivable' ? 'Receivable' : 'Payable'}</p>
-                <p>Current Rate: {params.spotPrice.toFixed(4)}</p>
-          </div>
-          <div class="stress-parameters">
-            <p>Volatility: ${(stressTestScenarios[activeStressTest || 'base']?.volatility * 100).toFixed(1)}%</p>
-            <p>Price Shock: ${(stressTestScenarios[activeStressTest || 'base']?.priceShock * 100).toFixed(1)}%</p>
-          </div>
-        </div>
-      </div>
-      <div class="charts-section">
-        ${document.querySelector('.pnl-evolution')?.outerHTML || ''}
-        ${document.querySelector('.payoff-diagram')?.outerHTML || ''}
-      </div>
-      <div class="detailed-results">
-        ${document.querySelector('.detailed-results table')?.outerHTML || ''}
-      </div>
-      <div class="summary-statistics">
-        ${document.querySelector('.summary-statistics table')?.outerHTML || ''}
-      </div>
-    `;
+    const savedScenarios = JSON.parse(localStorage.getItem('optionScenarios') || '[]');
+    savedScenarios.push(scenario);
+    localStorage.setItem('optionScenarios', JSON.stringify(savedScenarios));
 
-    // Add styles for PDF
-    const style = document.createElement('style');
-    style.textContent = `
-      .scenario-pdf-content {
-        padding: 20px;
-        font-family: Arial, sans-serif;
-      }
-      .scenario-header {
-        margin-bottom: 20px;
-      }
-      .scenario-info {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 20px;
-        margin-bottom: 30px;
-      }
-      .charts-section {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 20px;
-        margin-bottom: 30px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-bottom: 20px;
-        font-size: 12px;
-      }
-      th, td {
-        border: 1px solid #ddd;
-        padding: 8px;
-        text-align: left;
-      }
-    `;
-    tempDiv.appendChild(style);
+    toast({
+      title: "Scenario Saved",
+      description: "Redirecting to Reports page for PDF export...",
+    });
 
-    document.body.appendChild(tempDiv);
-    
-    try {
-      await pdf.html(tempDiv, {
-        ...options,
-        html2canvas: {
-          ...options.html2canvas,
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          letterRendering: true,
-          allowTaint: true,
-          foreignObjectRendering: true,
-          svgRendering: true
-        }
-      });
-      pdf.save('strategy-results.pdf');
-    } finally {
-      document.body.removeChild(tempDiv);
-    }
+    // Navigate to Reports page where PDF export is handled
+    window.location.href = '/reports';
   };
 
   // Ajoutez cette fonction pour gérer les changements de volatilité implicite
@@ -5136,93 +5044,42 @@ const Index = () => {
     alert("Risk matrix saved successfully!");
   };
 
-  // Add this function to export the risk matrix to PDF
+  // PDF export is now handled by Reports page - save risk matrix first
   const exportRiskMatrixToPDF = async () => {
     if (riskMatrixResults.length === 0) {
-      alert("No risk matrix results to export");
+      toast({
+        title: "No Results",
+        description: "No risk matrix results to export.",
+        variant: "destructive"
+      });
       return;
     }
 
-    try {
-      // Create a temporary element for the PDF content
-      const tempDiv = document.createElement('div');
-      tempDiv.className = 'p-8 bg-white';
-      tempDiv.innerHTML = `
-        <h1 class="text-2xl font-bold mb-4">Risk Matrix Results</h1>
-        <div class="mb-4">
-          <h2 class="text-lg font-semibold">Price Ranges</h2>
-          <ul>
-            ${priceRanges.map(range => `
-              <li>Range: [${range.min}, ${range.max}] - Probability: ${range.probability}%</li>
-            `).join('')}
-          </ul>
-        </div>
-      `;
+    // Save the risk matrix to localStorage for Reports page
+    const riskMatrixReport = {
+      id: uuidv4(),
+      name: `Risk Matrix ${new Date().toLocaleDateString()}`,
+      timestamp: Date.now(),
+      type: 'risk-matrix',
+      strategies: riskMatrixResults.map(r => ({
+        name: r.name,
+        components: strategy,
+        coverageRatio: r.coverageRatio
+      })),
+      priceRanges: priceRanges
+    };
 
-      // Create the results table
-      const table = document.createElement('table');
-      table.className = 'w-full border-collapse';
-      table.innerHTML = `
-        <thead>
-          <tr>
-            <th class="border p-2 text-left">Strategy</th>
-            <th class="border p-2 text-center">Coverage Ratio</th>
-            <th class="border p-2 text-center">Hedging Cost (M$)</th>
-            ${priceRanges.map(range => `
-              <th class="border p-2 text-center">${range.probability}%<br>[${range.min},${range.max}]</th>
-            `).join('')}
-          </tr>
-        </thead>
-        <tbody>
-          ${riskMatrixResults.map(result => `
-            <tr>
-              <td class="border p-2">
-                ${result.name}
-              </td>
-              <td class="border p-2 text-center">${result.coverageRatio}%</td>
-              <td class="border p-2 text-center">${(result.hedgingCost / 1000000).toFixed(1)}</td>
-              ${priceRanges.map(range => {
-                const rangeKey = `${range.min},${range.max}`;
-                const value = (result.differences[rangeKey] / 1000000).toFixed(1);
-                const color = result.differences[rangeKey] > 0 
-                  ? 'rgba(0, 128, 0, 0.2)' 
-                  : 'rgba(255, 0, 0, 0.2)';
-                return `<td class="border p-2 text-center" style="background-color: ${color}">${value}</td>`;
-              }).join('')}
-            </tr>
-          `).join('')}
-        </tbody>
-      `;
-      
-      tempDiv.appendChild(table);
-      document.body.appendChild(tempDiv);
+    const savedReports = JSON.parse(localStorage.getItem('savedReports') || '[]');
+    savedReports.push(riskMatrixReport);
+    localStorage.setItem('savedReports', JSON.stringify(savedReports));
 
-      // Generate the PDF
-      const pdf = new jsPDF('landscape', 'pt', 'a4');
-      
-      // Use html2canvas to render the table as an image
-      const canvas = await html2canvas(tempDiv, {
-        scale: 2,
-        useCORS: true,
-        logging: false
-      });
-      
-      const imgData = canvas.toDataURL('image/png');
-      const imgWidth = pdf.internal.pageSize.getWidth();
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
-      
-      // Download the PDF
-      pdf.save('risk_matrix_results.pdf');
-      
-      // Clean up
-      document.body.removeChild(tempDiv);
-      
-    } catch (error) {
-      console.error("Error generating PDF:", error);
-      alert("Error generating PDF. Please try again.");
-    }
+    toast({
+      title: "Risk Matrix Saved",
+      description: "Redirecting to Reports page for PDF export...",
+    });
+
+    // Navigate to Reports page where PDF export is handled
+    window.location.href = '/reports';
   };
 
   // Add this function to calculate the expected value of each strategy
@@ -5301,109 +5158,41 @@ const Index = () => {
     alert("Scenario saved successfully!");
   };
 
-  // Add a function to export the historical backtest results to PDF
+  // PDF export is now handled by Reports page - save backtest first
   const exportHistoricalBacktestToPDF = () => {
     if (!results) {
-      alert("No results to export. Please run the backtest first.");
+      toast({
+        title: "No Results",
+        description: "Please run the backtest first before exporting to PDF.",
+        variant: "destructive"
+      });
       return;
     }
 
-    // Set up jsPDF
-    const doc = new jsPDF('p', 'mm', 'a4');
-    const pageWidth = doc.internal.pageSize.getWidth();
-    
-    // Define options for PDF export
-    const options = {
-      margin: [10, 10, 10, 10],
-      autoPaging: 'text',
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false
-      }
+    // Save the backtest to localStorage for Reports page
+    const backtestReport = {
+      id: uuidv4(),
+      name: `Historical Backtest ${new Date().toLocaleDateString()}`,
+      timestamp: Date.now(),
+      type: 'backtest',
+      params,
+      strategy,
+      results,
+      historicalData,
+      monthlyStats
     };
-    
-    // Title
-    doc.setFontSize(18);
-    doc.text('Historical Backtest Results', pageWidth / 2, 15, { align: 'center' });
-    
-    // Date
-    doc.setFontSize(12);
-    doc.text(`Generated on ${new Date().toLocaleDateString()}`, pageWidth / 2, 25, { align: 'center' });
-    
-    // Basic parameters
-    doc.setFontSize(14);
-    doc.text('Basic Parameters', 10, 35);
-    doc.setFontSize(10);
-    doc.text(`Strategy Start Date: ${params.strategyStartDate}`, 15, 45);
-    doc.text(`Hedging Start Date: ${params.startDate}`, 15, 50);
-    doc.text(`Months to Hedge: ${params.monthsToHedge}`, 15, 55);
-    doc.text(`Domestic Rate: ${params.domesticRate}% | Foreign Rate: ${params.foreignRate}%`, 15, 60);
-    doc.text(`Base Volume (${params.currencyPair?.base || 'BASE'}): ${params.baseVolume.toLocaleString()}`, 15, 65);
-    doc.text(`Quote Volume (${params.currencyPair?.quote || 'QUOTE'}): ${Math.round(params.quoteVolume).toLocaleString()}`, 15, 75);
-    doc.text(`Volume Type: ${params.volumeType === 'receivable' ? 'Receivable' : 'Payable'}`, 15, 85);
-    doc.text(`Current Spot Rate: ${params.spotPrice.toFixed(4)}`, 15, 95);
-    
-    // Strategy
-    doc.setFontSize(14);
-    doc.text('Strategy Components', 10, 110);
-    strategy.forEach((comp, index) => {
-      const yPos = 105 + (index * 10);
-      const strike = comp.strikeType === 'percent' 
-        ? `${comp.strike}%` 
-        : comp.strike.toString();
-      doc.setFontSize(10);
-      doc.text(`Component ${index+1}: ${comp.type.toUpperCase()}, Strike: ${strike}, Vol: ${comp.volatility}%, Qty: ${comp.quantity}%`, 15, yPos);
+
+    const savedReports = JSON.parse(localStorage.getItem('savedReports') || '[]');
+    savedReports.push(backtestReport);
+    localStorage.setItem('savedReports', JSON.stringify(savedReports));
+
+    toast({
+      title: "Backtest Saved",
+      description: "Redirecting to Reports page for PDF export...",
     });
-    
-    // Historical Data Summary
-    doc.setFontSize(14);
-    doc.text('Historical Data Summary', 10, 140);
-    doc.setFontSize(10);
-    doc.text(`Number of Data Points: ${historicalData.length}`, 15, 150);
-    if (monthlyStats.length > 0) {
-      doc.text(`Average Historical Volatility: ${
-        monthlyStats.reduce((sum, stat) => sum + (stat.volatility || 0), 0) / 
-        monthlyStats.filter(stat => stat.volatility !== null).length * 100
-      }%`, 15, 155);
-    }
-    
-    // Total results
-    const totalHedgedCost = validateDataForReduce(results).reduce((sum, row) => sum + row.hedgedCost, 0);
-    const totalUnhedgedCost = validateDataForReduce(results).reduce((sum, row) => sum + row.unhedgedCost, 0);
-    const totalPnL = validateDataForReduce(results).reduce((sum, row) => sum + row.deltaPnL, 0);
-    const costReduction = (totalPnL / Math.abs(totalUnhedgedCost)) * 100;
-    
-    doc.setFontSize(14);
-    doc.text('Total Results', 10, 170);
-    doc.setFontSize(10);
-    doc.text(`Total Cost with Hedging: ${totalHedgedCost.toFixed(2)}`, 15, 180);
-    doc.text(`Total Cost without Hedging: ${totalUnhedgedCost.toFixed(2)}`, 15, 185);
-    doc.text(`Total P&L: ${totalPnL.toFixed(2)}`, 15, 190);
-    doc.text(`Cost Reduction: ${costReduction.toFixed(2)}%`, 15, 195);
-    
-    // Capture the P&L chart and add it
-    const pnlChartContainer = document.getElementById('historical-backtest-pnl-chart');
-    if (pnlChartContainer) {
-      doc.addPage();
-      doc.setFontSize(14);
-      doc.text('P&L Evolution', 10, 15);
-      
-      html2canvas(pnlChartContainer, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        allowTaint: true
-      }).then(canvas => {
-        const imgData = canvas.toDataURL('image/png');
-        doc.addImage(imgData, 'PNG', 10, 25, 190, 100);
-        
-        // Save the PDF
-        doc.save('Historical_Backtest_Results.pdf');
-      });
-    } else {
-      doc.save('Historical_Backtest_Results.pdf');
-    }
+
+    // Navigate to Reports page where PDF export is handled
+    window.location.href = '/reports';
   };
 
   // Add this function after clearAllStrategies
@@ -8470,7 +8259,7 @@ const pricingFunctions = {
                   <CardTitle>P&L Evolution</CardTitle>
                 </CardHeader>
             <CardContent>
-              <div className="h-96">
+              <div id="strategy-builder-pnl-chart" className="h-96 bg-white dark:bg-gray-900 p-4 rounded">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={displayResults}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -8492,7 +8281,7 @@ const pricingFunctions = {
                   <CardTitle>Spot vs Forward FX Rates</CardTitle>
                 </CardHeader>
             <CardContent>
-              <div className="h-96">
+              <div id="strategy-builder-fx-rates-chart" className="h-96 bg-white dark:bg-gray-900 p-4 rounded">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={displayResults}>
                     <CartesianGrid strokeDasharray="3 3" />
@@ -8521,14 +8310,16 @@ const pricingFunctions = {
 
             <TabsContent value="hedging-profile">
               {payoffData.length > 0 && (
-                <PayoffChart
-                  data={payoffData}
-                  strategy={strategy}
-                  spot={params.spotPrice}
-                  currencyPair={params.currencyPair}
-                  includePremium={true}
-                  className="mt-3"
-                />
+                <div id="strategy-builder-fx-hedging-chart">
+                  <PayoffChart
+                    data={payoffData}
+                    strategy={strategy}
+                    spot={params.spotPrice}
+                    currencyPair={params.currencyPair}
+                    includePremium={true}
+                    className="mt-3"
+                  />
+                </div>
               )}
             </TabsContent>
 

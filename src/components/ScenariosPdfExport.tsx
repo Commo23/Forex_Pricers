@@ -5,6 +5,20 @@ import { SavedScenario } from '../types/Scenario';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import html2canvas from 'html2canvas';
+import {
+  createPdfDocument,
+  addPageHeader,
+  addSectionTitle,
+  addBodyText,
+  addElementAsImage,
+  checkPageBreak,
+  addPageFooter,
+  formatBasicParams,
+  formatStressTestParams,
+  PDF_CONFIG,
+  TABLE_OPTIONS,
+  HTML2CANVAS_OPTIONS
+} from '@/services/PdfService';
 
 interface Props {
   scenarios: SavedScenario[];
@@ -78,85 +92,48 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       // En-tête du document - réduit
       const pageWidth = pdf.internal.pageSize.width;
       pdf.setFillColor(60, 60, 80);
-      pdf.rect(0, 0, pageWidth, 16, 'F'); // Hauteur réduite
+      pdf.rect(0, 0, pageWidth, 16, 'F');
       
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(255);
-      pdf.setFontSize(12); // Taille réduite
+      pdf.setFontSize(PDF_CONFIG.FONT_SIZES.SUBTITLE);
       pdf.text(scenario.name, pageWidth / 2, 10, { align: 'center' });
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8); // Taille réduite
+      pdf.setFontSize(PDF_CONFIG.FONT_SIZES.SMALL);
       pdf.text(`Generated: ${new Date(scenario.timestamp).toLocaleDateString()}`, pageWidth / 2, 14, { align: 'center' });
       
-      yOffset = 20; // Espace réduit après l'en-tête
+      yOffset = 20;
 
       // Paramètres principaux et stress test côte à côte - plus compact
-      pdf.setTextColor(0);
-      pdf.setFontSize(10); // Taille réduite
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Strategy Overview', contentPadding, yOffset);
-      yOffset += 4; // Espace réduit
+      yOffset = addSectionTitle(pdf, yOffset, 'Strategy Overview', PDF_CONFIG.FONT_SIZES.BODY);
       
       const halfWidth = (pageWidth - (3 * contentPadding)) / 2;
       
       // Tableau des paramètres de base (colonne de gauche)
-      const basicParams = [
-        ['Parameter', 'Value'],
-        ['Start Date', scenario.params.startDate],
-        ['Months to Hedge', scenario.params.monthsToHedge.toString()],
-        ['Interest Rate', `${scenario.params.interestRate}%`]
-      ];
-
-      // Add volume information based on what's available
-      if (scenario.params.baseVolume && scenario.params.quoteVolume) {
-        basicParams.push(
-          [`Base Volume (${scenario.params.currencyPair?.base || 'BASE'})`, scenario.params.baseVolume.toLocaleString()],
-          [`Quote Volume (${scenario.params.currencyPair?.quote || 'QUOTE'})`, Math.round(scenario.params.quoteVolume).toLocaleString()],
-          ['Rate', scenario.params.spotPrice?.toFixed(4) || 'N/A']
-        );
-      } else {
-        basicParams.push(
-          ['Total Volume', scenario.params.totalVolume?.toLocaleString() || 'N/A'],
-          ['Spot Price', scenario.params.spotPrice?.toFixed(2) || 'N/A']
-        );
-      }
+      const basicParams = formatBasicParams(scenario.params);
 
       (pdf as any).autoTable({
-        ...tableOptions,
+        ...TABLE_OPTIONS.compact,
         startY: yOffset,
         head: [basicParams[0]],
         body: basicParams.slice(1),
         margin: { left: contentPadding, top: 1, bottom: 1 },
         tableWidth: halfWidth,
-        styles: { fontSize: 8 } // Police plus petite
+        styles: { fontSize: PDF_CONFIG.FONT_SIZES.SMALL }
       });
 
       // Tableau des paramètres de stress test (colonne de droite) si disponible
       if (scenario.stressTest) {
-        const stressParams = [
-          ['Parameter', 'Value'],
-          ['Scenario Type', scenario.stressTest.name],
-          ['Volatility', `${(scenario.stressTest.volatility * 100).toFixed(1)}%`],
-          ['Drift', `${(scenario.stressTest.drift * 100).toFixed(1)}%`],
-          ['Price Shock', `${(scenario.stressTest.priceShock * 100).toFixed(1)}%`]
-        ];
-
-        if (scenario.stressTest.forwardBasis) {
-          stressParams.push(['Forward Basis', `${(scenario.stressTest.forwardBasis * 100).toFixed(2)}%`]);
-        }
-        
-        if (scenario.stressTest.realBasis) {
-          stressParams.push(['Real Basis', `${(scenario.stressTest.realBasis * 100).toFixed(2)}%`]);
-        }
+        const stressParams = formatStressTestParams(scenario.stressTest);
 
         (pdf as any).autoTable({
-          ...tableOptions,
+          ...TABLE_OPTIONS.compact,
           startY: yOffset,
           head: [stressParams[0]],
           body: stressParams.slice(1),
           margin: { left: contentPadding * 2 + halfWidth, top: 1, bottom: 1 },
           tableWidth: halfWidth,
-          styles: { fontSize: 8 }
+          styles: { fontSize: PDF_CONFIG.FONT_SIZES.SMALL }
         });
       }
       
@@ -197,14 +174,14 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       });
 
       (pdf as any).autoTable({
-        ...tableOptions,
+        ...TABLE_OPTIONS.compact,
         startY: yOffset,
         head: [['Type', 'Strike', 'Volatility', 'Quantity', 'Barrier']],
         body: strategyData,
         styles: { 
           overflow: 'linebreak',
           cellPadding: 1.5,
-          fontSize: 8
+          fontSize: PDF_CONFIG.FONT_SIZES.SMALL
         },
         columnStyles: {
           0: { cellWidth: 'auto' },
@@ -218,10 +195,7 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       yOffset = (pdf as any).lastAutoTable.finalY + 6;
 
       // Graphiques sur la même page si possible
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Performance Analysis', contentPadding, yOffset);
-      yOffset += 4;
+      yOffset = addSectionTitle(pdf, yOffset, 'Performance Analysis', PDF_CONFIG.FONT_SIZES.BODY);
 
       // Calculer les dimensions des graphiques - plus compacts
       const usableWidth = pageWidth - (2 * contentPadding);
@@ -279,15 +253,11 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       }
 
       // Summary Statistics - plus compact, sur la même page si possible
-      if (yOffset > pdf.internal.pageSize.height - 80) {
-        pdf.addPage();
+      yOffset = checkPageBreak(pdf, yOffset, 80, () => {
         yOffset = contentPadding;
-      }
+      });
       
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Summary Statistics', contentPadding, yOffset);
-      yOffset += 4;
+      yOffset = addSectionTitle(pdf, yOffset, 'Summary Statistics', PDF_CONFIG.FONT_SIZES.BODY);
 
       const totalPnL = scenario.results.reduce((sum, row) => sum + row.deltaPnL, 0);
       const totalUnhedgedCost = scenario.results.reduce((sum, row) => sum + row.unhedgedCost, 0);
@@ -425,14 +395,14 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       const monthlyHeaders = ['Year'].concat(months).concat(['Total']);
       
       (pdf as any).autoTable({
-        ...tableOptions,
+        ...TABLE_OPTIONS.compact,
         startY: yOffset,
         head: [monthlyHeaders],
         body: monthlyPnLData,
         styles: { 
           overflow: 'linebreak',
-          cellPadding: 1.5, // Réduit
-          fontSize: 7 // Police plus petite
+          cellPadding: 1.5,
+          fontSize: 7
         },
         columnStyles: { 
           0: { fontStyle: 'bold', halign: 'left' },
@@ -542,11 +512,9 @@ const ScenariosPdfExport = ({ scenarios, selectedScenarios, setSelectedScenarios
       // Add Detailed Results on a new page - plus compact
       pdf.addPage();
       yOffset = contentPadding;
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'bold'); 
-      pdf.text('Detailed Results', contentPadding, yOffset);
+      yOffset = addSectionTitle(pdf, yOffset, 'Detailed Results', PDF_CONFIG.FONT_SIZES.SUBTITLE);
       pdf.setFont('helvetica', 'normal');
-      yOffset += 6; // Espace réduit
+      yOffset += 6;
       
       const detailedResults = scenario.results.map(row => [
         row.date,

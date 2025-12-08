@@ -32,6 +32,21 @@ import ScenariosPdfExport from '@/components/ScenariosPdfExport';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import html2canvas from 'html2canvas';
+import {
+  createPdfDocument,
+  addPageHeader,
+  addSectionTitle,
+  addBodyText,
+  addElementAsImage,
+  checkPageBreak,
+  addPageFooter,
+  formatBasicParams,
+  formatStressTestParams,
+  calculateVolatility,
+  PDF_CONFIG,
+  TABLE_OPTIONS,
+  HTML2CANVAS_OPTIONS
+} from '@/services/PdfService';
 
 // Extend jsPDF type to include autoTable
 declare module 'jspdf' {
@@ -426,6 +441,40 @@ const Reports = () => {
     return scenario.stressTest.name;
   };
 
+  // Formatage des nombres pour PDF - format cohérent et clair
+  const formatNumber = (value: number, decimals: number = 0): string => {
+    if (isNaN(value) || value === null || value === undefined) return 'N/A';
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+      useGrouping: true
+    });
+  };
+
+  const formatCurrency = (value: number, decimals: number = 2): string => {
+    if (isNaN(value) || value === null || value === undefined) return 'N/A';
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+      useGrouping: true
+    });
+  };
+
+  const formatPercentage = (value: number, decimals: number = 2): string => {
+    if (isNaN(value) || value === null || value === undefined) return 'N/A';
+    return `${value.toFixed(decimals)}%`;
+  };
+
+  const formatVolume = (value: number): string => {
+    if (isNaN(value) || value === null || value === undefined) return 'N/A';
+    if (value >= 1000000) {
+      return `${(value / 1000000).toFixed(2)}M`;
+    } else if (value >= 1000) {
+      return `${(value / 1000).toFixed(2)}K`;
+    }
+    return formatNumber(value, 0);
+  };
+
   const calculateYearlyResults = (results: SavedScenario['results']): Record<string, YearlyResult> => {
     const yearlyData: Record<string, YearlyResult> = {};
     
@@ -566,6 +615,354 @@ const Reports = () => {
     return data;
   };
 
+  // Fonction helper pour générer un graphique P&L en Canvas
+  const generatePnLChartCanvas = async (pdf: any, results: any[], yOffset: number, pageWidth: number, contentPadding: number): Promise<number> => {
+    const pnlData = results.map((result: any) => ({
+      month: new Date(result.date).toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+      pnl: result.deltaPnL
+    }));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+    
+    if (ctx && pnlData.length > 0) {
+      // Background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Border
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, canvas.width, canvas.height);
+      
+      // Title
+      ctx.fillStyle = '#1f2937';
+      ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('P&L Evolution Over Time', canvas.width / 2, 30);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = '#6b7280';
+      ctx.fillText('Monthly Delta P&L Performance', canvas.width / 2, 50);
+      
+      // Chart area
+      const chartX = 70;
+      const chartY = 80;
+      const chartWidth = canvas.width - 140;
+      const chartHeight = canvas.height - 140;
+      
+      // Grid
+      ctx.strokeStyle = '#f3f4f6';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 5; i++) {
+        const y = chartY + (i * chartHeight) / 5;
+        ctx.beginPath();
+        ctx.moveTo(chartX, y);
+        ctx.lineTo(chartX + chartWidth, y);
+        ctx.stroke();
+      }
+      
+      // Y-axis
+      const pnlValues = pnlData.map(d => d.pnl);
+      const minPnL = Math.min(...pnlValues);
+      const maxPnL = Math.max(...pnlValues);
+      const range = maxPnL - minPnL || 1;
+      
+      // Zero line
+      if (minPnL <= 0 && maxPnL >= 0) {
+        const zeroY = chartY + chartHeight - ((0 - minPnL) / range) * chartHeight;
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(chartX, zeroY);
+        ctx.lineTo(chartX + chartWidth, zeroY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Zero label
+        ctx.fillStyle = '#ef4444';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText('0', chartX - 10, zeroY + 4);
+      }
+      
+      // P&L line with gradient effect
+      ctx.strokeStyle = '#8884d8';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      
+      pnlData.forEach((point, index) => {
+        const x = chartX + (index * chartWidth) / Math.max(pnlData.length - 1, 1);
+        const y = chartY + chartHeight - ((point.pnl - minPnL) / range) * chartHeight;
+        
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+      
+      // Data points
+      ctx.fillStyle = '#8884d8';
+      pnlData.forEach((point, index) => {
+        const x = chartX + (index * chartWidth) / Math.max(pnlData.length - 1, 1);
+        const y = chartY + chartHeight - ((point.pnl - minPnL) / range) * chartHeight;
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      
+      // Y-axis labels
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'right';
+      for (let i = 0; i <= 5; i++) {
+        const value = maxPnL - (i * range) / 5;
+        const y = chartY + (i * chartHeight) / 5;
+        ctx.fillText(formatNumber(value, 0), chartX - 10, y + 4);
+      }
+      
+      // X-axis labels
+      ctx.textAlign = 'center';
+      const labelStep = Math.max(1, Math.floor(pnlData.length / 6));
+      for (let i = 0; i < pnlData.length; i += labelStep) {
+        const x = chartX + (i * chartWidth) / Math.max(pnlData.length - 1, 1);
+        ctx.fillText(pnlData[i].month, x, chartY + chartHeight + 20);
+      }
+      
+      // Axis labels
+      ctx.fillStyle = '#374151';
+      ctx.font = 'bold 12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Time Period', canvas.width / 2, canvas.height - 10);
+      
+      ctx.save();
+      ctx.translate(20, canvas.height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('Delta P&L', 0, 0);
+      ctx.restore();
+      
+      // Legend
+      ctx.fillStyle = '#8884d8';
+      ctx.beginPath();
+      ctx.arc(canvas.width - 100, 25, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#374151';
+      ctx.font = '11px Arial';
+      ctx.textAlign = 'left';
+      ctx.fillText('Delta P&L', canvas.width - 90, 29);
+    }
+
+    const imgData = canvas.toDataURL('image/png');
+    const imgWidth = pageWidth - (2 * contentPadding);
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    pdf.addImage(imgData, 'PNG', contentPadding, yOffset, imgWidth, imgHeight);
+    return yOffset + imgHeight + 10;
+  };
+
+  // Fonction helper pour générer un graphique FX Hedging en Canvas
+  const generateFXHedgingChartCanvas = async (pdf: any, strategy: any[], spotPrice: number, yOffset: number, pageWidth: number, contentPadding: number): Promise<number> => {
+    const hedgingData = generateFXHedgingData(strategy, spotPrice, false);
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+    
+    if (ctx && hedgingData.length > 0) {
+      // Background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Border
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, canvas.width, canvas.height);
+      
+      // Title
+      ctx.fillStyle = '#1f2937';
+      ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('FX Hedging Profile', canvas.width / 2, 30);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = '#6b7280';
+      ctx.fillText('Hedged vs Unhedged Rates Across Market Scenarios', canvas.width / 2, 50);
+      
+      // Chart area
+      const chartX = 70;
+      const chartY = 80;
+      const chartWidth = canvas.width - 140;
+      const chartHeight = canvas.height - 140;
+      
+      // Calculate scales
+      const minSpot = Math.min(...hedgingData.map(d => d.spot));
+      const maxSpot = Math.max(...hedgingData.map(d => d.spot));
+      const minRate = Math.min(...hedgingData.map(d => Math.min(d.unhedged, d.hedged)));
+      const maxRate = Math.max(...hedgingData.map(d => Math.max(d.unhedged, d.hedged)));
+      const rateRange = maxRate - minRate || 1;
+      
+      const xScale = chartWidth / (maxSpot - minSpot);
+      const yScale = chartHeight / rateRange;
+      
+      // Grid
+      ctx.strokeStyle = '#f3f4f6';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 5; i++) {
+        const y = chartY + (i * chartHeight) / 5;
+        ctx.beginPath();
+        ctx.moveTo(chartX, y);
+        ctx.lineTo(chartX + chartWidth, y);
+        ctx.stroke();
+      }
+      for (let i = 0; i <= 10; i++) {
+        const x = chartX + (i * chartWidth) / 10;
+        ctx.beginPath();
+        ctx.moveTo(x, chartY);
+        ctx.lineTo(x, chartY + chartHeight);
+        ctx.stroke();
+      }
+      
+      // Current spot line
+      const currentSpotX = chartX + ((spotPrice - minSpot) * xScale);
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(currentSpotX, chartY);
+      ctx.lineTo(currentSpotX, chartY + chartHeight);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      
+      // Current spot label
+      ctx.fillStyle = '#10b981';
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Current: ${spotPrice.toFixed(4)}`, currentSpotX, chartY - 5);
+      
+      // Unhedged line (dashed gray)
+      ctx.strokeStyle = '#9ca3af';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      
+      hedgingData.forEach((point, index) => {
+        const x = chartX + ((point.spot - minSpot) * xScale);
+        const y = chartY + chartHeight - ((point.unhedged - minRate) * yScale);
+        
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      
+      // Hedged line (solid blue)
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      
+      hedgingData.forEach((point, index) => {
+        const x = chartX + ((point.spot - minSpot) * xScale);
+        const y = chartY + chartHeight - ((point.hedged - minRate) * yScale);
+        
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+      
+      // Y-axis labels
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '10px Arial';
+      ctx.textAlign = 'right';
+      for (let i = 0; i <= 5; i++) {
+        const value = maxRate - (i * rateRange) / 5;
+        const y = chartY + (i * chartHeight) / 5;
+        ctx.fillText(value.toFixed(4), chartX - 10, y + 4);
+      }
+      
+      // X-axis labels
+      ctx.textAlign = 'center';
+      for (let i = 0; i <= 5; i++) {
+        const value = minSpot + (i * (maxSpot - minSpot)) / 5;
+        const x = chartX + (i * chartWidth) / 5;
+        ctx.fillText(value.toFixed(4), x, chartY + chartHeight + 20);
+      }
+      
+      // Legend box
+      const legendX = canvas.width - 180;
+      const legendY = chartY + 10;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1;
+      ctx.fillRect(legendX, legendY, 160, 80);
+      ctx.strokeRect(legendX, legendY, 160, 80);
+      
+      // Legend items
+      ctx.fillStyle = '#374151';
+      ctx.font = '11px Arial';
+      ctx.textAlign = 'left';
+      
+      // Unhedged
+      ctx.strokeStyle = '#9ca3af';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(legendX + 10, legendY + 25);
+      ctx.lineTo(legendX + 35, legendY + 25);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText('Unhedged Rate', legendX + 45, legendY + 29);
+      
+      // Hedged
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(legendX + 10, legendY + 45);
+      ctx.lineTo(legendX + 35, legendY + 45);
+      ctx.stroke();
+      ctx.fillText('Hedged Rate', legendX + 45, legendY + 49);
+      
+      // Current spot
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(legendX + 10, legendY + 65);
+      ctx.lineTo(legendX + 35, legendY + 65);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText('Current Spot', legendX + 45, legendY + 69);
+      
+      // Axis labels
+      ctx.fillStyle = '#374151';
+      ctx.font = 'bold 12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('FX Rate', canvas.width / 2, canvas.height - 10);
+      
+      ctx.save();
+      ctx.translate(20, canvas.height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('Effective Rate', 0, 0);
+      ctx.restore();
+    }
+
+    const imgData = canvas.toDataURL('image/png');
+    const imgWidth = pageWidth - (2 * contentPadding);
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+    pdf.addImage(imgData, 'PNG', contentPadding, yOffset, imgWidth, imgHeight);
+    return yOffset + imgHeight + 10;
+  };
+
   // Fonction pour exporter en PDF - Version améliorée et professionnelle
   const exportToPdf = async (report: any) => {
     if (report.type === 'scenario') {
@@ -622,29 +1019,20 @@ const Reports = () => {
         // Titre principal du rapport
         pdf.setFont('helvetica', 'bold');
         pdf.setTextColor(0);
-        pdf.setFontSize(20);
-        pdf.text(report.name, contentPadding, yOffset);
+        pdf.setFontSize(PDF_CONFIG.FONT_SIZES.TITLE);
+        pdf.text(report.name, PDF_CONFIG.CONTENT_PADDING, yOffset);
         yOffset += 8;
 
         // Sous-titre avec métadonnées
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(12);
-        pdf.setTextColor(100, 100, 100);
         const scenarioType = getScenarioTypeName(report);
-        pdf.text(`Scenario Type: ${scenarioType}`, contentPadding, yOffset);
-        yOffset += 5;
-        pdf.text(`Generated: ${new Date(report.timestamp).toLocaleString()}`, contentPadding, yOffset);
-        yOffset += 5;
-        pdf.text(`Report ID: ${report.id}`, contentPadding, yOffset);
+        yOffset = addBodyText(pdf, yOffset, `Scenario Type: ${scenarioType}`, { fontSize: PDF_CONFIG.FONT_SIZES.SUBTITLE, color: [100, 100, 100] });
+        yOffset = addBodyText(pdf, yOffset, `Generated: ${new Date(report.timestamp).toLocaleString()}`, { fontSize: PDF_CONFIG.FONT_SIZES.SUBTITLE, color: [100, 100, 100] });
+        yOffset = addBodyText(pdf, yOffset, `Report ID: ${report.id}`, { fontSize: PDF_CONFIG.FONT_SIZES.SUBTITLE, color: [100, 100, 100] });
         yOffset += 15;
 
         // Table des matières
         checkPageBreak(30);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setTextColor(0);
-        pdf.setFontSize(14);
-        pdf.text('TABLE OF CONTENTS', contentPadding, yOffset);
-        yOffset += 8;
+        yOffset = addSectionTitle(pdf, yOffset, 'TABLE OF CONTENTS');
 
         const tocItems = [
           '1. Executive Summary',
@@ -657,23 +1045,19 @@ const Reports = () => {
         ];
 
         pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(10);
-        tocItems.forEach((item, index) => {
-          pdf.text(item, contentPadding + 5, yOffset);
+        pdf.setFontSize(PDF_CONFIG.FONT_SIZES.BODY);
+        tocItems.forEach((item) => {
+          pdf.text(item, PDF_CONFIG.CONTENT_PADDING + 5, yOffset);
           yOffset += 4;
         });
         yOffset += 10;
 
         // 1. Executive Summary
         checkPageBreak(40);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(14);
-        pdf.setTextColor(0);
-        pdf.text('1. EXECUTIVE SUMMARY', contentPadding, yOffset);
-        yOffset += 8;
+        yOffset = addSectionTitle(pdf, yOffset, '1. EXECUTIVE SUMMARY');
 
         pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(10);
+        pdf.setFontSize(PDF_CONFIG.FONT_SIZES.BODY);
         const totalPnL = report.results?.reduce((sum: number, r: any) => sum + r.deltaPnL, 0) || 0;
         const totalVolume = report.results?.reduce((sum: number, r: any) => sum + r.monthlyVolume, 0) || 0;
         const avgHedgedCost = report.results?.reduce((sum: number, r: any) => sum + r.hedgedCost, 0) / (report.results?.length || 1) || 0;
@@ -682,13 +1066,13 @@ const Reports = () => {
 
         const summaryText = [
           `This report presents a comprehensive analysis of the "${report.name}" hedging strategy.`,
-          `The strategy covers ${report.params.monthsToHedge} months with a total volume of ${totalVolume.toLocaleString()} units.`,
+          `The strategy covers ${report.params.monthsToHedge} months with a total volume of ${formatVolume(totalVolume)} units.`,
           `Key performance metrics:`,
-          `• Total P&L: ${totalPnL.toFixed(2)}`,
-          `• Average Hedged Cost: ${avgHedgedCost.toFixed(2)}`,
-          `• Average Unhedged Cost: ${avgUnhedgedCost.toFixed(2)}`,
-          `• Cost Reduction: ${costReduction.toFixed(2)}%`,
-          `• Strategy Components: ${report.strategy?.length || 0} instruments`
+          `• Total P&L: ${formatCurrency(totalPnL)}`,
+          `• Average Hedged Cost: ${formatCurrency(avgHedgedCost)}`,
+          `• Average Unhedged Cost: ${formatCurrency(avgUnhedgedCost)}`,
+          `• Cost Reduction: ${formatPercentage(costReduction)}`,
+          `• Strategy Components: ${report.strategy?.length || 0} instrument${(report.strategy?.length || 0) !== 1 ? 's' : ''}`
         ];
 
         summaryText.forEach(line => {
@@ -704,6 +1088,9 @@ const Reports = () => {
         pdf.text('2. STRATEGY PARAMETERS', contentPadding, yOffset);
         yOffset += 8;
 
+        // Calculer la largeur disponible pour les tableaux
+        const availableWidth = pageWidth - (2 * contentPadding);
+        
         const tableOptions = {
           headStyles: { 
             fillColor: [30, 64, 175],
@@ -726,7 +1113,7 @@ const Reports = () => {
             top: 2,
             bottom: 2
           },
-          tableWidth: 'auto'
+          tableWidth: availableWidth
         };
 
         const basicParams = [
@@ -739,14 +1126,14 @@ const Reports = () => {
 
         if (report.params.baseVolume && report.params.quoteVolume) {
           basicParams.push(
-            [`Base Volume (${report.params.currencyPair?.base || 'BASE'})`, report.params.baseVolume.toLocaleString(), 'Base currency volume'],
-            [`Quote Volume (${report.params.currencyPair?.quote || 'QUOTE'})`, Math.round(report.params.quoteVolume).toLocaleString(), 'Quote currency volume'],
-            ['Spot Price', report.params.spotPrice?.toFixed(4) || 'N/A', 'Current spot exchange rate']
+            [`Base Volume (${report.params.currencyPair?.base || 'BASE'})`, formatNumber(report.params.baseVolume, 0), 'Base currency volume'],
+            [`Quote Volume (${report.params.currencyPair?.quote || 'QUOTE'})`, formatNumber(Math.round(report.params.quoteVolume), 0), 'Quote currency volume'],
+            ['Spot Price', report.params.spotPrice ? formatNumber(report.params.spotPrice, 4) : 'N/A', 'Current spot exchange rate']
           );
         } else {
           basicParams.push(
-            ['Total Volume', report.params.totalVolume?.toLocaleString() || 'N/A', 'Total hedging volume'],
-            ['Spot Price', report.params.spotPrice?.toFixed(4) || 'N/A', 'Current spot exchange rate']
+            ['Total Volume', report.params.totalVolume ? formatNumber(report.params.totalVolume, 0) : 'N/A', 'Total hedging volume'],
+            ['Spot Price', report.params.spotPrice ? formatNumber(report.params.spotPrice, 4) : 'N/A', 'Current spot exchange rate']
           );
         }
 
@@ -770,17 +1157,26 @@ const Reports = () => {
           const strategyData = report.strategy.map((comp: any, index: number) => [
             `Component ${index + 1}`,
             comp.type.toUpperCase(),
-            comp.strikeType === 'percent' ? `${comp.strike}%` : comp.strike.toString(),
-            `${comp.volatility}%`,
-            `${comp.quantity}%`,
-            comp.barrier ? (comp.barrierType === 'percent' ? `${comp.barrier}%` : comp.barrier.toString()) : 'N/A'
+            comp.strikeType === 'percent' ? formatPercentage(comp.strike, 1) : formatNumber(comp.strike, 4),
+            formatPercentage(comp.volatility, 1),
+            formatPercentage(comp.quantity, 1),
+            comp.barrier ? (comp.barrierType === 'percent' ? formatPercentage(comp.barrier, 1) : formatNumber(comp.barrier, 4)) : 'N/A'
           ]);
 
           pdf.autoTable({
-            ...tableOptions,
+            ...TABLE_OPTIONS.standard,
             startY: yOffset,
             head: [['Component', 'Type', 'Strike', 'Volatility', 'Quantity', 'Barrier']],
-            body: strategyData
+            body: strategyData,
+            tableWidth: availableWidth,
+            columnStyles: {
+              0: { cellWidth: availableWidth * 0.15 },
+              1: { cellWidth: availableWidth * 0.12 },
+              2: { cellWidth: availableWidth * 0.15 },
+              3: { cellWidth: availableWidth * 0.15 },
+              4: { cellWidth: availableWidth * 0.15 },
+              5: { cellWidth: availableWidth * 0.18 }
+            }
           });
 
           yOffset = (pdf as any).lastAutoTable.finalY + 10;
@@ -789,29 +1185,16 @@ const Reports = () => {
         // 4. Risk Analysis (Stress Test)
         if (report.stressTest) {
           checkPageBreak(30);
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(14);
-          pdf.text('4. RISK ANALYSIS', contentPadding, yOffset);
-          yOffset += 8;
+          yOffset = addSectionTitle(pdf, yOffset, '4. RISK ANALYSIS');
 
-          const stressParams = [
-            ['Parameter', 'Value'],
-            ['Scenario Name', report.stressTest.name || 'Custom Scenario'],
-            ['Volatility', `${(report.stressTest.volatility * 100).toFixed(1)}%`],
-            ['Drift', `${(report.stressTest.drift * 100).toFixed(1)}%`],
-            ['Price Shock', `${(report.stressTest.priceShock * 100).toFixed(1)}%`]
-          ];
-
-          if (report.stressTest.forwardBasis) {
-            stressParams.push(['Forward Basis', `${(report.stressTest.forwardBasis * 100).toFixed(1)}%`]);
-          }
+          const stressParams = formatStressTestParams(report.stressTest);
 
           pdf.autoTable({
-            ...tableOptions,
+            ...TABLE_OPTIONS.standard,
             startY: yOffset,
             head: [stressParams[0]],
             body: stressParams.slice(1),
-            tableWidth: pageWidth / 2 - contentPadding
+            tableWidth: availableWidth / 2
           });
 
           yOffset = (pdf as any).lastAutoTable.finalY + 10;
@@ -829,165 +1212,68 @@ const Reports = () => {
           const yearlyResults = calculateYearlyResults(report.results);
           const yearlyData = Object.entries(yearlyResults).map(([year, data]) => [
             year,
-            data.volume.toLocaleString(),
-            data.strategyPremium.toFixed(2),
-            data.hedgedCost.toFixed(2),
-            data.unhedgedCost.toFixed(2),
-            data.deltaPnL.toFixed(2),
-            ((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2) + '%'
+            formatNumber(data.volume, 0),
+            formatCurrency(data.strategyPremium),
+            formatCurrency(data.hedgedCost),
+            formatCurrency(data.unhedgedCost),
+            formatCurrency(data.deltaPnL),
+            formatPercentage((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100)
           ]);
 
           pdf.autoTable({
-            ...tableOptions,
+            ...TABLE_OPTIONS.standard,
             startY: yOffset,
             head: [['Year', 'Volume', 'Strategy Premium', 'Hedged Cost', 'Unhedged Cost', 'Delta P&L', 'Cost Reduction %']],
-            body: yearlyData
+            body: yearlyData,
+            tableWidth: availableWidth,
+            columnStyles: {
+              0: { cellWidth: availableWidth * 0.08, halign: 'center' },
+              1: { cellWidth: availableWidth * 0.15, halign: 'right' },
+              2: { cellWidth: availableWidth * 0.15, halign: 'right' },
+              3: { cellWidth: availableWidth * 0.15, halign: 'right' },
+              4: { cellWidth: availableWidth * 0.15, halign: 'right' },
+              5: { cellWidth: availableWidth * 0.15, halign: 'right' },
+              6: { cellWidth: availableWidth * 0.12, halign: 'right' }
+            }
           });
 
           yOffset = (pdf as any).lastAutoTable.finalY + 10;
 
-          // Graphique P&L Evolution
+          // Graphique P&L Evolution - Essayer de capturer depuis Strategy Builder
           checkPageBreak(80);
           pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(12);
-          pdf.text('P&L Evolution Chart', contentPadding, yOffset);
+          pdf.setFontSize(PDF_CONFIG.FONT_SIZES.SUBTITLE);
+          pdf.text('P&L Evolution Chart', PDF_CONFIG.CONTENT_PADDING, yOffset);
           yOffset += 6;
 
           try {
-            // Créer un tableau simple pour le P&L
-            const pnlData = report.results.map((result: any, index: number) => ({
-              month: new Date(result.date).toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-              pnl: result.deltaPnL
-            }));
-
-            // Créer un graphique simple avec Canvas
-            const canvas = document.createElement('canvas');
-            canvas.width = 800;
-            canvas.height = 400;
-            const ctx = canvas.getContext('2d');
+            // Essayer de capturer le graphique depuis Strategy Builder
+            const pnlChartElement = document.getElementById('strategy-builder-pnl-chart');
             
-            if (ctx) {
-              // Background
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
-              
-              // Border
-              ctx.strokeStyle = '#e5e7eb';
-              ctx.lineWidth = 1;
-              ctx.strokeRect(0, 0, canvas.width, canvas.height);
-              
-              // Title
-              ctx.fillStyle = '#1f2937';
-              ctx.font = 'bold 16px Arial';
-              ctx.textAlign = 'center';
-              ctx.fillText('P&L Evolution Over Time', canvas.width / 2, 30);
-              ctx.font = '12px Arial';
-              ctx.fillStyle = '#6b7280';
-              ctx.fillText('Monthly Delta P&L Performance', canvas.width / 2, 50);
-              
-              // Chart area
-              const chartX = 60;
-              const chartY = 80;
-              const chartWidth = canvas.width - 120;
-              const chartHeight = canvas.height - 120;
-              
-              // Grid
-              ctx.strokeStyle = '#f3f4f6';
-              ctx.lineWidth = 1;
-              for (let i = 0; i <= 5; i++) {
-                const y = chartY + (i * chartHeight) / 5;
-                ctx.beginPath();
-                ctx.moveTo(chartX, y);
-                ctx.lineTo(chartX + chartWidth, y);
-                ctx.stroke();
+            if (pnlChartElement) {
+              const result = await addElementAsImage(
+                pdf,
+                pnlChartElement,
+                PDF_CONFIG.CONTENT_PADDING,
+                yOffset,
+                { maxWidth: pageWidth - 2 * PDF_CONFIG.CONTENT_PADDING, quality: 'highQuality' }
+              );
+              if (result.success) {
+                yOffset = result.newY + 10;
+              } else {
+                // Fallback: Générer un graphique Canvas
+                yOffset = await generatePnLChartCanvas(pdf, report.results, yOffset, pageWidth, contentPadding);
               }
-              
-              // Y-axis
-              const pnlValues = pnlData.map(d => d.pnl);
-              const minPnL = Math.min(...pnlValues);
-              const maxPnL = Math.max(...pnlValues);
-              const range = maxPnL - minPnL || 1;
-              
-              // Zero line
-              if (minPnL <= 0 && maxPnL >= 0) {
-                const zeroY = chartY + chartHeight - ((0 - minPnL) / range) * chartHeight;
-                ctx.strokeStyle = '#ef4444';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([3, 3]);
-                ctx.beginPath();
-                ctx.moveTo(chartX, zeroY);
-                ctx.lineTo(chartX + chartWidth, zeroY);
-                ctx.stroke();
-                ctx.setLineDash([]);
-              }
-              
-              // P&L line
-              ctx.strokeStyle = '#3b82f6';
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              
-              pnlData.forEach((point, index) => {
-                const x = chartX + (index * chartWidth) / (pnlData.length - 1);
-                const y = chartY + chartHeight - ((point.pnl - minPnL) / range) * chartHeight;
-                
-                if (index === 0) {
-                  ctx.moveTo(x, y);
-                } else {
-                  ctx.lineTo(x, y);
-                }
-              });
-              ctx.stroke();
-              
-              // Y-axis labels
-              ctx.fillStyle = '#6b7280';
-              ctx.font = '10px Arial';
-              ctx.textAlign = 'right';
-              for (let i = 0; i <= 5; i++) {
-                const value = maxPnL - (i * range) / 5;
-                const y = chartY + (i * chartHeight) / 5;
-                ctx.fillText(value.toFixed(0), chartX - 10, y + 5);
-              }
-              
-              // X-axis labels
-              ctx.textAlign = 'center';
-              for (let i = 0; i <= 4; i++) {
-                const index = Math.floor((i * pnlData.length) / 4);
-                if (index < pnlData.length) {
-                  const x = chartX + (i * chartWidth) / 4;
-                  ctx.fillText(pnlData[index].month, x, chartY + chartHeight + 20);
-                }
-              }
-              
-              // Axis labels
-              ctx.fillStyle = '#374151';
-              ctx.font = 'bold 12px Arial';
-              ctx.textAlign = 'center';
-              ctx.fillText('Time Period', canvas.width / 2, canvas.height - 10);
-              
-              ctx.save();
-              ctx.translate(20, canvas.height / 2);
-              ctx.rotate(-Math.PI / 2);
-              ctx.fillText('Delta P&L', 0, 0);
-              ctx.restore();
+            } else {
+              // Fallback: Générer un graphique Canvas si Strategy Builder n'est pas ouvert
+              yOffset = await generatePnLChartCanvas(pdf, report.results, yOffset, pageWidth, contentPadding);
             }
-
-            const imgData = canvas.toDataURL('image/png');
-            const imgWidth = pageWidth - (2 * contentPadding);
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-            pdf.addImage(imgData, 'PNG', contentPadding, yOffset, imgWidth, imgHeight);
-            yOffset += imgHeight + 10;
-
           } catch (error) {
-            console.warn('Could not generate P&L chart:', error);
-            pdf.setFont('helvetica', 'italic');
-            pdf.setFontSize(10);
-            pdf.setTextColor(100, 100, 100);
-            pdf.text('P&L Chart could not be generated', contentPadding, yOffset);
-            yOffset += 10;
+            console.warn('Could not export P&L chart:', error);
+            yOffset = addBodyText(pdf, yOffset, 'P&L Evolution Chart could not be generated', { fontSize: PDF_CONFIG.FONT_SIZES.BODY, color: [100, 100, 100] });
           }
 
-          // Graphique FX Hedging Profile
+          // Graphique FX Hedging Profile - Essayer de capturer depuis Strategy Builder
           checkPageBreak(80);
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(12);
@@ -995,217 +1281,77 @@ const Reports = () => {
           yOffset += 6;
 
           try {
-            // Générer les données de hedging
-            const hedgingData = generateFXHedgingData(report.strategy, report.params.spotPrice, false);
+            // Essayer de capturer le graphique depuis Strategy Builder
+            const hedgingChartElement = document.getElementById('strategy-builder-fx-hedging-chart');
             
-            // Créer un graphique simple avec Canvas
-            const canvas = document.createElement('canvas');
-            canvas.width = 800;
-            canvas.height = 400;
-            const ctx = canvas.getContext('2d');
-            
-            if (ctx && hedgingData.length > 0) {
-              // Background
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
-              
-              // Border
-              ctx.strokeStyle = '#e5e7eb';
-              ctx.lineWidth = 1;
-              ctx.strokeRect(0, 0, canvas.width, canvas.height);
-              
-              // Title
-              ctx.fillStyle = '#1f2937';
-              ctx.font = 'bold 16px Arial';
-              ctx.textAlign = 'center';
-              ctx.fillText('FX Hedging Profile', canvas.width / 2, 30);
-              ctx.font = '12px Arial';
-              ctx.fillStyle = '#6b7280';
-              ctx.fillText('Hedged vs Unhedged Rates Across Market Scenarios', canvas.width / 2, 50);
-              
-              // Chart area
-              const chartX = 60;
-              const chartY = 80;
-              const chartWidth = canvas.width - 120;
-              const chartHeight = canvas.height - 120;
-              
-              // Calculate scales
-              const minSpot = Math.min(...hedgingData.map(d => d.spot));
-              const maxSpot = Math.max(...hedgingData.map(d => d.spot));
-              const minRate = Math.min(...hedgingData.map(d => Math.min(d.unhedged, d.hedged)));
-              const maxRate = Math.max(...hedgingData.map(d => Math.max(d.unhedged, d.hedged)));
-              
-              const xScale = chartWidth / (maxSpot - minSpot);
-              const yScale = chartHeight / (maxRate - minRate);
-              
-              // Grid
-              ctx.strokeStyle = '#f3f4f6';
-              ctx.lineWidth = 1;
-              for (let i = 0; i <= 5; i++) {
-                const y = chartY + (i * chartHeight) / 5;
-                ctx.beginPath();
-                ctx.moveTo(chartX, y);
-                ctx.lineTo(chartX + chartWidth, y);
-                ctx.stroke();
+            if (hedgingChartElement) {
+              const result = await addElementAsImage(
+                pdf,
+                hedgingChartElement,
+                PDF_CONFIG.CONTENT_PADDING,
+                yOffset,
+                { maxWidth: pageWidth - 2 * PDF_CONFIG.CONTENT_PADDING, quality: 'highQuality' }
+              );
+              if (result.success) {
+                yOffset = result.newY + 10;
+              } else {
+                // Fallback: Générer un graphique Canvas
+                yOffset = await generateFXHedgingChartCanvas(pdf, report.strategy, report.params.spotPrice, yOffset, pageWidth, contentPadding);
               }
-              for (let i = 0; i <= 10; i++) {
-                const x = chartX + (i * chartWidth) / 10;
-                ctx.beginPath();
-                ctx.moveTo(x, chartY);
-                ctx.lineTo(x, chartY + chartHeight);
-                ctx.stroke();
-              }
-              
-              // Current spot line
-              const currentSpotX = chartX + ((report.params.spotPrice - minSpot) * xScale);
-              ctx.strokeStyle = '#10b981';
-              ctx.lineWidth = 2;
-              ctx.setLineDash([5, 5]);
-              ctx.beginPath();
-              ctx.moveTo(currentSpotX, chartY);
-              ctx.lineTo(currentSpotX, chartY + chartHeight);
-              ctx.stroke();
-              ctx.setLineDash([]);
-              
-              // Unhedged line
-              ctx.strokeStyle = '#9ca3af';
-              ctx.lineWidth = 2;
-              ctx.setLineDash([4, 4]);
-              ctx.beginPath();
-              
-              hedgingData.forEach((point, index) => {
-                const x = chartX + ((point.spot - minSpot) * xScale);
-                const y = chartY + chartHeight - ((point.unhedged - minRate) * yScale);
-                
-                if (index === 0) {
-                  ctx.moveTo(x, y);
-                } else {
-                  ctx.lineTo(x, y);
-                }
-              });
-              ctx.stroke();
-              ctx.setLineDash([]);
-              
-              // Hedged line
-              ctx.strokeStyle = '#3b82f6';
-              ctx.lineWidth = 3;
-              ctx.beginPath();
-              
-              hedgingData.forEach((point, index) => {
-                const x = chartX + ((point.spot - minSpot) * xScale);
-                const y = chartY + chartHeight - ((point.hedged - minRate) * yScale);
-                
-                if (index === 0) {
-                  ctx.moveTo(x, y);
-                } else {
-                  ctx.lineTo(x, y);
-                }
-              });
-              ctx.stroke();
-              
-              // Y-axis labels
-              ctx.fillStyle = '#6b7280';
-              ctx.font = '10px Arial';
-              ctx.textAlign = 'right';
-              for (let i = 0; i <= 5; i++) {
-                const value = minRate + (i * (maxRate - minRate)) / 5;
-                const y = chartY + chartHeight - (i * chartHeight) / 5;
-                ctx.fillText(value.toFixed(3), chartX - 10, y + 5);
-              }
-              
-              // X-axis labels
-              ctx.textAlign = 'center';
-              for (let i = 0; i <= 5; i++) {
-                const value = minSpot + (i * (maxSpot - minSpot)) / 5;
-                const x = chartX + (i * chartWidth) / 5;
-                ctx.fillText(value.toFixed(3), x, chartY + chartHeight + 20);
-              }
-              
-              // Legend
-              const legendX = canvas.width - 200;
-              const legendY = chartY + 10;
-              ctx.fillStyle = 'white';
-              ctx.strokeStyle = '#e5e7eb';
-              ctx.lineWidth = 1;
-              ctx.fillRect(legendX, legendY, 180, 60);
-              ctx.strokeRect(legendX, legendY, 180, 60);
-              
-              // Legend items
-              ctx.fillStyle = '#374151';
-              ctx.font = '11px Arial';
-              ctx.textAlign = 'left';
-              
-              // Unhedged
-              ctx.strokeStyle = '#9ca3af';
-              ctx.lineWidth = 2;
-              ctx.setLineDash([4, 4]);
-              ctx.beginPath();
-              ctx.moveTo(legendX + 10, legendY + 25);
-              ctx.lineTo(legendX + 30, legendY + 25);
-              ctx.stroke();
-              ctx.setLineDash([]);
-              ctx.fillText('Unhedged Rate', legendX + 35, legendY + 30);
-              
-              // Hedged
-              ctx.strokeStyle = '#3b82f6';
-              ctx.lineWidth = 3;
-              ctx.beginPath();
-              ctx.moveTo(legendX + 10, legendY + 45);
-              ctx.lineTo(legendX + 30, legendY + 45);
-              ctx.stroke();
-              ctx.fillText('Hedged Rate', legendX + 35, legendY + 50);
-              
-              // Axis labels
-              ctx.fillStyle = '#374151';
-              ctx.font = 'bold 12px Arial';
-              ctx.textAlign = 'center';
-              ctx.fillText('FX Rate', canvas.width / 2, canvas.height - 10);
-              
-              ctx.save();
-              ctx.translate(20, canvas.height / 2);
-              ctx.rotate(-Math.PI / 2);
-              ctx.fillText('Effective Rate', 0, 0);
-              ctx.restore();
+            } else {
+              // Fallback: Générer un graphique Canvas si Strategy Builder n'est pas ouvert
+              yOffset = await generateFXHedgingChartCanvas(pdf, report.strategy, report.params.spotPrice, yOffset, pageWidth, contentPadding);
             }
-
-            const imgData = canvas.toDataURL('image/png');
-            const imgWidth = pageWidth - (2 * contentPadding);
-            const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-            pdf.addImage(imgData, 'PNG', contentPadding, yOffset, imgWidth, imgHeight);
-            yOffset += imgHeight + 10;
-
           } catch (error) {
-            console.warn('Could not generate FX Hedging chart:', error);
-            pdf.setFont('helvetica', 'italic');
-            pdf.setFontSize(10);
-            pdf.setTextColor(100, 100, 100);
-            pdf.text('FX Hedging Chart could not be generated', contentPadding, yOffset);
-            yOffset += 10;
+            console.warn('Could not export FX Hedging chart:', error);
+            yOffset = addBodyText(pdf, yOffset, 'FX Hedging Chart could not be generated', { fontSize: PDF_CONFIG.FONT_SIZES.BODY, color: [100, 100, 100] });
           }
 
-          // Tableau détaillé (premiers 15 résultats)
+          // Tableau détaillé (tous les résultats)
           checkPageBreak(50);
           pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(12);
-          pdf.text('Monthly Detailed Results (First 15 periods)', contentPadding, yOffset);
+          pdf.setFontSize(PDF_CONFIG.FONT_SIZES.SUBTITLE);
+          pdf.text(`Monthly Detailed Results (${report.results.length} periods)`, PDF_CONFIG.CONTENT_PADDING, yOffset);
           yOffset += 6;
 
-          const detailedData = report.results.slice(0, 15).map((result: any) => [
-            new Date(result.date).toLocaleDateString(),
-            result.monthlyVolume.toLocaleString(),
-            result.strategyPrice.toFixed(4),
-            result.hedgedCost.toFixed(2),
-            result.unhedgedCost.toFixed(2),
-            result.deltaPnL.toFixed(2)
+          // Inclure toutes les colonnes disponibles
+          const detailedData = report.results.map((result: any) => [
+            new Date(result.date).toLocaleDateString('en-US', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+            formatNumber(result.monthlyVolume, 0),
+            result.forward ? formatNumber(result.forward, 4) : 'N/A',
+            result.realPrice ? formatNumber(result.realPrice, 4) : 'N/A',
+            formatNumber(result.strategyPrice, 4),
+            result.totalPayoff !== undefined ? formatCurrency(result.totalPayoff) : 'N/A',
+            formatCurrency(result.hedgedCost),
+            formatCurrency(result.unhedgedCost),
+            formatCurrency(result.deltaPnL)
           ]);
 
+          // Pour le tableau détaillé avec 9 colonnes, utiliser des largeurs proportionnelles
           pdf.autoTable({
             ...tableOptions,
             startY: yOffset,
-            head: [['Date', 'Volume', 'Strategy Price', 'Hedged Cost', 'Unhedged Cost', 'Delta P&L']],
+            head: [['Date', 'Volume', 'Forward', 'Real Price', 'Strategy Price', 'Payoff', 'Hedged Cost', 'Unhedged Cost', 'Delta P&L']],
             body: detailedData,
-            styles: { fontSize: 8 }
+            tableWidth: availableWidth,
+            headStyles: { ...tableOptions.headStyles, fontSize: 8 },
+            bodyStyles: { ...tableOptions.bodyStyles, fontSize: 7 },
+            columnStyles: {
+              0: { cellWidth: availableWidth * 0.10, halign: 'center' },
+              1: { cellWidth: availableWidth * 0.11, halign: 'right' },
+              2: { cellWidth: availableWidth * 0.10, halign: 'right' },
+              3: { cellWidth: availableWidth * 0.10, halign: 'right' },
+              4: { cellWidth: availableWidth * 0.11, halign: 'right' },
+              5: { cellWidth: availableWidth * 0.11, halign: 'right' },
+              6: { cellWidth: availableWidth * 0.12, halign: 'right' },
+              7: { cellWidth: availableWidth * 0.12, halign: 'right' },
+              8: { cellWidth: availableWidth * 0.11, halign: 'right' }
+            },
+            styles: {
+              fontSize: 7,
+              cellPadding: 2,
+              overflow: 'linebreak'
+            }
           });
 
           yOffset = (pdf as any).lastAutoTable.finalY + 10;
@@ -1225,46 +1371,62 @@ const Reports = () => {
 
         const metricsData = [
           ['Metric', 'Value', 'Description'],
-          ['Total Hedged Cost', totalHedgedCost.toFixed(2), 'Total cost with hedging strategy'],
-          ['Total Unhedged Cost', totalUnhedgedCost.toFixed(2), 'Total cost without hedging'],
-          ['Total P&L', totalPnL.toFixed(2), 'Net profit/loss from hedging'],
-          ['Total Strategy Premium', totalStrategyPremium.toFixed(2), 'Total premium paid for strategy'],
-          ['Strike Target', strikeTarget.toFixed(4), 'Effective strike rate achieved'],
-          ['Cost Reduction %', costReduction.toFixed(2) + '%', 'Percentage cost reduction achieved']
+          ['Total Hedged Cost', formatCurrency(totalHedgedCost), 'Total cost with hedging strategy'],
+          ['Total Unhedged Cost', formatCurrency(totalUnhedgedCost), 'Total cost without hedging'],
+          ['Total P&L', formatCurrency(totalPnL), 'Net profit/loss from hedging'],
+          ['Total Strategy Premium', formatCurrency(totalStrategyPremium), 'Total premium paid for strategy'],
+          ['Strike Target', formatNumber(strikeTarget, 4), 'Effective strike rate achieved'],
+          ['Cost Reduction %', formatPercentage(costReduction), 'Percentage cost reduction achieved']
         ];
 
         pdf.autoTable({
-          ...tableOptions,
+          ...TABLE_OPTIONS.standard,
           startY: yOffset,
           head: [metricsData[0]],
-          body: metricsData.slice(1)
+          body: metricsData.slice(1),
+          tableWidth: availableWidth
         });
 
         yOffset = (pdf as any).lastAutoTable.finalY + 10;
 
         // 7. Summary Statistics
         checkPageBreak(30);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(14);
-        pdf.text('7. SUMMARY STATISTICS', contentPadding, yOffset);
-        yOffset += 8;
+        yOffset = addSectionTitle(pdf, yOffset, '7. SUMMARY STATISTICS');
+
+        const avgStrategyPrice = report.results?.length > 0 
+          ? report.results.reduce((sum: number, r: any) => sum + r.strategyPrice, 0) / report.results.length 
+          : 0;
+        const bestMonthPnL = report.results?.length > 0 
+          ? Math.max(...report.results.map((r: any) => r.deltaPnL)) 
+          : 0;
+        const worstMonthPnL = report.results?.length > 0 
+          ? Math.min(...report.results.map((r: any) => r.deltaPnL)) 
+          : 0;
+        const pnlVolatility = report.results?.length > 1 
+          ? calculateVolatility(report.results.map((r: any) => r.deltaPnL)) 
+          : 0;
 
         const summaryData = [
           ['Statistic', 'Value'],
-          ['Total Periods', report.results?.length || 0],
-          ['Average Monthly Volume', totalVolume > 0 ? (totalVolume / (report.results?.length || 1)).toLocaleString() : 'N/A'],
-          ['Average Strategy Price', report.results?.length > 0 ? (report.results.reduce((sum: number, r: any) => sum + r.strategyPrice, 0) / report.results.length).toFixed(4) : 'N/A'],
-          ['Best Month P&L', report.results?.length > 0 ? Math.max(...report.results.map((r: any) => r.deltaPnL)).toFixed(2) : 'N/A'],
-          ['Worst Month P&L', report.results?.length > 0 ? Math.min(...report.results.map((r: any) => r.deltaPnL)).toFixed(2) : 'N/A'],
-          ['Volatility of P&L', report.results?.length > 1 ? calculateVolatility(report.results.map((r: any) => r.deltaPnL)).toFixed(2) : 'N/A']
+          ['Total Periods', (report.results?.length || 0).toString()],
+          ['Average Monthly Volume', totalVolume > 0 ? formatNumber(totalVolume / (report.results?.length || 1), 0) : 'N/A'],
+          ['Average Strategy Price', report.results?.length > 0 ? formatNumber(avgStrategyPrice, 4) : 'N/A'],
+          ['Best Month P&L', report.results?.length > 0 ? formatCurrency(bestMonthPnL) : 'N/A'],
+          ['Worst Month P&L', report.results?.length > 0 ? formatCurrency(worstMonthPnL) : 'N/A'],
+          ['Volatility of P&L', report.results?.length > 1 ? formatCurrency(pnlVolatility) : 'N/A']
         ];
 
+        const availableWidthSummary = pageWidth - (2 * contentPadding);
         pdf.autoTable({
           ...tableOptions,
           startY: yOffset,
           head: [summaryData[0]],
           body: summaryData.slice(1),
-          tableWidth: pageWidth / 2 - contentPadding
+          tableWidth: availableWidthSummary / 2,
+          columnStyles: {
+            0: { cellWidth: (availableWidthSummary / 2) * 0.55, halign: 'left', fontStyle: 'bold' },
+            1: { cellWidth: (availableWidthSummary / 2) * 0.45, halign: 'right' }
+          }
         });
 
         // Footer avec informations de page
@@ -1284,34 +1446,13 @@ const Reports = () => {
       tempExport();
     } else if (report.type === 'risk-matrix') {
       // Export amélioré pour les matrices de risque
-      const pdf = new jsPDF('landscape', 'mm', 'a4');
-      
+      const pdf = createPdfDocument({ orientation: 'l' });
       const pageWidth = pdf.internal.pageSize.width;
-      const pageHeight = pdf.internal.pageSize.height;
-      const contentPadding = 15;
-      let yOffset = contentPadding;
-
-      // En-tête
-      pdf.setFillColor(30, 64, 175);
-      pdf.rect(0, 0, pageWidth, 25, 'F');
-      
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(255);
-      pdf.setFontSize(16);
-      pdf.text('RISK MATRIX ANALYSIS', contentPadding, 12);
-      
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      pdf.text(`Matrix: ${report.name}`, contentPadding, 18);
-      
-      yOffset = 35;
+      const contentPadding = PDF_CONFIG.CONTENT_PADDING;
+      let yOffset = addPageHeader(pdf, 'RISK MATRIX ANALYSIS', `Matrix: ${report.name}`);
 
       // Informations générales
-      pdf.setTextColor(0);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(14);
-      pdf.text('MATRIX OVERVIEW', contentPadding, yOffset);
-      yOffset += 10;
+      yOffset = addSectionTitle(pdf, yOffset, 'MATRIX OVERVIEW');
 
       const overviewData = [
         ['Parameter', 'Value'],
@@ -1321,13 +1462,18 @@ const Reports = () => {
         ['Created', new Date(report.timestamp).toLocaleString()]
       ];
 
+      const availableWidthRisk = pageWidth - (2 * contentPadding);
       pdf.autoTable({
         startY: yOffset,
         head: [overviewData[0]],
         body: overviewData.slice(1),
         headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
         bodyStyles: { fontSize: 10 },
-        tableWidth: pageWidth / 2 - contentPadding
+        tableWidth: availableWidthRisk / 2,
+        columnStyles: {
+          0: { cellWidth: (availableWidthRisk / 2) * 0.55, halign: 'left', fontStyle: 'bold' },
+          1: { cellWidth: (availableWidthRisk / 2) * 0.45, halign: 'left' }
+        }
       });
 
       yOffset = (pdf as any).lastAutoTable.finalY + 10;
@@ -1347,44 +1493,31 @@ const Reports = () => {
         ]);
 
         pdf.autoTable({
+          ...TABLE_OPTIONS.standard,
           startY: yOffset,
           head: [['ID', 'Name', 'Components', 'Coverage Ratio']],
           body: strategiesData,
-          headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
-          bodyStyles: { fontSize: 9 }
+          tableWidth: availableWidthRisk,
+          columnStyles: {
+            0: { cellWidth: availableWidthRisk * 0.10, halign: 'center' },
+            1: { cellWidth: availableWidthRisk * 0.40, halign: 'left' },
+            2: { cellWidth: availableWidthRisk * 0.20, halign: 'center' },
+            3: { cellWidth: availableWidthRisk * 0.20, halign: 'right' }
+          }
         });
       }
 
       pdf.save(`${report.name.replace(/[^a-z0-9]/gi, '_')}_risk_matrix.pdf`);
     } else if (report.type === 'backtest') {
       // Export amélioré pour les backtests
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      
+      const pdf = createPdfDocument();
       const pageWidth = pdf.internal.pageSize.width;
-      const contentPadding = 15;
-      let yOffset = contentPadding;
-
-      // En-tête
-      pdf.setFillColor(30, 64, 175);
-      pdf.rect(0, 0, pageWidth, 25, 'F');
-      
-      pdf.setFont('helvetica', 'bold');
-      pdf.setTextColor(255);
-      pdf.setFontSize(16);
-      pdf.text('HISTORICAL BACKTEST REPORT', contentPadding, 12);
-      
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      pdf.text(`Backtest: ${report.name}`, contentPadding, 18);
-      
-      yOffset = 35;
+      const contentPaddingBacktest = PDF_CONFIG.CONTENT_PADDING;
+      const availableWidthBacktest = pageWidth - (2 * contentPaddingBacktest);
+      let yOffset = addPageHeader(pdf, 'HISTORICAL BACKTEST REPORT', `Backtest: ${report.name}`);
 
       // Résumé du backtest
-      pdf.setTextColor(0);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(14);
-      pdf.text('BACKTEST SUMMARY', contentPadding, yOffset);
-      yOffset += 10;
+      yOffset = addSectionTitle(pdf, yOffset, 'BACKTEST SUMMARY');
 
       const backtestData = [
         ['Parameter', 'Value'],
@@ -1399,6 +1532,11 @@ const Reports = () => {
         startY: yOffset,
         head: [backtestData[0]],
         body: backtestData.slice(1),
+        tableWidth: availableWidthBacktest / 2,
+        columnStyles: {
+          0: { cellWidth: (availableWidthBacktest / 2) * 0.55, halign: 'left', fontStyle: 'bold' },
+          1: { cellWidth: (availableWidthBacktest / 2) * 0.45, halign: 'left' }
+        },
         headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
         bodyStyles: { fontSize: 10 }
       });
@@ -1407,13 +1545,7 @@ const Reports = () => {
     }
   };
 
-  // Fonction utilitaire pour calculer la volatilité
-  const calculateVolatility = (values: number[]): number => {
-    if (values.length < 2) return 0;
-    const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
-    const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (values.length - 1);
-    return Math.sqrt(variance);
-  };
+  // calculateVolatility is now imported from PdfService
 
 
   return (
