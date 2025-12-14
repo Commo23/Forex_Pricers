@@ -23,7 +23,9 @@ import {
   Activity,
   XCircle,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  Upload,
+  ArrowRight
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { SavedScenario } from '@/types/Scenario';
@@ -327,6 +329,77 @@ const Reports = () => {
   const exportReport = (report: any) => {
     // Utiliser la fonction PDF pour l'export
     exportToPdf(report);
+  };
+
+  // Fonction pour charger un scénario vers Strategy Builder
+  const loadScenarioToBuilder = (scenario: SavedScenario) => {
+    try {
+      // Sauvegarder le scénario dans calculatorState pour Strategy Builder
+      localStorage.setItem('calculatorState', JSON.stringify({
+        params: scenario.params,
+        strategy: scenario.strategy,
+        results: scenario.results,
+        payoffData: scenario.payoffData,
+        manualForwards: scenario.manualForwards || {},
+        realPrices: scenario.realPrices || {},
+        realPriceParams: {
+          useSimulation: false,
+          volatility: 0.3,
+          drift: 0.01,
+          numSimulations: 1000
+        },
+        barrierOptionSimulations: 1000,
+        useClosedFormBarrier: false,
+        activeTab: 'parameters',
+        customScenario: scenario.stressTest,
+        stressTestScenarios: {},
+        useImpliedVol: scenario.useImpliedVol || false,
+        impliedVolatilities: scenario.impliedVolatilities || {},
+        customOptionPrices: scenario.customOptionPrices || {}
+      }));
+      
+      // Rediriger vers Strategy Builder
+      navigate('/strategy-builder');
+    } catch (error) {
+      console.error('Error loading scenario to Strategy Builder:', error);
+      alert('Error loading scenario. Please try again.');
+    }
+  };
+
+  // Fonction pour uploader un fichier de scénario et le charger dans Strategy Builder
+  const handleUploadScenario = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const scenarioData = JSON.parse(e.target?.result as string);
+        
+        // Vérifier si c'est un scénario valide
+        if (scenarioData.params && scenarioData.strategy) {
+          // Charger directement dans Strategy Builder
+          loadScenarioToBuilder(scenarioData);
+        } else if (scenarioData.reports && Array.isArray(scenarioData.reports)) {
+          // Si c'est un fichier d'export multiple, prendre le premier scénario
+          const firstScenario = scenarioData.reports.find((r: any) => r.type === 'scenario' || r.params);
+          if (firstScenario) {
+            loadScenarioToBuilder(firstScenario);
+          } else {
+            alert('No valid scenario found in the file.');
+          }
+        } else {
+          alert('Invalid scenario file format.');
+        }
+      } catch (error) {
+        console.error('Error uploading scenario:', error);
+        alert('Error uploading scenario. Please check the file format.');
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset input pour permettre de re-uploader le même fichier
+    event.target.value = '';
   };
 
   const clearAllReports = () => {
@@ -1116,11 +1189,18 @@ const Reports = () => {
           tableWidth: availableWidth
         };
 
+        // Get currency pair info for rate labels
+        const baseCurrency = report.params.currencyPair?.base || 'BASE';
+        const quoteCurrency = report.params.currencyPair?.quote || 'QUOTE';
+        const domesticRate = report.params.domesticRate ?? report.params.interestRate ?? 0;
+        const foreignRate = report.params.foreignRate ?? 0;
+
         const basicParams = [
           ['Parameter', 'Value', 'Description'],
           ['Start Date', report.params.startDate, 'Hedging start date'],
           ['Months to Hedge', report.params.monthsToHedge.toString(), 'Hedging period in months'],
-          ['Interest Rate', `${report.params.interestRate}%`, 'Risk-free interest rate'],
+          [`${quoteCurrency} Rate (Domestic)`, `${domesticRate.toFixed(2)}%`, `Interest rate for ${quoteCurrency} (domestic currency)`],
+          [`${baseCurrency} Rate (Foreign)`, `${foreignRate.toFixed(2)}%`, `Interest rate for ${baseCurrency} (foreign currency)`],
           ['Currency Pair', report.params.currencyPair?.symbol || 'N/A', 'Trading currency pair']
         ];
 
@@ -1787,10 +1867,31 @@ const Reports = () => {
         <TabsContent value="overview" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>All Reports</CardTitle>
-              <CardDescription>
-                Complete list of all saved reports and analytics
-              </CardDescription>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle>All Reports</CardTitle>
+                  <CardDescription>
+                    Complete list of all saved reports and analytics
+                  </CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleUploadScenario}
+                    className="hidden"
+                    id="upload-scenario-input"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => document.getElementById('upload-scenario-input')?.click()}
+                  >
+                    <Upload className="h-4 w-4 mr-2" />
+                    Upload Scenario
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="flex items-center gap-4 mb-4">
@@ -1863,13 +1964,26 @@ const Reports = () => {
                             size="sm"
                             variant="outline"
                             onClick={() => viewReport(report)}
+                            title="View report"
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
+                          {report.type === 'scenario' && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => loadScenarioToBuilder(report)}
+                              title="Load to Strategy Builder"
+                              className="text-blue-600 hover:text-blue-700"
+                            >
+                              <ArrowRight className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => exportReport(report)}
+                            title="Export PDF"
                           >
                             <Download className="h-4 w-4" />
                           </Button>
@@ -1877,6 +1991,7 @@ const Reports = () => {
                             size="sm"
                             variant="outline"
                             onClick={() => deleteReport(report)}
+                            title="Delete report"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -2107,6 +2222,12 @@ const Reports = () => {
                                     <th className="border p-2">Forward Price</th>
                                     <th className="border p-2">Real Price</th>
                                     <th className="border p-2">IV (%)</th>
+                                    {/* Colonnes Strike pour chaque option */}
+                                    {scenario.results[0]?.optionPrices?.map((option, idx) => (
+                                      option.type !== 'swap' && option.type !== 'forward' && (
+                                        <th key={`strike-${idx}`} className="border p-2 bg-orange-500/5">Strike {option.label || `${option.type.charAt(0).toUpperCase() + option.type.slice(1)} ${idx + 1}`}</th>
+                                      )
+                                    ))}
                                     {scenario.results[0]?.optionPrices?.map((option, idx) => (
                                       <th key={idx} className="border p-2">{option.label || `${option.type.charAt(0).toUpperCase() + option.type.slice(1)} Price ${idx + 1}`}</th>
                                     ))}
@@ -2144,10 +2265,32 @@ const Reports = () => {
                                             ? (impliedVol * 100).toFixed(0) 
                                             : ""}
                                         </td>
-                                        {/* S'assurer que toutes les options sont affichées */}
+                                        {/* Colonnes Strike pour chaque option */}
+                                        {row.optionPrices && Array.isArray(row.optionPrices) 
+                                          ? row.optionPrices.map((option, idx) => {
+                                              if (option.type === 'swap' || option.type === 'forward') return null;
+                                              
+                                              // Calculer le strike à afficher (utiliser dynamicStrikeInfo si disponible)
+                                              const displayStrike = option.dynamicStrikeInfo?.calculatedStrike || option.strike;
+                                              
+                                              return (
+                                                <td key={`strike-${idx}`} className="border p-2 bg-orange-500/5">
+                                                  <span className="font-mono">{displayStrike.toFixed(4)}</span>
+                                                </td>
+                                              );
+                                            })
+                                          : scenario.strategy.map((_, idx) => {
+                                              const strategyOpt = scenario.strategy[idx];
+                                              if (strategyOpt?.type === 'swap' || strategyOpt?.type === 'forward') return null;
+                                              return <td key={`strike-${idx}`} className="border p-2">-</td>;
+                                            })
+                                        }
+                                        {/* Colonnes Prix pour chaque option */}
                                         {row.optionPrices && Array.isArray(row.optionPrices) 
                                           ? row.optionPrices.map((option, idx) => (
-                                              <td key={idx} className="border p-2">{option.price.toFixed(2)}</td>
+                                              <td key={idx} className="border p-2">
+                                                <span className="font-mono">{option.price.toFixed(2)}</span>
+                                              </td>
                                             ))
                                           : scenario.strategy.map((_, idx) => (
                                               <td key={idx} className="border p-2">-</td>
@@ -2406,36 +2549,10 @@ const Reports = () => {
                         </div>
 
                         <Button
-                          onClick={() => {
-                            localStorage.setItem('calculatorState', JSON.stringify({
-                              params: scenario.params,
-                              strategy: scenario.strategy,
-                              results: scenario.results,
-                              payoffData: scenario.payoffData,
-                              // Récupérer les paramètres personnalisés du scénario sauvegardé ou utiliser des valeurs par défaut
-                              manualForwards: scenario.manualForwards || {},
-                              realPrices: scenario.realPrices || {},
-                              realPriceParams: {
-                                useSimulation: false,
-                                volatility: 0.3,
-                                drift: 0.01,
-                                numSimulations: 1000
-                              },
-                              barrierOptionSimulations: 1000,
-                              useClosedFormBarrier: false,
-                              activeTab: 'parameters',
-                              customScenario: scenario.stressTest,
-                              stressTestScenarios: {}, // You might want to save this too
-                              // Récupérer les paramètres de volatilité implicite
-                              useImpliedVol: scenario.useImpliedVol || false,
-                              impliedVolatilities: scenario.impliedVolatilities || {},
-                              // Récupérer les prix personnalisés des options
-                              customOptionPrices: scenario.customOptionPrices || {}
-                            }));
-                            navigate('/strategy-builder');
-                          }}
+                          onClick={() => loadScenarioToBuilder(scenario)}
                           className="mt-4"
                         >
+                          <ArrowRight className="h-4 w-4 mr-2" />
                           Load This Scenario
                         </Button>
                       </CardContent>

@@ -526,6 +526,12 @@ const SavedScenarios = () => {
                             <th className="border p-2">Forward Price</th>
                             <th className="border p-2">Real Price</th>
                             <th className="border p-2">IV (%)</th>
+                            {/* Colonnes Strike pour chaque option */}
+                            {scenario.results[0]?.optionPrices?.map((option, idx) => (
+                              option.type !== 'swap' && option.type !== 'forward' && (
+                                <th key={`strike-${idx}`} className="border p-2 bg-orange-500/5">Strike {option.label || `${option.type.charAt(0).toUpperCase() + option.type.slice(1)} ${idx + 1}`}</th>
+                              )
+                            ))}
                             {scenario.results[0]?.optionPrices?.map((option, idx) => (
                               <th key={idx} className="border p-2">{option.label || `${option.type.charAt(0).toUpperCase() + option.type.slice(1)} Price ${idx + 1}`}</th>
                             ))}
@@ -563,10 +569,32 @@ const SavedScenarios = () => {
                                     ? (impliedVol * 100).toFixed(0) 
                                     : ""}
                                 </td>
-                                {/* S'assurer que toutes les options sont affichées */}
+                                {/* Colonnes Strike pour chaque option */}
+                                {row.optionPrices && Array.isArray(row.optionPrices) 
+                                  ? row.optionPrices.map((option, idx) => {
+                                      if (option.type === 'swap' || option.type === 'forward') return null;
+                                      
+                                      // Calculer le strike à afficher (utiliser dynamicStrikeInfo si disponible)
+                                      const displayStrike = option.dynamicStrikeInfo?.calculatedStrike || option.strike;
+                                      
+                                      return (
+                                        <td key={`strike-${idx}`} className="border p-2 bg-orange-500/5">
+                                          <span className="font-mono">{displayStrike.toFixed(4)}</span>
+                                        </td>
+                                      );
+                                    })
+                                  : scenario.strategy.map((_, idx) => {
+                                      const strategyOpt = scenario.strategy[idx];
+                                      if (strategyOpt?.type === 'swap' || strategyOpt?.type === 'forward') return null;
+                                      return <td key={`strike-${idx}`} className="border p-2">-</td>;
+                                    })
+                                }
+                                {/* Colonnes Prix pour chaque option */}
                                 {row.optionPrices && Array.isArray(row.optionPrices) 
                                   ? row.optionPrices.map((option, idx) => (
-                                      <td key={idx} className="border p-2">{option.price.toFixed(2)}</td>
+                                      <td key={idx} className="border p-2">
+                                        <span className="font-mono">{option.price.toFixed(2)}</span>
+                                      </td>
                                     ))
                                   : scenario.strategy.map((_, idx) => (
                                       <td key={idx} className="border p-2">-</td>

@@ -1615,6 +1615,9 @@ const Index = () => {
   const [useCustomOptionPrices, setUseCustomOptionPrices] = useState(false);
   const [customOptionPrices, setCustomOptionPrices] = useState<{[key: string]: {[key: string]: number}}>({});
   
+  // État pour les strikes personnalisés
+  const [customStrikes, setCustomStrikes] = useState<{[key: string]: {[key: string]: number}}>({});
+  
   // Historical data and monthly stats
   const [historicalData, setHistoricalData] = useState<HistoricalDataPoint[]>([]);
   const [monthlyStats, setMonthlyStats] = useState<MonthlyStats[]>([]);
@@ -3021,12 +3024,21 @@ const Index = () => {
 
       // Calculer les prix des options en utilisant les chemins de prix
         const optionPrices = options.map((option, optIndex) => {
-            let strike = option.strikeType === 'percent' ? 
-          params.spotPrice * (option.strike/100) : 
-                option.strike;
+            // Vérifier si un strike personnalisé existe pour cette période
+            const strikeKey = `${option.type}-${optIndex}`;
+            const customStrike = customStrikes[monthKey]?.[strikeKey];
+            
+            // Calculer le strike initial (basé sur le spot pour les pourcentages)
+            // Utiliser le strike personnalisé s'il existe, sinon calculer normalement
+            let strike = customStrike !== undefined
+              ? customStrike
+              : (option.strikeType === 'percent' ? 
+                  params.spotPrice * (option.strike/100) : 
+                  option.strike);
             
             // Check if this option has dynamic strike calculation based on time to maturity
-            if (option.dynamicStrike && option.dynamicStrike.method === 'equilibrium') {
+            // Ne pas calculer le strike dynamique si un strike personnalisé existe
+            if (option.dynamicStrike && option.dynamicStrike.method === 'equilibrium' && customStrike === undefined) {
               // Get the balancing option
               const balanceWithOption = strategy[option.dynamicStrike.balanceWithIndex];
               
@@ -3188,10 +3200,10 @@ const Index = () => {
         const isKnockedOut = option.type.includes('knockout') && barrierCrossings[optionId] && barrierCrossings[optionId][i];
         
         // Check if we should use custom prices first
-        const optionKey = `${option.type}-${optIndex}`;
-        if (useCustomOptionPrices && customOptionPrices[monthKey]?.[optionKey] !== undefined) {
+        // Utiliser strikeKey qui a déjà été défini plus haut
+        if (useCustomOptionPrices && customOptionPrices[monthKey]?.[strikeKey] !== undefined) {
           // Use custom price if available
-          price = customOptionPrices[monthKey][optionKey];
+          price = customOptionPrices[monthKey][strikeKey];
         } else {
           // Calculate price normally
           
@@ -3202,7 +3214,7 @@ const Index = () => {
             price = (forward - strike) * Math.exp(-params.domesticRate/100 * t);
           } else if (option.type === 'call' || option.type === 'put') {
             // Utiliser la volatilité implicite spécifique à l'option si disponible
-            const iv = getImpliedVolatility(monthKey, optionKey);
+            const iv = getImpliedVolatility(monthKey, strikeKey);
             const effectiveSigma = useImpliedVol && iv !== undefined && iv !== null
               ? iv / 100
               : option.volatility / 100;
@@ -3268,9 +3280,9 @@ const Index = () => {
             undefined;
             
           // Use implied volatility if available, just like with standard options
-          const optionKey = `${option.type}-${optIndex}`;
+          // Utiliser strikeKey qui a déjà été défini plus haut
           const effectiveSigma = useImpliedVol && impliedVolatilities[monthKey] ? 
-            (getImpliedVolatility(monthKey, optionKey) || option.volatility) / 100 : 
+            (getImpliedVolatility(monthKey, strikeKey) || option.volatility) / 100 : 
             option.volatility / 100;
             
           // Use closed-form solution if enabled (for both simple and double barrier options)
@@ -6075,6 +6087,142 @@ const Index = () => {
     }
   };
 
+  // Fonction pour gérer le changement de strike et recalculer le prix
+  const handleStrikeChange = (monthKey: string, optionKey: string, newStrike: number, row: any, optionIndex: number) => {
+    // Mettre à jour l'état des strikes personnalisés
+    setCustomStrikes(prev => {
+      const updated = { ...prev };
+      if (!updated[monthKey]) {
+        updated[monthKey] = {};
+      }
+      updated[monthKey][optionKey] = newStrike;
+      return updated;
+    });
+    
+    // Trouver l'option dans la stratégie pour obtenir ses paramètres
+    const option = row.optionPrices[optionIndex];
+    if (!option || option.type === 'swap' || option.type === 'forward') {
+      return; // Ne pas traiter les swaps et forwards
+    }
+    
+    // Trouver l'option correspondante dans la stratégie
+    const strategyOption = strategy.find((opt, idx) => {
+      const optType = opt.type;
+      return optType === option.type && idx === optionIndex;
+    });
+    
+    if (!strategyOption) return;
+    
+    // Calculer le nouveau prix avec le nouveau strike
+    const t = row.timeToMaturity;
+    const forward = row.forward;
+    const r_d = params.domesticRate / 100;
+    const r_f = params.foreignRate / 100;
+    
+    // Utiliser la volatilité implicite si disponible, sinon la volatilité de l'option
+    const optionKeyForIV = `${option.type}-${optionIndex}`;
+    const iv = getImpliedVolatility(monthKey, optionKeyForIV);
+    const effectiveSigma = useImpliedVol && iv !== undefined && iv !== null
+      ? iv / 100
+      : (strategyOption.volatility || option.volatility || 20) / 100;
+    
+    // Calculer le prix selon le type d'option
+    let newPrice = 0;
+    
+    if (option.type === 'call' || option.type === 'put') {
+      // Options vanilles - utiliser Garman-Kohlhagen
+      if (optionPricingModel === 'garman-kohlhagen') {
+        newPrice = calculateGarmanKohlhagenPrice(
+          option.type,
+          forward,
+          newStrike,
+          r_d,
+          r_f,
+          t,
+          effectiveSigma
+        );
+      } else if (optionPricingModel === 'monte-carlo') {
+        newPrice = calculateVanillaOptionMonteCarlo(
+          option.type,
+          forward,
+          newStrike,
+          r_d,
+          r_f,
+          t,
+          effectiveSigma,
+          1000
+        );
+      } else {
+        // Black-Scholes fallback
+        const d1 = (Math.log(forward/newStrike) + (r_d + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
+        const d2 = d1 - effectiveSigma*Math.sqrt(t);
+        const Nd1 = (1 + erf(d1/Math.sqrt(2)))/2;
+        const Nd2 = (1 + erf(d2/Math.sqrt(2)))/2;
+        
+        if (option.type === 'call') {
+          newPrice = forward*Nd1 - newStrike*Math.exp(-r_d*t)*Nd2;
+        } else {
+          newPrice = newStrike*Math.exp(-r_d*t)*(1-Nd2) - forward*(1-Nd1);
+        }
+      }
+    } else if (option.type.includes('knockout') || option.type.includes('knockin')) {
+      // Options à barrière
+      const barrier = strategyOption.barrierType === 'percent' ? 
+        params.spotPrice * (strategyOption.barrier / 100) : 
+        strategyOption.barrier;
+      const secondBarrier = strategyOption.type.includes('double') ? 
+        (strategyOption.barrierType === 'percent' ? 
+          params.spotPrice * (strategyOption.secondBarrier / 100) : 
+          strategyOption.secondBarrier) : 
+        undefined;
+      
+      if (barrierPricingModel === 'closed-form') {
+        newPrice = calculateBarrierOptionClosedForm(
+          option.type,
+          forward,
+          newStrike,
+          r_d,
+          t,
+          effectiveSigma,
+          barrier || 0,
+          secondBarrier
+        );
+      } else {
+        // Monte Carlo pour les barrières - simplifié ici
+        newPrice = calculateBarrierOptionClosedForm(
+          option.type,
+          forward,
+          newStrike,
+          r_d,
+          t,
+          effectiveSigma,
+          barrier || 0,
+          secondBarrier
+        );
+      }
+    }
+    
+    // Mettre à jour le prix personnalisé avec le nouveau prix calculé
+    setCustomOptionPrices(prev => {
+      const updated = { ...prev };
+      if (!updated[monthKey]) {
+        updated[monthKey] = {};
+      }
+      updated[monthKey][optionKey] = newPrice;
+      return updated;
+    });
+    
+    // Activer l'utilisation des prix personnalisés si ce n'est pas déjà fait
+    if (!useCustomOptionPrices) {
+      setUseCustomOptionPrices(true);
+    }
+    
+    // Recalculer les résultats
+    setTimeout(() => {
+      recalculateResults();
+    }, 50);
+  };
+
   // Export des fonctions de pricing pour centralisation
 // ... toutes les fonctions de pricing ici ...
 
@@ -6564,55 +6712,6 @@ const pricingFunctions = {
                       </Button>
                     )}
                   </div>
-                  {params.currencyPair && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="absolute right-8 top-1/2 transform -translate-y-1/2 h-6 w-6 p-0"
-                      onClick={async () => {
-                        if (!params.currencyPair) return;
-                        
-                        const loadingToast = toast({
-                          title: "Refreshing Rate...",
-                          description: `Fetching latest rate for ${params.currencyPair.symbol}...`,
-                        });
-                        
-                        try {
-                          const realTimeRate = await fetchRealTimeRate(params.currencyPair);
-                          if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
-                            setParams(prev => ({
-                              ...prev,
-                              spotPrice: realTimeRate,
-                              quoteVolume: prev.baseVolume * realTimeRate // Recalculate quote volume with new rate
-                            }));
-                            setInitialSpotPrice(realTimeRate);
-                            
-                            toast({
-                              title: "Rate Refreshed",
-                              description: `Updated rate for ${params.currencyPair.symbol}: ${realTimeRate.toFixed(4)}`,
-                            });
-                          } else {
-                            toast({
-                              title: "Refresh Failed",
-                              description: `Could not fetch rate. Using current value.`,
-                              variant: "default"
-                            });
-                          }
-                        } catch (error) {
-                          console.error('Error refreshing rate:', error);
-                          toast({
-                            title: "Refresh Error",
-                            description: `Could not refresh rate.`,
-                            variant: "destructive"
-                          });
-                        }
-                      }}
-                      title="Refresh rate from Market Data"
-                    >
-                      <RefreshCw className="h-3 w-3" />
-                    </Button>
-                  )}
                 </div>
                 <div className="compact-form-group">
                   <label className="compact-label">Strategy Start Date</label>
@@ -7034,6 +7133,55 @@ const pricingFunctions = {
                 {strategy.length > 0 && (
                   <Button onClick={importToHedgingInstruments} size="sm" variant="secondary" className="h-7 px-2 text-xs flex items-center gap-1">
                     <Upload size={12} /> Export to Hedging
+                  </Button>
+                )}
+                {params.currencyPair && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs flex items-center gap-1"
+                    onClick={async () => {
+                      if (!params.currencyPair) return;
+                      
+                      const loadingToast = toast({
+                        title: "Refreshing Rate...",
+                        description: `Fetching latest rate for ${params.currencyPair.symbol}...`,
+                      });
+                      
+                      try {
+                        const realTimeRate = await fetchRealTimeRate(params.currencyPair);
+                        if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+                          setParams(prev => ({
+                            ...prev,
+                            spotPrice: realTimeRate,
+                            quoteVolume: prev.baseVolume * realTimeRate // Recalculate quote volume with new rate
+                          }));
+                          setInitialSpotPrice(realTimeRate);
+                          
+                          toast({
+                            title: "Rate Refreshed",
+                            description: `Updated rate for ${params.currencyPair.symbol}: ${realTimeRate.toFixed(4)}`,
+                          });
+                        } else {
+                          toast({
+                            title: "Refresh Failed",
+                            description: `Could not fetch rate. Using current value.`,
+                            variant: "default"
+                          });
+                        }
+                      } catch (error) {
+                        console.error('Error refreshing rate:', error);
+                        toast({
+                          title: "Refresh Error",
+                          description: `Could not refresh rate.`,
+                          variant: "destructive"
+                        });
+                      }
+                    }}
+                    title="Refresh rate from Market Data"
+                  >
+                    <RefreshCw className="h-3 w-3" /> Refresh Data
                   </Button>
                 )}
               </div>
@@ -8057,6 +8205,14 @@ const pricingFunctions = {
                           </th>
                         )
                       ))}
+                      {/* Colonnes Strike pour chaque option */}
+                      {displayResults[0].optionPrices.map((opt, i) => (
+                        opt.type !== 'swap' && opt.type !== 'forward' && (
+                          <th key={`strike-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-orange-500/5">
+                            Strike {opt.label}
+                          </th>
+                        )
+                      ))}
                       {displayResults[0].optionPrices.map((opt, i) => (
                             <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
                           ))}
@@ -8181,7 +8337,36 @@ const pricingFunctions = {
                             </td>
                             )
                           ))}
-                          {/* Afficher les prix des options dans le même ordre que les en-têtes */}
+                          {/* Afficher les strikes et prix des options dans le même ordre que les en-têtes */}
+                          {/* Colonnes Strike pour chaque option */}
+                          {row.optionPrices.map((opt, j) => {
+                            if (opt.type === 'swap' || opt.type === 'forward') return null;
+                            
+                            const date = new Date(row.date);
+                            const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                            const optionKey = `${opt.type}-${j}`;
+                            
+                            // Calculer le strike à afficher (utiliser customStrikes si disponible, sinon dynamicStrikeInfo ou strike)
+                            const displayStrike = customStrikes[monthKey]?.[optionKey] !== undefined
+                              ? customStrikes[monthKey][optionKey]
+                              : (opt.dynamicStrikeInfo?.calculatedStrike || opt.strike);
+                            
+                            return (
+                              <td key={`strike-${j}`} className="px-3 py-2 text-sm border-b border-border/30 bg-orange-500/5">
+                                <Input
+                                  type="number"
+                                  value={displayStrike.toFixed(4)}
+                                  onChange={(e) => {
+                                    const newValue = e.target.value === '' ? 0 : Number(e.target.value);
+                                    handleStrikeChange(monthKey, optionKey, newValue, row, j);
+                                  }}
+                                  className="compact-input w-24 text-right font-mono"
+                                  step="0.0001"
+                                />
+                              </td>
+                            );
+                          })}
+                          {/* Colonnes Prix pour chaque option */}
                           {row.optionPrices.map((opt, j) => {
                             // Créer une clé unique pour cette option à cette date
                                   const date = new Date(row.date);

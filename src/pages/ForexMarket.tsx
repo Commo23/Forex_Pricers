@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -12,7 +13,7 @@ import { Switch } from '@/components/ui/switch';
 import { 
   Search, RefreshCw, ChevronUp, ChevronDown, Globe, TrendingUp, TrendingDown, Minus, 
   Calculator, Star, StarOff, BarChart3, ArrowUpRight, ArrowDownRight, X, Plus,
-  Activity, Zap
+  Activity, Zap, ArrowRight
 } from 'lucide-react';
 import ExchangeRateService from '@/services/ExchangeRateService';
 import FinancialDataService from '@/services/FinancialDataService';
@@ -46,6 +47,7 @@ interface HistoricalRate {
 }
 
 const ForexMarket: React.FC = () => {
+  const navigate = useNavigate();
   const [currencies, setCurrencies] = useState<CurrencyData[]>([]);
   const [previousCurrencies, setPreviousCurrencies] = useState<CurrencyData[]>([]);
   const [filteredCurrencies, setFilteredCurrencies] = useState<CurrencyData[]>([]);
@@ -57,6 +59,7 @@ const ForexMarket: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [activeTab, setActiveTab] = useState('market-data');
   const [widgetKey, setWidgetKey] = useState(0);
+  const [showFavoritesDialog, setShowFavoritesDialog] = useState(false);
   
   // Calculator states
   const [showCalculator, setShowCalculator] = useState(false);
@@ -346,6 +349,91 @@ const ForexMarket: React.FC = () => {
         ? prev.filter(c => c !== code)
         : [...prev, code]
     );
+  };
+
+  // Navigate to Strategy Builder with a currency pair from favorites
+  const navigateToStrategyBuilder = (favoriteCurrency: string) => {
+    try {
+      // Create currency pair symbol: BASE/FAVORITE or FAVORITE/BASE
+      // We'll use BASE/FAVORITE format
+      const pairSymbol = `${baseCurrency}/${favoriteCurrency}`;
+      
+      // Check if this pair exists in default or custom pairs
+      const allPairs = [...getDefaultCurrencyPairs(), ...customCurrencyPairs];
+      let selectedPair = allPairs.find(pair => pair.symbol === pairSymbol);
+      
+      // If not found, try reverse pair
+      if (!selectedPair) {
+        const reverseSymbol = `${favoriteCurrency}/${baseCurrency}`;
+        selectedPair = allPairs.find(pair => pair.symbol === reverseSymbol);
+        
+        // If reverse pair exists, we need to invert the rate
+        if (selectedPair) {
+          const invertedRate = 1 / selectedPair.defaultSpotRate;
+          selectedPair = {
+            ...selectedPair,
+            symbol: pairSymbol,
+            base: baseCurrency,
+            quote: favoriteCurrency,
+            defaultSpotRate: invertedRate
+          };
+        }
+      }
+      
+      // If still not found, create a new pair using current market rate
+      if (!selectedPair) {
+        const favoriteCurrencyData = currencies.find(c => c.code === favoriteCurrency);
+        const rate = favoriteCurrencyData?.rate || 1.0;
+        
+        selectedPair = {
+          symbol: pairSymbol,
+          name: `${baseCurrency}/${favoriteCurrency}`,
+          base: baseCurrency,
+          quote: favoriteCurrency,
+          category: 'others',
+          defaultSpotRate: rate
+        };
+      }
+      
+      // Get current calculator state or create default
+      const currentState = localStorage.getItem('calculatorState');
+      let calculatorState: any = {};
+      
+      if (currentState) {
+        try {
+          calculatorState = JSON.parse(currentState);
+        } catch (e) {
+          console.warn('Error parsing calculator state:', e);
+        }
+      }
+      
+      // Update calculator state with the selected pair
+      calculatorState.params = {
+        ...calculatorState.params,
+        currencyPair: selectedPair,
+        spotPrice: selectedPair.defaultSpotRate,
+        baseVolume: calculatorState.params?.baseVolume || 10000000,
+        quoteVolume: (calculatorState.params?.baseVolume || 10000000) * selectedPair.defaultSpotRate
+      };
+      
+      // Save to localStorage
+      localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+      
+      // Navigate to Strategy Builder
+      navigate('/strategy-builder');
+      
+      toast({
+        title: "Pair Loaded",
+        description: `Currency pair ${selectedPair.symbol} loaded in Strategy Builder`,
+      });
+    } catch (error) {
+      console.error('Error navigating to Strategy Builder:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load currency pair. Please try again.",
+        variant: "destructive"
+      });
+    }
   };
 
   useEffect(() => {
@@ -815,7 +903,20 @@ const ForexMarket: React.FC = () => {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card 
+                className="cursor-pointer hover:shadow-lg transition-shadow"
+                onClick={() => {
+                  if (favorites.length > 0) {
+                    setShowFavoritesDialog(true);
+                  } else {
+                    toast({
+                      title: "No Favorites",
+                      description: "Please add currencies to favorites first.",
+                      variant: "default"
+                    });
+                  }
+                }}
+              >
                 <CardContent className="p-6">
                   <div className="flex items-center justify-between">
                     <div>
@@ -823,6 +924,11 @@ const ForexMarket: React.FC = () => {
                       <p className="text-2xl font-bold text-yellow-600">
                         {favorites.length}
                       </p>
+                      {favorites.length > 0 && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1">
+                          Click to use in Strategy Builder <ArrowRight className="h-3 w-3" />
+                        </p>
+                      )}
                     </div>
                     <div className="h-8 w-8 bg-yellow-100 dark:bg-yellow-900 rounded-lg flex items-center justify-center">
                       <Star className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
@@ -1124,6 +1230,58 @@ const ForexMarket: React.FC = () => {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Favorites Dialog */}
+      <Dialog open={showFavoritesDialog} onOpenChange={setShowFavoritesDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Select Favorite Currency</DialogTitle>
+            <DialogDescription>
+              Choose a favorite currency to use in Strategy Builder with base currency: <strong>{baseCurrency}</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-[400px] overflow-y-auto">
+            {favorites.length === 0 ? (
+              <p className="text-center text-gray-500 py-4">No favorites yet. Add currencies to favorites first.</p>
+            ) : (
+              favorites.map((favoriteCode) => {
+                const currencyData = currencies.find(c => c.code === favoriteCode);
+                const pairSymbol = `${baseCurrency}/${favoriteCode}`;
+                
+                return (
+                  <Button
+                    key={favoriteCode}
+                    variant="outline"
+                    className="w-full justify-between p-4 h-auto"
+                    onClick={() => {
+                      navigateToStrategyBuilder(favoriteCode);
+                      setShowFavoritesDialog(false);
+                    }}
+                  >
+                    <div className="flex flex-col items-start">
+                      <div className="flex items-center gap-2">
+                        <Star className="h-4 w-4 text-yellow-600 fill-yellow-600" />
+                        <span className="font-semibold">{pairSymbol}</span>
+                      </div>
+                      {currencyData && (
+                        <span className="text-sm text-gray-500">
+                          Rate: {currencyData.rate.toFixed(4)}
+                        </span>
+                      )}
+                    </div>
+                    <ArrowRight className="h-4 w-4 text-gray-400" />
+                  </Button>
+                );
+              })
+            )}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => setShowFavoritesDialog(false)}>
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Layout>
   );
 };
