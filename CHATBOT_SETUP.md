@@ -95,11 +95,11 @@ Si la clé API n'est pas configurée, le chatbot fonctionne en **mode limité** 
 
 ## 📝 Notes Techniques
 
-- **Modèle utilisé**: Gemini Pro (modèle standard disponible dans v1beta)
+- **Modèle utilisé**: Gemini 2.5 Flash (modèle disponible dans v1beta)
 - **API**: Google Generative AI (Gemini)
 - **Function Calling**: Activé pour appeler les fonctions de calcul
 - **Historique**: Conservé pendant la session (réinitialisable)
-- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`
+- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`
 
 ## 🔐 Sécurité
 

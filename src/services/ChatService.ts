@@ -1,5 +1,13 @@
 import ExchangeRateService from './ExchangeRateService';
 import { PricingService } from './PricingService';
+import { 
+  CURRENCY_PAIRS,
+  calculateFXForwardPrice,
+  calculateGarmanKohlhagenPrice,
+  calculateSwapPrice,
+  calculateTimeToMaturity,
+  calculateOptionPrice
+} from '@/pages/Index';
 
 /**
  * Service de chat intelligent pour l'assistant FX
@@ -67,6 +75,7 @@ class ChatService {
 - Stratégies de hedging (Zero-Cost Collar, Participating Forward, Risk Reversal, etc.)
 - Analyse de marché et de portfolio
 - Calculs de P&L et de risque
+- Simulation complète de stratégies FX avec plusieurs composants
 
 **Règles importantes:**
 - Réponds toujours en français de manière professionnelle et concise
@@ -74,6 +83,28 @@ class ChatService {
 - Si tu ne connais pas quelque chose, dis-le honnêtement
 - Formate les nombres avec une précision appropriée (4 décimales pour les taux FX)
 - Explique les concepts financiers de manière claire
+
+**Pour les simulations de stratégies (build_strategy):**
+- Quand l'utilisateur demande de "construire une stratégie", "simuler une stratégie", "build a strategy", ou veut analyser une combinaison d'instruments FX:
+  1. Demande TOUS les paramètres nécessaires AVANT d'appeler build_strategy:
+     - Paire de devises (ex: EUR/USD)
+     - Prix spot actuel (ou récupère-le avec get_spot_rate)
+     - Taux d'intérêt domestique (en %)
+     - Taux d'intérêt étranger (en %)
+     - Volume en devise de base
+     - Date de début du hedging (format YYYY-MM-DD)
+     - Nombre de mois à hedger
+     - Liste des composants (options, forwards, swaps) avec leurs paramètres:
+       * Type (call, put, forward, swap)
+       * Strike (valeur ou %)
+       * Type de strike (percent ou absolute)
+       * Volatilité (en %)
+       * Quantité (en %)
+  2. Confirme tous les paramètres avec l'utilisateur avant de lancer la simulation
+  3. Une fois la simulation terminée, présente les résultats de manière claire:
+     - Résumé global (coûts hedgés/non hedgés, P&L)
+     - Détails par période (date, forward, prix de stratégie, P&L)
+     - Analyse des composants individuels
 
 **Format des réponses:**
 - Utilise des emojis pour rendre les réponses plus agréables
@@ -188,6 +219,79 @@ class ChatService {
             required: ['currencyPair', 'spotPrice', 'timeToMaturity']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'build_strategy',
+          description: 'Construit et simule une stratégie FX complète avec plusieurs composants (options, forwards, swaps). Utilise cette fonction quand l\'utilisateur demande de "construire une stratégie", "simuler une stratégie", "build a strategy", ou veut analyser une combinaison d\'instruments FX.',
+          parameters: {
+            type: 'object',
+            properties: {
+              currencyPair: {
+                type: 'string',
+                description: 'Paire de devises (ex: EUR/USD, GBP/USD)'
+              },
+              spotPrice: {
+                type: 'number',
+                description: 'Prix spot actuel'
+              },
+              domesticRate: {
+                type: 'number',
+                description: 'Taux d\'intérêt domestique en pourcentage (ex: 1.0 pour 1%)'
+              },
+              foreignRate: {
+                type: 'number',
+                description: 'Taux d\'intérêt étranger en pourcentage (ex: 0.5 pour 0.5%)'
+              },
+              baseVolume: {
+                type: 'number',
+                description: 'Volume en devise de base (ex: 10000000 pour 10M EUR)'
+              },
+              startDate: {
+                type: 'string',
+                description: 'Date de début du hedging au format YYYY-MM-DD'
+              },
+              monthsToHedge: {
+                type: 'number',
+                description: 'Nombre de mois à hedger (ex: 12 pour 1 an)'
+              },
+              components: {
+                type: 'array',
+                description: 'Liste des composants de la stratégie',
+                items: {
+                  type: 'object',
+                  properties: {
+                    type: {
+                      type: 'string',
+                      enum: ['call', 'put', 'forward', 'swap'],
+                      description: 'Type de composant: call, put, forward, ou swap'
+                    },
+                    strike: {
+                      type: 'number',
+                      description: 'Strike (en pourcentage si strikeType=percent, sinon valeur absolue)'
+                    },
+                    strikeType: {
+                      type: 'string',
+                      enum: ['percent', 'absolute'],
+                      description: 'Type de strike: percent ou absolute'
+                    },
+                    volatility: {
+                      type: 'number',
+                      description: 'Volatilité en pourcentage (ex: 15 pour 15%)'
+                    },
+                    quantity: {
+                      type: 'number',
+                      description: 'Quantité en pourcentage (ex: 100 pour 100%)'
+                    }
+                  },
+                  required: ['type', 'strike', 'strikeType', 'volatility', 'quantity']
+                }
+              }
+            },
+            required: ['currencyPair', 'spotPrice', 'domesticRate', 'foreignRate', 'baseVolume', 'startDate', 'monthsToHedge', 'components']
+          }
+        }
       }
     ];
   }
@@ -206,6 +310,9 @@ class ChatService {
         
         case 'calculate_forward_rate':
           return await this.calculateForwardRate(args);
+        
+        case 'build_strategy':
+          return await this.buildStrategy(args);
         
         default:
           return `Fonction ${name} non reconnue.`;
@@ -346,6 +453,186 @@ class ChatService {
   }
 
   /**
+   * Construit et simule une stratégie FX complète
+   */
+  private async buildStrategy(args: any): Promise<string> {
+    try {
+      const {
+        currencyPair,
+        spotPrice,
+        domesticRate,
+        foreignRate,
+        baseVolume,
+        startDate,
+        monthsToHedge,
+        components
+      } = args;
+
+      // Valider les inputs
+      if (!components || components.length === 0) {
+        return JSON.stringify({ error: 'Aucun composant de stratégie fourni' });
+      }
+
+      // Trouver la paire de devises
+      const pair = CURRENCY_PAIRS.find(p => p.symbol === currencyPair);
+      if (!pair) {
+        return JSON.stringify({ error: `Paire de devises ${currencyPair} non trouvée` });
+      }
+
+      // Convertir les taux en décimal
+      const r_d = domesticRate / 100;
+      const r_f = foreignRate / 100;
+
+      // Générer les dates de maturité (fin de chaque mois)
+      const start = new Date(startDate);
+      const months: Date[] = [];
+      const monthlyVolumes: number[] = [];
+      const monthlyVolume = baseVolume / monthsToHedge;
+
+      for (let i = 0; i < monthsToHedge; i++) {
+        const monthEnd = new Date(start.getFullYear(), start.getMonth() + i + 1, 0);
+        months.push(monthEnd);
+        monthlyVolumes.push(monthlyVolume);
+      }
+
+      // Calculer les résultats pour chaque période
+      const results = months.map((date, i) => {
+        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+        const t = calculateTimeToMaturity(date.toISOString().split('T')[0], startDate);
+        
+        // Calculer le forward
+        const forward = calculateFXForwardPrice(spotPrice, r_d, r_f, t);
+
+        // Calculer les prix de chaque composant
+        const optionPrices = components.map((component: any, compIndex: number) => {
+          const strike = component.strikeType === 'percent' 
+            ? spotPrice * (component.strike / 100)
+            : component.strike;
+          
+          const vol = component.volatility / 100;
+          const quantity = component.quantity / 100;
+
+          let price = 0;
+          let label = '';
+
+          if (component.type === 'forward') {
+            price = forward - strike;
+            label = `Forward @ ${strike.toFixed(4)}`;
+          } else if (component.type === 'swap') {
+            // Pour un swap, calculer le prix du swap
+            const forwards = months.map((_, idx) => {
+              const t_swap = calculateTimeToMaturity(_.toISOString().split('T')[0], startDate);
+              return calculateFXForwardPrice(spotPrice, r_d, r_f, t_swap);
+            });
+            const times = months.map((_, idx) => {
+              return calculateTimeToMaturity(_.toISOString().split('T')[0], startDate);
+            });
+            price = calculateSwapPrice(forwards, times, r_d);
+            label = `Swap`;
+          } else if (component.type === 'call' || component.type === 'put') {
+            price = calculateGarmanKohlhagenPrice(
+              component.type,
+              spotPrice,
+              strike,
+              r_d,
+              r_f,
+              t,
+              vol
+            );
+            label = `${component.type.toUpperCase()} @ ${strike.toFixed(4)}`;
+          }
+
+          return {
+            type: component.type,
+            price: price,
+            quantity: quantity,
+            strike: strike,
+            label: label,
+            volatility: component.volatility
+          };
+        });
+
+        // Calculer le prix total de la stratégie
+        const strategyPrice = optionPrices.reduce((sum: number, opt: any) => {
+          return sum + (opt.price * opt.quantity * monthlyVolumes[i]);
+        }, 0);
+
+        // Calculer le payoff total
+        const totalPayoff = optionPrices.reduce((sum: number, opt: any) => {
+          if (opt.type === 'forward') {
+            return sum + ((forward - opt.strike) * opt.quantity * monthlyVolumes[i]);
+          } else if (opt.type === 'swap') {
+            return sum + (opt.price * opt.quantity * monthlyVolumes[i]);
+          } else {
+            // Pour les options, le payoff dépend du prix spot à l'échéance
+            // On utilise le forward comme approximation
+            const intrinsicValue = opt.type === 'call' 
+              ? Math.max(0, forward - opt.strike)
+              : Math.max(0, opt.strike - forward);
+            return sum + (intrinsicValue * opt.quantity * monthlyVolumes[i]);
+          }
+        }, 0);
+
+        // Calculer les coûts hedgés et non hedgés
+        const hedgedCost = strategyPrice;
+        const unhedgedCost = monthlyVolumes[i] * spotPrice;
+        const deltaPnL = hedgedCost - unhedgedCost;
+
+        return {
+          date: date.toISOString().split('T')[0],
+          timeToMaturity: t,
+          forward: forward,
+          realPrice: forward,
+          optionPrices: optionPrices,
+          strategyPrice: strategyPrice,
+          totalPayoff: totalPayoff,
+          monthlyVolume: monthlyVolumes[i],
+          hedgedCost: hedgedCost,
+          unhedgedCost: unhedgedCost,
+          deltaPnL: deltaPnL
+        };
+      });
+
+      // Calculer les statistiques globales
+      const totalHedgedCost = results.reduce((sum, r) => sum + r.hedgedCost, 0);
+      const totalUnhedgedCost = results.reduce((sum, r) => sum + r.unhedgedCost, 0);
+      const totalDeltaPnL = totalHedgedCost - totalUnhedgedCost;
+      const averageStrategyPrice = results.reduce((sum, r) => sum + r.strategyPrice, 0) / results.length;
+
+      return JSON.stringify({
+        currencyPair,
+        spotPrice,
+        domesticRate: `${domesticRate.toFixed(2)}%`,
+        foreignRate: `${foreignRate.toFixed(2)}%`,
+        baseVolume,
+        monthsToHedge,
+        components: components.length,
+        results: results.map(r => ({
+          date: r.date,
+          maturity: `${(r.timeToMaturity * 12).toFixed(1)} mois`,
+          forward: r.forward.toFixed(4),
+          strategyPrice: r.strategyPrice.toFixed(2),
+          deltaPnL: r.deltaPnL.toFixed(2),
+          components: r.optionPrices.map((opt: any) => ({
+            type: opt.type,
+            label: opt.label,
+            price: opt.price.toFixed(4),
+            quantity: `${opt.quantity * 100}%`
+          }))
+        })),
+        summary: {
+          totalHedgedCost: totalHedgedCost.toFixed(2),
+          totalUnhedgedCost: totalUnhedgedCost.toFixed(2),
+          totalDeltaPnL: totalDeltaPnL.toFixed(2),
+          averageStrategyPrice: averageStrategyPrice.toFixed(2)
+        }
+      });
+    } catch (error: any) {
+      throw new Error(`Erreur lors de la construction de la stratégie: ${error.message}`);
+    }
+  }
+
+  /**
    * Convertit l'historique au format Gemini
    */
   private convertHistoryToGeminiFormat(): any[] {
@@ -353,9 +640,24 @@ class ChatService {
       .filter(msg => msg.role !== 'system') // Gemini gère le système différemment
       .map(msg => {
         if (msg.role === 'function') {
+          // Format Gemini pour functionResponse
+          let responseContent = msg.content;
+          // Si c'est une string JSON, essayer de la parser
+          if (typeof responseContent === 'string') {
+            try {
+              responseContent = JSON.parse(responseContent);
+            } catch {
+              // Garder comme string si ce n'est pas du JSON valide
+            }
+          }
           return {
             role: 'function',
-            parts: [{ functionResponse: { name: msg.name, response: msg.content } }]
+            parts: [{ 
+              functionResponse: { 
+                name: msg.name, 
+                response: responseContent
+              } 
+            }]
           };
         }
         return {
@@ -421,8 +723,9 @@ class ChatService {
       }
     };
 
-    // Utiliser gemini-pro (modèle disponible dans v1beta)
-    const model = 'gemini-pro';
+    // Utiliser gemini-2.5-flash (modèle disponible dans v1beta et supporte generateContent)
+    // Modèles disponibles vérifiés: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, gemini-pro-latest
+    const model = 'gemini-2.5-flash';
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`,
       {
