@@ -1160,6 +1160,126 @@ const Index = () => {
       clearInterval(interval);
     };
   }, []);
+
+  // Synchroniser calculatorState avec Strategy Builder (pour le chat)
+  React.useEffect(() => {
+    let lastCalculatorStateHash = '';
+    let isInitialLoad = true;
+    
+    const syncCalculatorState = () => {
+      try {
+        const savedState = localStorage.getItem('calculatorState');
+        if (!savedState) {
+          lastCalculatorStateHash = '';
+          return;
+        }
+        
+        const state = JSON.parse(savedState);
+        // Créer un hash plus robuste incluant params et strategy
+        const paramsHash = state.params ? JSON.stringify({
+          currencyPair: state.params.currencyPair?.symbol,
+          spotPrice: state.params.spotPrice,
+          baseVolume: state.params.baseVolume,
+          monthsToHedge: state.params.monthsToHedge
+        }) : '';
+        const strategyHash = state.strategy ? JSON.stringify(state.strategy.map((c: any) => ({
+          type: c.type,
+          optionType: c.optionType,
+          strike: c.strike
+        }))) : '';
+        const currentHash = paramsHash + strategyHash;
+        
+        // Si le state a changé (nouvelle stratégie du chat) et ce n'est pas le chargement initial
+        // OU si lastCalculatorStateHash est vide (forcé par l'événement personnalisé)
+        const shouldUpdate = (currentHash !== lastCalculatorStateHash && !isInitialLoad) || 
+                            (lastCalculatorStateHash === '' && !isInitialLoad);
+        
+        if (shouldUpdate) {
+          console.log('🔄 Strategy Builder: Détection d\'une nouvelle stratégie depuis le chat');
+          
+          // Mettre à jour les params
+          if (state.params) {
+            const updatedParams = {
+              ...state.params,
+              // Assurer la compatibilité
+              baseVolume: state.params.baseVolume || state.params.totalVolume || 10000000,
+              quoteVolume: state.params.quoteVolume || (state.params.baseVolume || state.params.totalVolume || 10000000) * (state.params.spotPrice || 1.0850),
+              strategyStartDate: state.params.strategyStartDate || state.params.startDate || new Date().toISOString().split('T')[0],
+              volumeType: state.params.volumeType || 'receivable'
+            };
+            setParams(updatedParams);
+            setInitialSpotPrice(updatedParams.spotPrice);
+          }
+          
+          // Mettre à jour la stratégie
+          if (state.strategy && Array.isArray(state.strategy)) {
+            setStrategy(state.strategy);
+          }
+          
+          // Mettre à jour les autres états
+          if (state.results) {
+            setResults(state.results);
+            setDisplayResults(state.results);
+          }
+          if (state.payoffData) {
+            setPayoffData(state.payoffData);
+          }
+          if (state.manualForwards) {
+            setManualForwards(state.manualForwards);
+          }
+          if (state.realPrices) {
+            setRealPrices(state.realPrices);
+          }
+          
+          // Afficher une notification seulement si ce n'est pas le chargement initial
+          if (!isInitialLoad) {
+            toast({
+              title: "Stratégie chargée",
+              description: "Une nouvelle stratégie a été chargée depuis le chat.",
+            });
+          }
+        }
+        
+        lastCalculatorStateHash = currentHash;
+        isInitialLoad = false;
+      } catch (error) {
+        console.warn('Error syncing calculator state:', error);
+      }
+    };
+    
+    // Vérifier immédiatement et marquer comme chargement initial
+    syncCalculatorState();
+    isInitialLoad = false;
+    
+    // Écouter les événements storage (pour les autres onglets)
+    const handleStorageEvent = (event: StorageEvent) => {
+      if (event.key === 'calculatorState') {
+        syncCalculatorState();
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
+    
+    // Écouter les événements personnalisés (pour le même onglet)
+    const handleCustomEvent = (event: Event) => {
+      console.log('📢 Événement calculatorStateUpdated reçu depuis le chat');
+      // Forcer la mise à jour en réinitialisant le hash pour forcer la détection
+      lastCalculatorStateHash = '';
+      // Attendre un peu pour laisser le temps à localStorage d'être mis à jour
+      setTimeout(() => {
+        syncCalculatorState();
+      }, 200);
+    };
+    window.addEventListener('calculatorStateUpdated', handleCustomEvent);
+    
+    // Polling pour détecter les changements dans le même onglet
+    const interval = setInterval(syncCalculatorState, 1000);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('calculatorStateUpdated', handleCustomEvent);
+      clearInterval(interval);
+    };
+  }, [toast]);
   
   // Function to fetch real-time rate from Market Data
   const fetchRealTimeRate = async (currencyPair: CurrencyPair): Promise<number | null> => {
@@ -2989,13 +3109,28 @@ const Index = () => {
       // Get forward price using FX forward formula
         const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       const forward = (() => {
-        return manualForwards[monthKey] || 
+        // Vérifier que les paramètres nécessaires sont définis
+        if (!initialSpotPrice || initialSpotPrice <= 0) {
+          console.warn(`Invalid initialSpotPrice: ${initialSpotPrice} for period ${i}`);
+          return params.spotPrice || 1.0; // Fallback au spot price ou valeur par défaut
+        }
+        if (params.domesticRate === undefined || params.foreignRate === undefined) {
+          console.warn(`Missing interest rates for period ${i}`);
+          return params.spotPrice || 1.0;
+        }
+        const calculatedForward = manualForwards[monthKey] || 
           calculateFXForwardPrice(
             initialSpotPrice, 
             params.domesticRate / 100, 
             params.foreignRate / 100, 
             t
           );
+        // Vérifier que le forward calculé est valide
+        if (!calculatedForward || isNaN(calculatedForward) || calculatedForward <= 0) {
+          console.warn(`Invalid forward calculated: ${calculatedForward} for period ${i}, using spot price`);
+          return params.spotPrice || 1.0;
+        }
+        return calculatedForward;
       })();
 
       // Get real price
@@ -3030,11 +3165,17 @@ const Index = () => {
             
             // Calculer le strike initial (basé sur le spot pour les pourcentages)
             // Utiliser le strike personnalisé s'il existe, sinon calculer normalement
-            let strike = customStrike !== undefined
+            let strike = customStrike !== undefined && !isNaN(customStrike)
               ? customStrike
               : (option.strikeType === 'percent' ? 
-                  params.spotPrice * (option.strike/100) : 
-                  option.strike);
+                  (params.spotPrice || 1.0) * ((option.strike || 100) / 100) : 
+                  (option.strike || 0));
+            
+            // Vérifier que le strike est valide
+            if (!strike || isNaN(strike) || strike <= 0) {
+              console.warn(`Invalid strike calculated for option ${optIndex}: ${strike}, using default`);
+              strike = params.spotPrice || 1.0;
+            }
             
             // Check if this option has dynamic strike calculation based on time to maturity
             // Ne pas calculer le strike dynamique si un strike personnalisé existe
@@ -3118,15 +3259,26 @@ const Index = () => {
                 
                 // Store this as a dynamically calculated strike in an attribute
                 // This will be used to display in the UI
-                option.dynamicStrikeInfo = {
-                  calculatedStrike: strike,
-                  calculatedStrikePercent: (strike / forward * 100).toFixed(2) + '%',
-                  forwardRate: forward,
-                  timeToMaturity: t
-                };
-                
-                // Optional: Log the calculated strike for debugging
-                console.log(`Period ${i} (${monthKey}): Calculated strike for ${currentType} at ${strike.toFixed(4)} (${(strike/forward*100).toFixed(2)}% of forward)`);
+                // Vérifier que strike et forward sont valides avant d'appeler toFixed
+                if (strike !== undefined && !isNaN(strike) && forward !== undefined && !isNaN(forward) && forward > 0) {
+                  option.dynamicStrikeInfo = {
+                    calculatedStrike: strike,
+                    calculatedStrikePercent: (strike / forward * 100).toFixed(2) + '%',
+                    forwardRate: forward,
+                    timeToMaturity: t
+                  };
+                  
+                  // Optional: Log the calculated strike for debugging
+                  console.log(`Period ${i} (${monthKey}): Calculated strike for ${currentType} at ${strike.toFixed(4)} (${(strike/forward*100).toFixed(2)}% of forward)`);
+                } else {
+                  console.warn(`Invalid strike or forward for dynamic strike calculation: strike=${strike}, forward=${forward}`);
+                  option.dynamicStrikeInfo = {
+                    calculatedStrike: strike || 0,
+                    calculatedStrikePercent: 'N/A',
+                    forwardRate: forward || 0,
+                    timeToMaturity: t
+                  };
+                }
               }
             }
             
@@ -3389,42 +3541,57 @@ const Index = () => {
           );
         }
         } // Fermer le bloc else
+        
+        // Vérifier que le prix est valide avant de retourner
+        if (price === undefined || isNaN(price)) {
+          console.warn(`Invalid price calculated for option ${optIndex} (${option.type}): ${price}, using 0`);
+          price = 0;
+        }
             
         return {
           type: option.type,
-          price: price,
-              quantity: option.quantity/100,
-              strike: strike,
-              label: optionLabel,
-              dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
-            };
+          price: price || 0,
+          quantity: (option.quantity || 100) / 100,
+          strike: strike || 0,
+          label: optionLabel,
+          dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
+        };
         });
 
       // Add swap and forward prices
       const allOptionPrices = [
         ...optionPrices,
-        ...swaps.map((swap, swapIndex) => ({
-          type: 'swap',
-          price: swapPrice,
-          quantity: swap.quantity/100,
-          strike: swap.strike,
-          label: `Swap Price ${swapIndex + 1}`
-        })),
+        ...swaps.map((swap, swapIndex) => {
+          const swapPriceValue = swapPrice !== undefined && !isNaN(swapPrice) ? swapPrice : 0;
+          return {
+            type: 'swap',
+            price: swapPriceValue,
+            quantity: (swap.quantity || 100) / 100,
+            strike: swap.strike || 0,
+            label: `Swap Price ${swapIndex + 1}`
+          };
+        }),
         ...forwards.map((forwardItem, forwardIndex) => {
-          const forwardValue = (forward - forwardItem.strike) * Math.exp(-params.domesticRate/100 * t);
+          const forwardStrike = forwardItem.strike || 0;
+          const forwardValue = forward && !isNaN(forward) && forwardStrike !== undefined && params.domesticRate !== undefined
+            ? (forward - forwardStrike) * Math.exp(-(params.domesticRate || 0)/100 * t)
+            : 0;
           return {
             type: 'forward',
-            price: forwardValue,
-            quantity: forwardItem.quantity/100,
-            strike: forwardItem.strike,
+            price: forwardValue || 0,
+            quantity: (forwardItem.quantity || 100) / 100,
+            strike: forwardStrike,
             label: `Forward ${forwardIndex + 1}`
           };
         })
       ];
 
         // Calculate strategy price
-      const strategyPrice = validateDataForReduce(allOptionPrices).reduce((total, opt) => 
-            total + (opt.price * opt.quantity), 0);
+      const strategyPrice = validateDataForReduce(allOptionPrices).reduce((total, opt) => {
+        const optPrice = opt.price !== undefined && !isNaN(opt.price) ? opt.price : 0;
+        const optQuantity = opt.quantity !== undefined && !isNaN(opt.quantity) ? opt.quantity : 0;
+        return total + (optPrice * optQuantity);
+      }, 0);
 
         // Calculate payoff using real price
       const totalPayoff = validateDataForReduce(allOptionPrices).reduce((sum, opt, idx) => {
@@ -8349,13 +8516,18 @@ const pricingFunctions = {
                             // Calculer le strike à afficher (utiliser customStrikes si disponible, sinon dynamicStrikeInfo ou strike)
                             const displayStrike = customStrikes[monthKey]?.[optionKey] !== undefined
                               ? customStrikes[monthKey][optionKey]
-                              : (opt.dynamicStrikeInfo?.calculatedStrike || opt.strike);
+                              : (opt.dynamicStrikeInfo?.calculatedStrike || opt.strike || 0);
+                            
+                            // Vérifier que displayStrike est valide avant d'appeler toFixed
+                            const safeStrike = displayStrike !== undefined && !isNaN(displayStrike) && displayStrike > 0
+                              ? displayStrike
+                              : (params.spotPrice || 1.0);
                             
                             return (
                               <td key={`strike-${j}`} className="px-3 py-2 text-sm border-b border-border/30 bg-orange-500/5">
                                 <Input
                                   type="number"
-                                  value={displayStrike.toFixed(4)}
+                                  value={safeStrike.toFixed(4)}
                                   onChange={(e) => {
                                     const newValue = e.target.value === '' ? 0 : Number(e.target.value);
                                     handleStrikeChange(monthKey, optionKey, newValue, row, j);
@@ -8395,13 +8567,13 @@ const pricingFunctions = {
                                           step="0.0001"
                                         />
                                       ) : (
-                                        <span className="font-mono">{opt.price.toFixed(4)}</span>
+                                        <span className="font-mono">{(opt.price !== undefined && !isNaN(opt.price) ? opt.price : 0).toFixed(4)}</span>
                                       )}
                                     </td>
                                   );
                                 })}
-                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{row.strategyPrice.toFixed(4)}</td>
-                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-purple-500/5 font-medium font-mono">{row.totalPayoff.toFixed(4)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{(row.strategyPrice !== undefined && !isNaN(row.strategyPrice) ? row.strategyPrice : 0).toFixed(4)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-purple-500/5 font-medium font-mono">{(row.totalPayoff !== undefined && !isNaN(row.totalPayoff) ? row.totalPayoff : 0).toFixed(4)}</td>
                               <td className="px-3 py-2 text-sm border-b border-border/30">
                           <Input
                             type="number"

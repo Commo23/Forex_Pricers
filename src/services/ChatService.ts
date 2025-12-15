@@ -17,13 +17,30 @@ interface StrategySession {
   baseVolume?: number;
   quoteVolume?: number;
   monthsToHedge?: number;
-  components: Array<{
-    type: 'option' | 'forward' | 'swap';
+  currentComponent?: {
+    type?: string;
     optionType?: 'call' | 'put';
     strike?: number;
     strikeType?: 'absolute' | 'percent';
     quantity?: number;
     volatility?: number;
+    barrier?: number;
+    barrierType?: 'absolute' | 'percent';
+    secondBarrier?: number;
+    rebate?: number;
+    missingParams?: string[];
+  };
+  components: Array<{
+    type: string;
+    optionType?: 'call' | 'put';
+    strike?: number;
+    strikeType?: 'absolute' | 'percent';
+    quantity?: number;
+    volatility?: number;
+    barrier?: number;
+    barrierType?: 'absolute' | 'percent';
+    secondBarrier?: number;
+    rebate?: number;
   }>;
 }
 
@@ -631,15 +648,145 @@ class ChatService {
 
     return `✅ Maturité: **${months} mois**\n\n` +
       `**Étape 4/4**: Quels composants souhaitez-vous ajouter à votre stratégie?\n\n` +
-      `💡 Exemples:\n` +
-      `• "Ajoute un call EUR/USD strike 1.10"\n` +
-      `• "Un put strike 1.05"\n` +
-      `• "Un forward"\n` +
-      `• "Terminer" ou "C'est tout" pour finaliser`;
+      `💡 **Types disponibles:**\n` +
+      `• Options vanilles: "call strike 1.10" ou "put strike 1.05"\n` +
+      `• Options barrière: "call knockout strike 1.10 barrière 1.15" ou "put knockin strike 1.05 barrière 1.00"\n` +
+      `• Options digitales: "one-touch barrière 1.15 rebate 5%" ou "double-touch barrière 1.10 / 1.20"\n` +
+      `• Autres: "forward strike 1.10" ou "swap"\n\n` +
+      `💡 Le chat vous guidera pour collecter tous les paramètres nécessaires!\n` +
+      `💡 Dites "Terminer" ou "C'est tout" une fois tous les composants ajoutés.`;
   }
 
   /**
-   * Étape 4: Collecte des composants
+   * Détecte le type d'option avancé depuis le message
+   */
+  private detectOptionType(message: string): { type: string; optionType: 'call' | 'put' | null } {
+    const normalized = message.toLowerCase();
+    
+    // Options digitales
+    if (normalized.includes('one-touch') || normalized.includes('one touch')) {
+      return { type: 'one-touch', optionType: null };
+    }
+    if (normalized.includes('no-touch') || normalized.includes('no touch')) {
+      return { type: 'no-touch', optionType: null };
+    }
+    if (normalized.includes('double-touch') || normalized.includes('double touch')) {
+      return { type: 'double-touch', optionType: null };
+    }
+    if (normalized.includes('double-no-touch') || normalized.includes('double no touch')) {
+      return { type: 'double-no-touch', optionType: null };
+    }
+    if (normalized.includes('range-binary') || normalized.includes('range binary')) {
+      return { type: 'range-binary', optionType: null };
+    }
+    if (normalized.includes('outside-binary') || normalized.includes('outside binary')) {
+      return { type: 'outside-binary', optionType: null };
+    }
+    
+    // Options barrière knockout
+    if (normalized.includes('knockout') || normalized.includes('knock-out') || normalized.includes('ko')) {
+      if (normalized.includes('call')) {
+        if (normalized.includes('reverse') || normalized.includes('rev')) {
+          return { type: 'call-reverse-knockout', optionType: 'call' };
+        }
+        if (normalized.includes('double') || normalized.includes('dbl')) {
+          return { type: 'call-double-knockout', optionType: 'call' };
+        }
+        return { type: 'call-knockout', optionType: 'call' };
+      }
+      if (normalized.includes('put')) {
+        if (normalized.includes('reverse') || normalized.includes('rev')) {
+          return { type: 'put-reverse-knockout', optionType: 'put' };
+        }
+        if (normalized.includes('double') || normalized.includes('dbl')) {
+          return { type: 'put-double-knockout', optionType: 'put' };
+        }
+        return { type: 'put-knockout', optionType: 'put' };
+      }
+    }
+    
+    // Options barrière knockin
+    if (normalized.includes('knockin') || normalized.includes('knock-in') || normalized.includes('ki')) {
+      if (normalized.includes('call')) {
+        if (normalized.includes('reverse') || normalized.includes('rev')) {
+          return { type: 'call-reverse-knockin', optionType: 'call' };
+        }
+        if (normalized.includes('double') || normalized.includes('dbl')) {
+          return { type: 'call-double-knockin', optionType: 'call' };
+        }
+        return { type: 'call-knockin', optionType: 'call' };
+      }
+      if (normalized.includes('put')) {
+        if (normalized.includes('reverse') || normalized.includes('rev')) {
+          return { type: 'put-reverse-knockin', optionType: 'put' };
+        }
+        if (normalized.includes('double') || normalized.includes('dbl')) {
+          return { type: 'put-double-knockin', optionType: 'put' };
+        }
+        return { type: 'put-knockin', optionType: 'put' };
+      }
+    }
+    
+    // Options vanilles
+    if (normalized.includes('call') || normalized.includes('achat')) {
+      return { type: 'call', optionType: 'call' };
+    }
+    if (normalized.includes('put') || normalized.includes('vente')) {
+      return { type: 'put', optionType: 'put' };
+    }
+    
+    return { type: '', optionType: null };
+  }
+
+  /**
+   * Détermine les paramètres requis pour un type d'option
+   */
+  private getRequiredParams(optionType: string): string[] {
+    const params: string[] = [];
+    
+    // Toutes les options nécessitent un strike
+    if (optionType !== 'swap' && optionType !== 'forward') {
+      params.push('strike');
+    }
+    
+    // Options vanilles nécessitent volatilité
+    if (optionType === 'call' || optionType === 'put') {
+      params.push('volatility');
+    }
+    
+    // Options barrière nécessitent barrière et volatilité
+    if (optionType.includes('knockout') || optionType.includes('knockin')) {
+      params.push('barrier');
+      params.push('volatility');
+      
+      // Options double barrière nécessitent aussi secondBarrier
+      if (optionType.includes('double')) {
+        params.push('secondBarrier');
+      }
+    }
+    
+    // Options digitales nécessitent barrière, rebate et volatilité
+    if (optionType.includes('touch') || optionType.includes('binary')) {
+      params.push('barrier');
+      params.push('rebate');
+      params.push('volatility');
+      
+      // Options double nécessitent secondBarrier
+      if (optionType.includes('double')) {
+        params.push('secondBarrier');
+      }
+    }
+    
+    // Forwards nécessitent strike
+    if (optionType === 'forward') {
+      params.push('strike');
+    }
+    
+    return params;
+  }
+
+  /**
+   * Étape 4: Collecte des composants avec gestion intelligente des paramètres
    */
   private handleComponentsStep(message: string, sessionId: string): string {
     const session = this.strategySessions.get(sessionId);
@@ -651,74 +798,340 @@ class ChatService {
     if (normalized.includes('terminer') || normalized.includes('terminé') || 
         normalized.includes('c\'est tout') || normalized.includes('fini') ||
         normalized.includes('done')) {
+      // Si on est en train de construire un composant, l'annuler
+      if (session.currentComponent) {
+        session.currentComponent = undefined;
+        return '✅ Composant annulé.\n\n💡 Ajoutez un nouveau composant ou dites "Terminer" pour finaliser la stratégie.';
+      }
       return this.finalizeStrategy(sessionId);
     }
 
+    // Si on est en train de collecter les paramètres d'un composant
+    if (session.currentComponent) {
+      return this.collectComponentParams(message, sessionId);
+    }
+
     // Détecter le type de composant
-    let componentType: 'option' | 'forward' | 'swap' | null = null;
+    let componentType: string | null = null;
     let optionType: 'call' | 'put' | null = null;
 
     if (normalized.includes('forward')) {
       componentType = 'forward';
     } else if (normalized.includes('swap')) {
       componentType = 'swap';
-    } else if (normalized.includes('call') || normalized.includes('achat')) {
-      componentType = 'option';
-      optionType = 'call';
-    } else if (normalized.includes('put') || normalized.includes('vente')) {
-      componentType = 'option';
-      optionType = 'put';
+    } else {
+      const detected = this.detectOptionType(message);
+      if (detected.type) {
+        componentType = detected.type;
+        optionType = detected.optionType;
+      }
     }
 
     if (!componentType) {
-      return '❓ Type de composant non reconnu.\n\n💡 Veuillez spécifier: "call", "put", "forward" ou "swap".';
+      return '❓ Type de composant non reconnu.\n\n💡 Types disponibles:\n' +
+        `• Options vanilles: "call", "put"\n` +
+        `• Options barrière: "call knockout", "put knockin", "call reverse knockout"\n` +
+        `• Options digitales: "one-touch", "no-touch", "double-touch", "range-binary"\n` +
+        `• Autres: "forward", "swap"\n\n` +
+        `💡 Exemple: "Ajoute un call knockout strike 1.10"`;
     }
 
-    // Pour les options, extraire le strike
-    let strike: number | undefined;
-    if (componentType === 'option') {
-      const strikePatterns = [
-        /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
-        /\bk\s*[=:]\s*(\d+\.?\d*)/i,
-        /\bstrike\s+(\d+\.?\d*)/i,
-        /\bà\s*(\d+\.?\d*)/i
-      ];
-
-      for (const pattern of strikePatterns) {
-        const match = message.match(pattern);
-        if (match) {
-          strike = parseFloat(match[1]);
-          break;
-        }
-      }
-
-      if (!strike) {
-        return `❓ Veuillez spécifier le strike pour le ${optionType}.\n\n💡 Exemple: "call strike 1.10" ou "put à 1.05"`;
-      }
-    }
-
-    // Ajouter le composant
-    const component: any = {
-      type: componentType === 'option' ? 'option' : componentType,
-      quantity: 100 // Par défaut 100%
+    // Initialiser le composant en cours
+    session.currentComponent = {
+      type: componentType,
+      optionType: optionType || undefined,
+      missingParams: this.getRequiredParams(componentType)
     };
 
-    if (componentType === 'option') {
-      component.optionType = optionType;
-      component.strike = strike;
-      component.strikeType = 'absolute';
-      component.volatility = this.defaultVolatility * 100; // En pourcentage
+    // Extraire les paramètres déjà fournis dans le message
+    this.extractParamsFromMessage(message, session.currentComponent, session.spotPrice || 1.0);
+
+    // Si tous les paramètres sont fournis, ajouter directement
+    if (session.currentComponent.missingParams!.length === 0) {
+      return this.addComponent(sessionId);
     }
 
-    session.components.push(component);
+    // Sinon, demander les paramètres manquants
+    return this.askForMissingParams(sessionId);
+  }
 
-    const componentDesc = componentType === 'option' 
-      ? `${optionType?.toUpperCase()} strike ${strike}`
-      : componentType.toUpperCase();
+  /**
+   * Extrait les paramètres depuis le message utilisateur
+   */
+  private extractParamsFromMessage(message: string, component: any, spotPrice: number): void {
+    // Extraire le strike
+    const strikePatterns = [
+      /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bk\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bstrike\s+(\d+\.?\d*)/i,
+      /\bà\s*(\d+\.?\d*)/i,
+      /\b(\d+\.\d{2,4})\b/ // Format simple comme "1.10"
+    ];
 
-    return `✅ Composant ajouté: **${componentDesc}**\n\n` +
+    for (const pattern of strikePatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const value = parseFloat(match[1]);
+        if (value > 0) {
+          component.strike = value;
+          component.strikeType = 'absolute';
+          if (component.missingParams) {
+            component.missingParams = component.missingParams.filter((p: string) => p !== 'strike');
+          }
+        }
+      }
+    }
+
+    // Extraire la volatilité
+    const volPatterns = [
+      /\bvol(?:atilit[ée])?\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\bvol\s*[=:]\s*(\d+\.?\d*)/i,
+      /\b(\d+\.?\d*)\s*%\s*vol/i
+    ];
+
+    for (const pattern of volPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        component.volatility = parseFloat(match[1]);
+        if (component.missingParams) {
+          component.missingParams = component.missingParams.filter((p: string) => p !== 'volatility');
+        }
+      }
+    }
+
+    // Extraire la barrière
+    const barrierPatterns = [
+      /\bbarri[èe]re\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bbarrier\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bbarri[èe]re\s+(\d+\.?\d*)/i
+    ];
+
+    for (const pattern of barrierPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const value = parseFloat(match[1]);
+        if (value > 0) {
+          if (!component.barrier) {
+            component.barrier = value;
+            component.barrierType = 'absolute';
+            if (component.missingParams) {
+              component.missingParams = component.missingParams.filter((p: string) => p !== 'barrier');
+            }
+          } else if (!component.secondBarrier) {
+            component.secondBarrier = value;
+            if (component.missingParams) {
+              component.missingParams = component.missingParams.filter((p: string) => p !== 'secondBarrier');
+            }
+          }
+        }
+      }
+    }
+
+    // Extraire le rebate (pour options digitales)
+    const rebatePatterns = [
+      /\brebate\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\brebate\s*[=:]\s*(\d+\.?\d*)/i
+    ];
+
+    for (const pattern of rebatePatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        component.rebate = parseFloat(match[1]);
+        if (component.missingParams) {
+          component.missingParams = component.missingParams.filter((p: string) => p !== 'rebate');
+        }
+      }
+    }
+
+    // Extraire la quantité
+    const quantityPatterns = [
+      /\bquantit[ée]\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\bqty\s*[=:]\s*(\d+\.?\d*)/i,
+      /\b(\d+)\s*%/i
+    ];
+
+    for (const pattern of quantityPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        component.quantity = parseFloat(match[1]);
+        if (component.missingParams) {
+          component.missingParams = component.missingParams.filter((p: string) => p !== 'quantity');
+        }
+      }
+    }
+  }
+
+  /**
+   * Collecte les paramètres manquants étape par étape
+   */
+  private collectComponentParams(message: string, sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currentComponent) return '❌ Erreur de session.';
+
+    const component = session.currentComponent;
+    const spotPrice = session.spotPrice || 1.0;
+
+    // Extraire les paramètres du message
+    this.extractParamsFromMessage(message, component, spotPrice);
+
+    // Vérifier si tous les paramètres sont maintenant fournis
+    if (component.missingParams && component.missingParams.length === 0) {
+      return this.addComponent(sessionId);
+    }
+
+    // Sinon, continuer à demander
+    return this.askForMissingParams(sessionId);
+  }
+
+  /**
+   * Demande les paramètres manquants de manière intelligente
+   */
+  private askForMissingParams(sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currentComponent) return '❌ Erreur de session.';
+
+    const component = session.currentComponent;
+    const missing = component.missingParams || [];
+    const spotPrice = session.spotPrice || 1.0;
+
+    if (missing.length === 0) {
+      return this.addComponent(sessionId);
+    }
+
+    const nextParam = missing[0];
+    let question = `📝 **Ajout d'un ${component.type.toUpperCase()}**\n\n`;
+
+    // Afficher les paramètres déjà collectés
+    const collected: string[] = [];
+    if (component.strike) collected.push(`✅ Strike: ${component.strike}`);
+    if (component.volatility) collected.push(`✅ Volatilité: ${component.volatility}%`);
+    if (component.barrier) collected.push(`✅ Barrière: ${component.barrier}`);
+    if (component.secondBarrier) collected.push(`✅ Seconde barrière: ${component.secondBarrier}`);
+    if (component.rebate) collected.push(`✅ Rebate: ${component.rebate}%`);
+    if (component.quantity) collected.push(`✅ Quantité: ${component.quantity}%`);
+
+    if (collected.length > 0) {
+      question += collected.join('\n') + '\n\n';
+    }
+
+    // Demander le paramètre suivant
+    switch (nextParam) {
+      case 'strike':
+        question += `❓ **Quel est le strike?**\n` +
+          `💡 Exemple: "1.10" ou "strike 1.10" (spot actuel: ${spotPrice.toFixed(4)})`;
+        break;
+      case 'volatility':
+        question += `❓ **Quelle est la volatilité?**\n` +
+          `💡 Exemple: "12%" ou "vol 15" (par défaut: ${(this.defaultVolatility * 100).toFixed(1)}%)`;
+        break;
+      case 'barrier':
+        question += `❓ **Quelle est la barrière?**\n` +
+          `💡 Exemple: "1.15" ou "barrière 1.15" (spot actuel: ${spotPrice.toFixed(4)})`;
+        break;
+      case 'secondBarrier':
+        question += `❓ **Quelle est la seconde barrière?**\n` +
+          `💡 Exemple: "1.20" ou "seconde barrière 1.20"`;
+        break;
+      case 'rebate':
+        question += `❓ **Quel est le rebate (paiement)?**\n` +
+          `💡 Exemple: "5%" ou "rebate 10" (par défaut: 5%)`;
+        break;
+      default:
+        question += `❓ Veuillez fournir: ${nextParam}`;
+    }
+
+    return question;
+  }
+
+  /**
+   * Ajoute le composant à la stratégie
+   */
+  private addComponent(sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currentComponent) return '❌ Erreur de session.';
+
+    const component = session.currentComponent;
+    const spotPrice = session.spotPrice || 1.0;
+
+    // Appliquer les valeurs par défaut
+    const finalComponent: any = {
+      type: component.type,
+      quantity: component.quantity || 100,
+      strikeType: component.strikeType || 'absolute'
+    };
+
+    if (component.optionType) {
+      finalComponent.optionType = component.optionType;
+    }
+
+    if (component.strike) {
+      finalComponent.strike = component.strike;
+    } else if (component.type !== 'swap' && component.type !== 'forward') {
+      // Strike par défaut pour les options
+      finalComponent.strike = spotPrice;
+      finalComponent.strikeType = 'absolute';
+    }
+
+    if (component.volatility !== undefined) {
+      finalComponent.volatility = component.volatility;
+    } else if (component.type === 'call' || component.type === 'put' || 
+               component.type.includes('knockout') || component.type.includes('knockin') ||
+               component.type.includes('touch') || component.type.includes('binary')) {
+      finalComponent.volatility = this.defaultVolatility * 100;
+    }
+
+    if (component.barrier) {
+      finalComponent.barrier = component.barrier;
+      finalComponent.barrierType = component.barrierType || 'absolute';
+    }
+
+    if (component.secondBarrier) {
+      finalComponent.secondBarrier = component.secondBarrier;
+    }
+
+    if (component.rebate !== undefined) {
+      finalComponent.rebate = component.rebate;
+    } else if (component.type.includes('touch') || component.type.includes('binary')) {
+      finalComponent.rebate = 5; // Par défaut 5%
+    }
+
+    session.components.push(finalComponent);
+    const componentDesc = this.formatComponentDescription(finalComponent);
+
+    // Réinitialiser le composant en cours
+    session.currentComponent = undefined;
+
+    return `✅ **Composant ajouté:** ${componentDesc}\n\n` +
       `📊 Total composants: ${session.components.length}\n\n` +
       `💡 Ajoutez d'autres composants ou dites "Terminer" pour finaliser la stratégie.`;
+  }
+
+  /**
+   * Formate la description d'un composant
+   */
+  private formatComponentDescription(component: any): string {
+    let desc = component.type.toUpperCase();
+    
+    if (component.strike) {
+      desc += ` Strike ${component.strike}`;
+    }
+    if (component.barrier) {
+      desc += ` Barrière ${component.barrier}`;
+    }
+    if (component.secondBarrier) {
+      desc += ` / ${component.secondBarrier}`;
+    }
+    if (component.volatility) {
+      desc += ` Vol ${component.volatility}%`;
+    }
+    if (component.rebate) {
+      desc += ` Rebate ${component.rebate}%`;
+    }
+    if (component.quantity) {
+      desc += ` Qty ${component.quantity}%`;
+    }
+    
+    return desc;
   }
 
   /**
@@ -762,7 +1175,11 @@ class ChatService {
           strike: comp.strike,
           strikeType: comp.strikeType || 'absolute',
           quantity: comp.quantity || 100,
-          volatility: comp.volatility || this.defaultVolatility * 100
+          volatility: comp.volatility || this.defaultVolatility * 100,
+          barrier: comp.barrier,
+          barrierType: comp.barrierType || 'absolute',
+          secondBarrier: comp.secondBarrier,
+          rebate: comp.rebate
         })),
         results: null,
         payoffData: [],
@@ -786,6 +1203,11 @@ class ChatService {
 
       // Sauvegarder dans localStorage
       localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+
+      // Déclencher un événement personnalisé pour notifier Strategy Builder
+      window.dispatchEvent(new CustomEvent('calculatorStateUpdated', {
+        detail: { source: 'chat' }
+      }));
 
       // Marquer la session comme complète
       session.step = 'complete';

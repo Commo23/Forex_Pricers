@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Minimize2, CheckCircle2 } from 'lucide-react';
+import { MessageSquare, X, Send, Minimize2, CheckCircle2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -146,6 +146,35 @@ const ChatWidget: React.FC = () => {
     }
   };
 
+  // Fonction pour actualiser le chat
+  const handleRefresh = async () => {
+    // Réinitialiser les messages au message de bienvenue
+    setMessages([{
+      id: 'welcome',
+      role: 'assistant',
+      content: '👋 Bonjour! Je suis votre assistant FX intelligent. Je peux vous aider avec:\n\n• 📊 Taux de change spot en temps réel\n• 💰 Calcul de prix d\'options (Call/Put)\n• 📈 Calcul de forward FX\n• 🚀 Simulation de stratégies\n\nPosez-moi une question en langage naturel!',
+      timestamp: new Date()
+    }]);
+    
+    // Vérifier si des résultats sont disponibles
+    const syncService = ChatSyncService.getInstance();
+    if (syncService.hasResults()) {
+      setHasNewResults(true);
+      // Ajouter un message informatif
+      setTimeout(() => {
+        const infoMessage: Message = {
+          id: `refresh-${Date.now()}`,
+          role: 'assistant',
+          content: '💡 Des résultats de stratégie sont disponibles. Dites "Résultats" pour les voir.',
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, infoMessage]);
+      }, 500);
+    } else {
+      setHasNewResults(false);
+    }
+  };
+
   // Quick actions avec toutes les fonctionnalités
   const quickActions = [
     "Quel est le spot EUR/USD?",
@@ -184,7 +213,17 @@ const ChatWidget: React.FC = () => {
             size="sm" 
             variant="ghost" 
             className="text-primary-foreground hover:bg-primary-foreground/20"
+            onClick={handleRefresh}
+            title="Actualiser le chat"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button 
+            size="sm" 
+            variant="ghost" 
+            className="text-primary-foreground hover:bg-primary-foreground/20"
             onClick={() => setIsMinimized(!isMinimized)}
+            title="Minimiser"
           >
             <Minimize2 className="h-4 w-4" />
           </Button>
@@ -193,6 +232,7 @@ const ChatWidget: React.FC = () => {
             variant="ghost"
             className="text-primary-foreground hover:bg-primary-foreground/20"
             onClick={() => setIsOpen(false)}
+            title="Fermer"
           >
             <X className="h-4 w-4" />
           </Button>
