@@ -685,6 +685,12 @@ class ChatService {
    * Traite un message avec Gemini AI
    */
   async processMessage(userMessage: string): Promise<string> {
+    // Détecter les requêtes simples qui peuvent être traitées directement
+    const simpleResponse = await this.handleSimpleQuery(userMessage);
+    if (simpleResponse) {
+      return simpleResponse;
+    }
+
     // Si pas de clé API, utiliser le mode fallback
     if (!this.apiKey) {
       return this.fallbackMode(userMessage);
@@ -704,8 +710,223 @@ class ChatService {
       return await this.processWithGemini(userMessage);
     } catch (error: any) {
       console.error('Chat error:', error);
+      
+      // Si erreur de quota, essayer de traiter directement
+      if (error.message && (error.message.includes('quota') || error.message.includes('Quota exceeded'))) {
+        const directResponse = await this.handleSimpleQuery(userMessage);
+        if (directResponse) {
+          return directResponse;
+        }
+        return `⚠️ Quota API dépassé. Veuillez réessayer plus tard.\n\n${this.fallbackMode(userMessage, error.message)}`;
+      }
+      
       return this.fallbackMode(userMessage, error.message);
     }
+  }
+
+  /**
+   * Traite les requêtes simples directement sans passer par Gemini
+   */
+  private async handleSimpleQuery(message: string): Promise<string | null> {
+    const normalizedMessage = message.toLowerCase().trim();
+    
+    // 1. Détection de requête de spot rate
+    const spotResult = await this.handleSpotRateQuery(message);
+    if (spotResult) return spotResult;
+
+    // 2. Détection de calcul d'option (call/put)
+    const optionResult = await this.handleOptionPriceQuery(message);
+    if (optionResult) return optionResult;
+
+    // 3. Détection de calcul de forward
+    const forwardResult = await this.handleForwardRateQuery(message);
+    if (forwardResult) return forwardResult;
+
+    return null;
+  }
+
+  /**
+   * Traite les requêtes de spot rate
+   */
+  private async handleSpotRateQuery(message: string): Promise<string | null> {
+    const spotPatterns = [
+      /(?:quel|what|donne|give|show).*(?:est|is|le|the).*(?:spot|taux|cours|rate).*([A-Z]{3})\/?\s*([A-Z]{3})/i,
+      /spot\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
+      /([A-Z]{3})\/?\s*([A-Z]{3})\s+spot/i,
+      /taux\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
+      /cours\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
+      /([A-Z]{3})\/?\s*([A-Z]{3})/i // Pattern simple pour détecter une paire de devises seule
+    ];
+
+    for (const pattern of spotPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const base = match[1] || match[2];
+        const quote = match[2] || match[3];
+        if (base && quote && base.length === 3 && quote.length === 3) {
+          try {
+            const result = await this.getSpotRate(`${base}/${quote}`);
+            const data = JSON.parse(result);
+            return `💱 **Spot ${data.currencyPair}**\n\n📊 Taux: **${data.rate}**\n🕐 Mis à jour: ${data.timestamp}`;
+          } catch (error) {
+            return null;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Traite les requêtes de calcul d'option
+   */
+  private async handleOptionPriceQuery(message: string): Promise<string | null> {
+    // Patterns pour détecter les requêtes d'option avec paramètres
+    const optionPatterns = [
+      // Format: "call EUR/USD strike 1.10 spot 1.0850 3 mois vol 15%"
+      /(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:strike|k)\s+([\d.]+)\s+(?:spot|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)\s*(?:vol|volatility)?\s*([\d.]+)?%?/i,
+      // Format: "prix call EUR/USD strike 1.10 spot 1.0850 3 mois"
+      /(?:prix|price|calcul|calculate)\s+(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:strike|k)\s+([\d.]+)\s+(?:spot|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
+      // Format: "option call EUR/USD 1.10 1.0850 3 mois 15%"
+      /(?:option|option\s+price)\s+(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)\s*([\d.]+)?%?/i,
+      // Format: "call EUR/USD 1.10 à 3 mois" (utilise le spot actuel)
+      /(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(?:à|at|for)\s+(\d+)\s*(?:mois|months|m)/i
+    ];
+
+    for (const pattern of optionPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        try {
+          const optionType = match[1].toLowerCase();
+          const base = match[2];
+          const quote = match[3];
+          
+          // Extraire les paramètres selon le pattern
+          let strike: number;
+          let spotPrice: number;
+          let months: number;
+          let volatility = 0.15; // Par défaut 15%
+
+          if (match[4] && match[5] && match[6]) {
+            // Pattern avec strike et spot explicites
+            strike = parseFloat(match[4]);
+            spotPrice = parseFloat(match[5]);
+            months = parseInt(match[6]);
+            if (match[7]) volatility = parseFloat(match[7]) / 100;
+          } else if (match[4] && match[5]) {
+            // Pattern avec seulement strike et spot (sans mois explicite)
+            strike = parseFloat(match[4]);
+            spotPrice = parseFloat(match[5]);
+            months = 3; // Par défaut 3 mois
+          } else {
+            // Pattern simple avec strike et mois
+            strike = parseFloat(match[4]);
+            months = parseInt(match[5]);
+            // Récupérer le spot actuel
+            try {
+              const spotResult = await this.getSpotRate(`${base}/${quote}`);
+              const spotData = JSON.parse(spotResult);
+              spotPrice = parseFloat(spotData.rate);
+            } catch {
+              return null; // Impossible de récupérer le spot
+            }
+          }
+
+          if (optionType && base && quote && strike && spotPrice && months && !isNaN(strike) && !isNaN(spotPrice) && !isNaN(months)) {
+            const timeToMaturity = months / 12;
+            const result = await this.calculateOptionPrice({
+              optionType,
+              currencyPair: `${base}/${quote}`,
+              spotPrice,
+              strike,
+              timeToMaturity,
+              volatility
+            });
+            const data = JSON.parse(result);
+            return `📈 **Prix ${optionType.toUpperCase()} ${data.currencyPair}**\n\n` +
+                   `💰 Prix: **${data.price}** (${data.pricePercent}%)\n` +
+                   `📊 Strike: ${data.strike}\n` +
+                   `📈 Spot: ${data.spotPrice}\n` +
+                   `📅 Maturité: ${data.timeToMaturity}\n` +
+                   `📉 Volatilité: ${data.volatility}`;
+          }
+        } catch (error) {
+          // Continuer avec le pattern suivant
+          continue;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Traite les requêtes de calcul de forward
+   */
+  private async handleForwardRateQuery(message: string): Promise<string | null> {
+    // Patterns pour détecter les requêtes de forward avec paramètres
+    const forwardPatterns = [
+      // Format: "forward EUR/USD spot 1.0850 3 mois"
+      /forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:spot|spot\s+price|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
+      // Format: "taux forward EUR/USD 1.0850 à 3 mois"
+      /(?:taux\s+)?forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(?:à|at|for)\s+(\d+)\s*(?:mois|months|m)/i,
+      // Format: "calcul forward EUR/USD 1.0850 3 mois"
+      /(?:calcul|calculate)\s+forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
+      // Format: "forward EUR/USD 3 mois" (utilise le spot actuel)
+      /forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(\d+)\s*(?:mois|months|m)/i
+    ];
+
+    for (const pattern of forwardPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        try {
+          const base = match[1];
+          const quote = match[2];
+          let spotPrice: number;
+          let months: number;
+
+          if (match[3] && match[4]) {
+            // Pattern avec spot explicite
+            spotPrice = parseFloat(match[3]);
+            months = parseInt(match[4]);
+          } else if (match[3]) {
+            // Pattern simple avec seulement les mois (récupérer le spot)
+            months = parseInt(match[3]);
+            try {
+              const spotResult = await this.getSpotRate(`${base}/${quote}`);
+              const spotData = JSON.parse(spotResult);
+              spotPrice = parseFloat(spotData.rate);
+            } catch {
+              return null; // Impossible de récupérer le spot
+            }
+          } else {
+            continue;
+          }
+          
+          if (base && quote && spotPrice && months && !isNaN(spotPrice) && !isNaN(months)) {
+            const timeToMaturity = months / 12;
+            const result = await this.calculateForwardRate({
+              currencyPair: `${base}/${quote}`,
+              spotPrice,
+              timeToMaturity
+            });
+            const data = JSON.parse(result);
+            return `📊 **Forward ${data.currencyPair}**\n\n` +
+                   `💰 Prix Forward: **${data.forwardPrice}**\n` +
+                   `📈 Spot: ${data.spotPrice}\n` +
+                   `📅 Maturité: ${data.timeToMaturity}\n` +
+                   `💹 Taux domestique: ${data.domesticRate}\n` +
+                   `💹 Taux étranger: ${data.foreignRate}`;
+          }
+        } catch (error) {
+          // Continuer avec le pattern suivant
+          continue;
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -745,7 +966,14 @@ class ChatService {
       } catch {
         error = { error: { message: errorText } };
       }
-      throw new Error(error.error?.message || `Erreur API Gemini: ${response.status}`);
+      
+      // Détecter les erreurs de quota spécifiquement
+      const errorMessage = error.error?.message || errorText;
+      if (errorMessage.includes('quota') || errorMessage.includes('Quota exceeded') || response.status === 429) {
+        throw new Error(`Quota API dépassé: ${errorMessage}`);
+      }
+      
+      throw new Error(errorMessage || `Erreur API Gemini: ${response.status}`);
     }
 
     const data = await response.json();
