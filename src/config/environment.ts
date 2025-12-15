@@ -20,6 +20,9 @@ export const config = {
     },
     bloomberg: {
       key: import.meta.env.VITE_BLOOMBERG_API_KEY || ''
+    },
+    gemini: {
+      key: import.meta.env.VITE_GEMINI_API_KEY || 'AIzaSyAecEj25iUirNNX38uxQhKbecbcnlutOuQ'
     }
   },
   
