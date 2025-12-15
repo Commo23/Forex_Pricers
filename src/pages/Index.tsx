@@ -1175,6 +1175,16 @@ const Index = () => {
         }
         
         const state = JSON.parse(savedState);
+        
+        // Vérifier si la stratégie est vide ou invalide - ne rien faire dans ce cas
+        const hasValidStrategy = state.strategy && Array.isArray(state.strategy) && state.strategy.length > 0;
+        const hasValidParams = state.params && state.params.currencyPair && state.params.spotPrice;
+        
+        // Si pas de stratégie valide, ne rien faire
+        if (!hasValidStrategy && !hasValidParams) {
+          return;
+        }
+        
         // Créer un hash plus robuste incluant params et strategy
         const paramsHash = state.params ? JSON.stringify({
           currencyPair: state.params.currencyPair?.symbol,
@@ -1189,12 +1199,13 @@ const Index = () => {
         }))) : '';
         const currentHash = paramsHash + strategyHash;
         
-        // Si le state a changé (nouvelle stratégie du chat) et ce n'est pas le chargement initial
-        // OU si lastCalculatorStateHash est vide (forcé par l'événement personnalisé)
-        const shouldUpdate = (currentHash !== lastCalculatorStateHash && !isInitialLoad) || 
-                            (lastCalculatorStateHash === '' && !isInitialLoad);
+        // Vérifier si c'est vraiment un changement significatif
+        // Le hash doit être différent ET ce n'est pas le chargement initial
+        const isSignificantChange = currentHash !== lastCalculatorStateHash && 
+                                    currentHash !== '' &&
+                                    !isInitialLoad;
         
-        if (shouldUpdate) {
+        if (isSignificantChange) {
           console.log('🔄 Strategy Builder: Détection d\'une nouvelle stratégie depuis le chat');
           
           // Mettre à jour les params
@@ -1231,13 +1242,11 @@ const Index = () => {
             setRealPrices(state.realPrices);
           }
           
-          // Afficher une notification seulement si ce n'est pas le chargement initial
-          if (!isInitialLoad) {
-            toast({
-              title: "Stratégie chargée",
-              description: "Une nouvelle stratégie a été chargée depuis le chat.",
-            });
-          }
+          // Afficher une notification seulement si c'est vraiment une nouvelle stratégie
+          toast({
+            title: "Stratégie chargée",
+            description: "Une nouvelle stratégie a été chargée depuis le chat.",
+          });
         }
         
         lastCalculatorStateHash = currentHash;
@@ -1262,8 +1271,6 @@ const Index = () => {
     // Écouter les événements personnalisés (pour le même onglet)
     const handleCustomEvent = (event: Event) => {
       console.log('📢 Événement calculatorStateUpdated reçu depuis le chat');
-      // Forcer la mise à jour en réinitialisant le hash pour forcer la détection
-      lastCalculatorStateHash = '';
       // Attendre un peu pour laisser le temps à localStorage d'être mis à jour
       setTimeout(() => {
         syncCalculatorState();
@@ -1271,8 +1278,8 @@ const Index = () => {
     };
     window.addEventListener('calculatorStateUpdated', handleCustomEvent);
     
-    // Polling pour détecter les changements dans le même onglet
-    const interval = setInterval(syncCalculatorState, 1000);
+    // Polling pour détecter les changements dans le même onglet (réduit à 2 secondes)
+    const interval = setInterval(syncCalculatorState, 2000);
     
     return () => {
       window.removeEventListener('storage', handleStorageEvent);
