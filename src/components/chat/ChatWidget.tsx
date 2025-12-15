@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Minimize2, RotateCcw } from 'lucide-react';
+import { MessageSquare, X, Send, Minimize2, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import ChatService from '@/services/ChatService';
+import ChatSyncService from '@/services/ChatSyncService';
 
 interface Message {
   id: string;
@@ -20,14 +21,16 @@ const ChatWidget: React.FC = () => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: '👋 Bonjour! Je suis votre assistant FX intelligent. Je peux vous aider avec:\n\n• 📊 Taux de change spot en temps réel\n• 💰 Calcul de prix d\'options (Call/Put)\n• 📈 Calcul de forward FX\n• 📚 Explications de stratégies de hedging\n\nPosez-moi une question en langage naturel!',
+      content: '👋 Bonjour! Je suis votre assistant FX intelligent. Je peux vous aider avec:\n\n• 📊 Taux de change spot en temps réel\n• 💰 Calcul de prix d\'options (Call/Put)\n• 📈 Calcul de forward FX\n\nPosez-moi une question en langage naturel!',
       timestamp: new Date()
     }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [hasNewResults, setHasNewResults] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatService = ChatService.getInstance();
+  const syncService = ChatSyncService.getInstance();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -36,6 +39,65 @@ const ChatWidget: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Synchronisation avec l'application
+  useEffect(() => {
+    // Démarrer le polling pour détecter les résultats
+    syncService.startPolling(2000);
+
+    // Écouter les événements de synchronisation
+    const unsubscribeResults = syncService.on('resultsCalculated', (data) => {
+      // Notifier l'utilisateur que les résultats sont disponibles
+      setHasNewResults(true);
+      
+      // Ajouter un message automatique si le chat est ouvert
+      setMessages(prev => {
+        // Vérifier si on est déjà ouvert et non minimisé
+        if (isOpen && !isMinimized) {
+          const notificationMessage: Message = {
+            id: `results-${Date.now()}`,
+            role: 'assistant',
+            content: '✅ **Résultats calculés!**\n\nLes résultats de votre stratégie sont maintenant disponibles.\n\n💡 Dites "Résultats" ou "Résumé" pour les voir.',
+            timestamp: new Date()
+          };
+          return [...prev, notificationMessage];
+        }
+        return prev;
+      });
+    });
+
+    const unsubscribeUpdated = syncService.on('resultsUpdated', (data) => {
+      // Mettre à jour les résultats si l'utilisateur les a déjà demandés
+      setMessages(prev => {
+        const lastMessage = prev[prev.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content.includes('Résultats de la stratégie')) {
+          // Mettre à jour le dernier message avec les nouveaux résultats
+          chatService.processMessage('Résultats', 'default').then(response => {
+            const updatedMessage: Message = {
+              ...lastMessage,
+              content: response,
+              timestamp: new Date()
+            };
+            setMessages(current => [...current.slice(0, -1), updatedMessage]);
+          });
+        }
+        return prev;
+      });
+    });
+
+    return () => {
+      unsubscribeResults();
+      unsubscribeUpdated();
+      syncService.stopPolling();
+    };
+  }, [isOpen, isMinimized]);
+
+  // Vérifier au montage si des résultats sont déjà disponibles
+  useEffect(() => {
+    if (syncService.hasResults()) {
+      setHasNewResults(true);
+    }
+  }, []);
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -53,7 +115,9 @@ const ChatWidget: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const response = await chatService.processMessage(currentInput);
+      // Utiliser un sessionId unique par utilisateur (basé sur localStorage ou généré)
+      const sessionId = 'default'; // Pour l'instant, une session unique
+      const response = await chatService.processMessage(currentInput, sessionId);
       
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -63,6 +127,11 @@ const ChatWidget: React.FC = () => {
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+
+      // Si l'utilisateur demande les résultats, marquer comme lus
+      if (currentInput.toLowerCase().includes('résultat') || currentInput.toLowerCase().includes('résumé')) {
+        setHasNewResults(false);
+      }
     } catch (error) {
       console.error('Chat error:', error);
       const errorMessage: Message = {
@@ -77,23 +146,12 @@ const ChatWidget: React.FC = () => {
     }
   };
 
-  // Quick actions
+  // Quick actions avec toutes les fonctionnalités
   const quickActions = [
     "Quel est le spot EUR/USD?",
     "Calcule un call EUR/USD strike 1.10 à 3 mois",
-    "Quel est le forward EUR/USD à 6 mois?",
-    "Explique le Zero-Cost Collar"
+    "Simule une stratégie"
   ];
-
-  const handleReset = () => {
-    chatService.resetConversation();
-    setMessages([{
-      id: 'welcome',
-      role: 'assistant',
-      content: '👋 Bonjour! Je suis votre assistant FX intelligent. Je peux vous aider avec:\n\n• 📊 Taux de change spot en temps réel\n• 💰 Calcul de prix d\'options (Call/Put)\n• 📈 Calcul de forward FX\n• 📚 Explications de stratégies de hedging\n\nPosez-moi une question en langage naturel!',
-      timestamp: new Date()
-    }]);
-  };
 
   if (!isOpen) {
     return (
@@ -114,17 +172,14 @@ const ChatWidget: React.FC = () => {
         <div className="flex items-center gap-2">
           <MessageSquare className="h-5 w-5" />
           <span className="font-semibold">FX Assistant</span>
+          {hasNewResults && (
+            <span className="flex items-center gap-1 text-xs bg-green-500 px-2 py-0.5 rounded-full">
+              <CheckCircle2 className="h-3 w-3" />
+              Résultats disponibles
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
-          <Button 
-            size="sm" 
-            variant="ghost" 
-            className="text-primary-foreground hover:bg-primary-foreground/20"
-            onClick={handleReset}
-            title="Réinitialiser la conversation"
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
           <Button 
             size="sm" 
             variant="ghost" 

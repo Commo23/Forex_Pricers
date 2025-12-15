@@ -1,59 +1,54 @@
 import ExchangeRateService from './ExchangeRateService';
-import { PricingService } from './PricingService';
-import { 
-  CURRENCY_PAIRS,
-  calculateFXForwardPrice,
-  calculateGarmanKohlhagenPrice,
-  calculateSwapPrice,
-  calculateTimeToMaturity,
-  calculateOptionPrice
-} from '@/pages/Index';
+import { calculateGarmanKohlhagenPrice, calculateFXForwardPrice } from './PricingService';
+import ChatSyncService from './ChatSyncService';
 
 /**
- * Service de chat intelligent pour l'assistant FX
- * Utilise UNIQUEMENT Google Gemini AI avec function calling pour comprendre le contexte
+ * Service de chat pour l'assistant FX
+ * Système basé sur des règles et pattern matching (sans IA externe)
+ * Fonctionnalités:
+ * - Obtenir le spot rate d'une paire de devises
+ * - Calculer le prix d'une option (Call/Put)
+ * - Calculer le forward FX
  */
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system' | 'function';
-  content: string;
-  name?: string;
-  function_call?: {
-    name: string;
-    arguments: string;
-  };
-}
-
-interface FunctionTool {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: 'object';
-      properties: Record<string, any>;
-      required: string[];
-    };
-  };
+interface StrategySession {
+  step: 'currency' | 'volume' | 'maturity' | 'components' | 'complete';
+  currencyPair?: { base: string; quote: string };
+  spotPrice?: number;
+  baseVolume?: number;
+  quoteVolume?: number;
+  monthsToHedge?: number;
+  components: Array<{
+    type: 'option' | 'forward' | 'swap';
+    optionType?: 'call' | 'put';
+    strike?: number;
+    strikeType?: 'absolute' | 'percent';
+    quantity?: number;
+    volatility?: number;
+  }>;
 }
 
 class ChatService {
   private static instance: ChatService;
   private exchangeRateService: ExchangeRateService;
-  private apiKey: string | null;
-  private conversationHistory: ChatMessage[] = [];
+  private strategySessions: Map<string, StrategySession> = new Map();
+
+  // Taux d'intérêt par défaut (en pourcentage annuel)
+  private defaultRates: { [key: string]: number } = {
+    'USD': 5.0,
+    'EUR': 4.0,
+    'GBP': 5.25,
+    'JPY': 0.1,
+    'CHF': 1.5,
+    'AUD': 4.35,
+    'CAD': 5.0,
+    'NZD': 5.5
+  };
+
+  // Volatilité par défaut (10% annuelle)
+  private defaultVolatility = 0.10;
 
   private constructor() {
     this.exchangeRateService = ExchangeRateService.getInstance();
-    // Utilise UNIQUEMENT Gemini API Key
-    // Clé Gemini par défaut (à mettre dans .env en production)
-    this.apiKey = import.meta.env.VITE_GEMINI_API_KEY || 
-                   'AIzaSyAecEj25iUirNNX38uxQhKbecbcnlutOuQ'; // Clé par défaut
-    
-    // Initialiser l'historique avec le prompt système
-    this.conversationHistory = [{
-      role: 'system',
-      content: this.getSystemPrompt()
-    }];
   }
 
   static getInstance(): ChatService {
@@ -64,376 +59,120 @@ class ChatService {
   }
 
   /**
-   * Prompt système pour donner le contexte à l'IA
+   * Traite un message de l'utilisateur et retourne une réponse
    */
-  private getSystemPrompt(): string {
-    return `Tu es un assistant expert en trading FX et hedging de devises. Tu aides les utilisateurs avec:
+  async processMessage(message: string, sessionId: string = 'default'): Promise<string> {
+    const normalizedMessage = message.toLowerCase().trim();
 
-**Domaine d'expertise:**
-- Pricing d'options FX (modèle Garman-Kohlhagen, Monte Carlo, Barrier Options)
-- Calculs de forward FX
-- Stratégies de hedging (Zero-Cost Collar, Participating Forward, Risk Reversal, etc.)
-- Analyse de marché et de portfolio
-- Calculs de P&L et de risque
-- Simulation complète de stratégies FX avec plusieurs composants
-
-**Règles importantes:**
-- Réponds toujours en français de manière professionnelle et concise
-- Utilise les outils disponibles pour effectuer des calculs précis
-- Si tu ne connais pas quelque chose, dis-le honnêtement
-- Formate les nombres avec une précision appropriée (4 décimales pour les taux FX)
-- Explique les concepts financiers de manière claire
-
-**Pour les simulations de stratégies (build_strategy):**
-- Quand l'utilisateur demande de "construire une stratégie", "simuler une stratégie", "build a strategy", ou veut analyser une combinaison d'instruments FX:
-  1. Demande TOUS les paramètres nécessaires AVANT d'appeler build_strategy:
-     - Paire de devises (ex: EUR/USD)
-     - Prix spot actuel (ou récupère-le avec get_spot_rate)
-     - Taux d'intérêt domestique (en %)
-     - Taux d'intérêt étranger (en %)
-     - Volume en devise de base
-     - Date de début du hedging (format YYYY-MM-DD)
-     - Nombre de mois à hedger
-     - Liste des composants (options, forwards, swaps) avec leurs paramètres:
-       * Type (call, put, forward, swap)
-       * Strike (valeur ou %)
-       * Type de strike (percent ou absolute)
-       * Volatilité (en %)
-       * Quantité (en %)
-  2. Confirme tous les paramètres avec l'utilisateur avant de lancer la simulation
-  3. Une fois la simulation terminée, présente les résultats de manière claire:
-     - Résumé global (coûts hedgés/non hedgés, P&L)
-     - Détails par période (date, forward, prix de stratégie, P&L)
-     - Analyse des composants individuels
-
-**Format des réponses:**
-- Utilise des emojis pour rendre les réponses plus agréables
-- Structure tes réponses avec des sections claires
-- Donne toujours le contexte (date, source, etc.)`;
-  }
-
-  /**
-   * Vérifie si la clé API Gemini est valide
-   */
-  private isValidGeminiKey(): boolean {
-    return !!(this.apiKey && (this.apiKey.startsWith('AIza') || this.apiKey.length > 20));
-  }
-
-  /**
-   * Définit les outils (functions) disponibles pour l'IA
-   */
-  private getAvailableTools(): FunctionTool[] {
-    return [
-      {
-        type: 'function',
-        function: {
-          name: 'get_spot_rate',
-          description: 'Récupère le taux de change spot actuel pour une paire de devises (ex: EUR/USD, GBP/USD). Utilise cette fonction quand l\'utilisateur demande un taux, un cours, un spot, ou mentionne une paire de devises.',
-          parameters: {
-            type: 'object',
-            properties: {
-              currencyPair: {
-                type: 'string',
-                description: 'La paire de devises au format BASE/QUOTE (ex: EUR/USD, GBP/USD, USD/JPY)'
-              }
-            },
-            required: ['currencyPair']
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'calculate_option_price',
-          description: 'Calcule le prix d\'une option FX (call ou put) en utilisant le modèle Garman-Kohlhagen. Utilise cette fonction quand l\'utilisateur demande le prix d\'une option, un call, un put, ou veut calculer une option.',
-          parameters: {
-            type: 'object',
-            properties: {
-              optionType: {
-                type: 'string',
-                enum: ['call', 'put'],
-                description: 'Type d\'option: call ou put'
-              },
-              currencyPair: {
-                type: 'string',
-                description: 'Paire de devises (ex: EUR/USD)'
-              },
-              spotPrice: {
-                type: 'number',
-                description: 'Prix spot actuel'
-              },
-              strike: {
-                type: 'number',
-                description: 'Prix d\'exercice (strike)'
-              },
-              timeToMaturity: {
-                type: 'number',
-                description: 'Temps jusqu\'à l\'échéance en années (ex: 0.25 pour 3 mois)'
-              },
-              domesticRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt domestique (en décimal, ex: 0.05 pour 5%)'
-              },
-              foreignRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt étranger (en décimal, ex: 0.04 pour 4%)'
-              },
-              volatility: {
-                type: 'number',
-                description: 'Volatilité (en décimal, ex: 0.15 pour 15%)'
-              }
-            },
-            required: ['optionType', 'currencyPair', 'spotPrice', 'strike', 'timeToMaturity']
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'calculate_forward_rate',
-          description: 'Calcule le taux forward FX pour une paire de devises et une maturité donnée. Utilise cette fonction quand l\'utilisateur demande un forward, un taux à terme, ou veut calculer un forward.',
-          parameters: {
-            type: 'object',
-            properties: {
-              currencyPair: {
-                type: 'string',
-                description: 'Paire de devises (ex: EUR/USD)'
-              },
-              spotPrice: {
-                type: 'number',
-                description: 'Prix spot actuel'
-              },
-              timeToMaturity: {
-                type: 'number',
-                description: 'Temps jusqu\'à l\'échéance en années'
-              },
-              domesticRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt domestique (en décimal)'
-              },
-              foreignRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt étranger (en décimal)'
-              }
-            },
-            required: ['currencyPair', 'spotPrice', 'timeToMaturity']
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'build_strategy',
-          description: 'Construit et simule une stratégie FX complète avec plusieurs composants (options, forwards, swaps). Utilise cette fonction quand l\'utilisateur demande de "construire une stratégie", "simuler une stratégie", "build a strategy", ou veut analyser une combinaison d\'instruments FX.',
-          parameters: {
-            type: 'object',
-            properties: {
-              currencyPair: {
-                type: 'string',
-                description: 'Paire de devises (ex: EUR/USD, GBP/USD)'
-              },
-              spotPrice: {
-                type: 'number',
-                description: 'Prix spot actuel'
-              },
-              domesticRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt domestique en pourcentage (ex: 1.0 pour 1%)'
-              },
-              foreignRate: {
-                type: 'number',
-                description: 'Taux d\'intérêt étranger en pourcentage (ex: 0.5 pour 0.5%)'
-              },
-              baseVolume: {
-                type: 'number',
-                description: 'Volume en devise de base (ex: 10000000 pour 10M EUR)'
-              },
-              startDate: {
-                type: 'string',
-                description: 'Date de début du hedging au format YYYY-MM-DD'
-              },
-              monthsToHedge: {
-                type: 'number',
-                description: 'Nombre de mois à hedger (ex: 12 pour 1 an)'
-              },
-              components: {
-                type: 'array',
-                description: 'Liste des composants de la stratégie',
-                items: {
-                  type: 'object',
-                  properties: {
-                    type: {
-                      type: 'string',
-                      enum: ['call', 'put', 'forward', 'swap'],
-                      description: 'Type de composant: call, put, forward, ou swap'
-                    },
-                    strike: {
-                      type: 'number',
-                      description: 'Strike (en pourcentage si strikeType=percent, sinon valeur absolue)'
-                    },
-                    strikeType: {
-                      type: 'string',
-                      enum: ['percent', 'absolute'],
-                      description: 'Type de strike: percent ou absolute'
-                    },
-                    volatility: {
-                      type: 'number',
-                      description: 'Volatilité en pourcentage (ex: 15 pour 15%)'
-                    },
-                    quantity: {
-                      type: 'number',
-                      description: 'Quantité en pourcentage (ex: 100 pour 100%)'
-                    }
-                  },
-                  required: ['type', 'strike', 'strikeType', 'volatility', 'quantity']
-                }
-              }
-            },
-            required: ['currencyPair', 'spotPrice', 'domesticRate', 'foreignRate', 'baseVolume', 'startDate', 'monthsToHedge', 'components']
-          }
-        }
-      }
-    ];
-  }
-
-  /**
-   * Exécute une fonction appelée par l'IA
-   */
-  private async executeFunction(name: string, args: any): Promise<string> {
-    try {
-      switch (name) {
-        case 'get_spot_rate':
-          return await this.getSpotRate(args.currencyPair);
-        
-        case 'calculate_option_price':
-          return await this.calculateOptionPrice(args);
-        
-        case 'calculate_forward_rate':
-          return await this.calculateForwardRate(args);
-        
-        case 'build_strategy':
-          return await this.buildStrategy(args);
-        
-        default:
-          return `Fonction ${name} non reconnue.`;
-      }
-    } catch (error: any) {
-      console.error(`Error executing function ${name}:`, error);
-      return `Erreur lors de l'exécution de ${name}: ${error.message}`;
+    // Vérifier si on est en train de construire une stratégie
+    const session = this.strategySessions.get(sessionId);
+    if (session && session.step !== 'complete') {
+      return await this.handleStrategyBuilding(message, sessionId);
     }
+
+    // Vérifier si l'utilisateur demande à voir les résultats
+    if (this.isResultsRequest(normalizedMessage)) {
+      return await this.handleResultsRequest();
+    }
+
+    // Détection des différentes intentions
+    if (this.isStrategySimulationRequest(normalizedMessage)) {
+      return await this.startStrategySimulation(sessionId);
+    }
+
+    if (this.isOptionPriceRequest(normalizedMessage)) {
+      return await this.handleOptionPriceRequest(message);
+    }
+
+    if (this.isForwardRequest(normalizedMessage)) {
+      return await this.handleForwardRequest(message);
+    }
+
+    if (this.isSpotRateRequest(normalizedMessage)) {
+      return await this.handleSpotRateRequest(message);
+    }
+
+    // Réponse par défaut avec suggestions
+    return this.getDefaultResponse();
   }
 
   /**
-   * Récupère le spot rate
+   * Vérifie si le message demande un spot rate
    */
-  private async getSpotRate(currencyPair: string): Promise<string> {
-    const [base, quote] = currencyPair.split('/').map(c => c.trim().toUpperCase());
+  private isSpotRateRequest(message: string): boolean {
+    const spotKeywords = ['spot', 'taux', 'rate', 'cours', 'prix', 'change'];
+    const hasSpotKeyword = spotKeywords.some(keyword => message.includes(keyword));
     
-    if (!base || !quote) {
-      return `Format de paire invalide: ${currencyPair}. Utilisez le format BASE/QUOTE (ex: EUR/USD).`;
+    // Détecte les paires de devises (format XXX/YYY ou XXX YYY)
+    const currencyPairPattern = /([A-Z]{3})\/?\s*([A-Z]{3})/i;
+    const hasCurrencyPair = currencyPairPattern.test(message);
+
+    return hasSpotKeyword || hasCurrencyPair;
+  }
+
+  /**
+   * Extrait la paire de devises du message
+   */
+  private extractCurrencyPair(message: string): { base: string; quote: string } | null {
+    // Pattern pour XXX/YYY ou XXX YYY
+    const patterns = [
+      /([A-Z]{3})\/([A-Z]{3})/i,
+      /([A-Z]{3})\s+([A-Z]{3})/i,
+      /([A-Z]{3})([A-Z]{3})/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) {
+        return {
+          base: match[1].toUpperCase(),
+          quote: match[2].toUpperCase()
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Gère la demande de spot rate
+   */
+  private async handleSpotRateRequest(message: string): Promise<string> {
+    const pair = this.extractCurrencyPair(message);
+
+    if (!pair) {
+      return '❓ Je n\'ai pas pu identifier la paire de devises. Veuillez spécifier une paire au format EUR/USD ou EUR USD.';
     }
 
     try {
-      let exchangeData = await this.exchangeRateService.getExchangeRates(base);
-      let rate = exchangeData.rates[quote];
+      // Essayer d'abord avec la base currency
+      let exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+      let rate = exchangeData.rates[pair.quote];
+      let isInverted = false;
 
-      // Si le taux n'existe pas, essayer avec la quote comme base
+      // Si le taux n'existe pas, essayer avec la quote currency comme base
       if (!rate) {
-        exchangeData = await this.exchangeRateService.getExchangeRates(quote);
-        const invertedRate = exchangeData.rates[base];
+        exchangeData = await this.exchangeRateService.getExchangeRates(pair.quote);
+        const invertedRate = exchangeData.rates[pair.base];
+        
         if (invertedRate) {
+          // Inverser le taux (1 / taux inversé)
           rate = 1 / invertedRate;
+          isInverted = true;
         }
       }
 
       if (!rate || isNaN(rate)) {
-        return `Taux non disponible pour ${currencyPair}.`;
+        return `❌ Désolé, je n'ai pas pu trouver le taux pour ${pair.base}/${pair.quote}. Vérifiez que la paire est correcte.`;
       }
 
       const date = new Date(exchangeData.time_last_updated * 1000).toLocaleString('fr-FR');
       const formattedRate = this.formatRate(rate);
 
-      return JSON.stringify({
-        currencyPair: `${base}/${quote}`,
-        rate: formattedRate,
-        timestamp: date
-      });
+      return `✅ **Spot ${pair.base}/${pair.quote}**: ${formattedRate}\n\n📅 Dernière mise à jour: ${date}`;
     } catch (error) {
-      throw new Error(`Erreur lors de la récupération du taux: ${error}`);
-    }
-  }
-
-  /**
-   * Calcule le prix d'une option
-   */
-  private async calculateOptionPrice(args: any): Promise<string> {
-    const {
-      optionType,
-      currencyPair,
-      spotPrice,
-      strike,
-      timeToMaturity,
-      domesticRate = 0.05,
-      foreignRate = 0.04,
-      volatility = 0.15
-    } = args;
-
-    try {
-      const price = PricingService.calculateGarmanKohlhagenPrice(
-        optionType,
-        spotPrice,
-        strike,
-        domesticRate,
-        foreignRate,
-        timeToMaturity,
-        volatility
-      );
-
-      return JSON.stringify({
-        optionType,
-        currencyPair,
-        spotPrice,
-        strike,
-        timeToMaturity: `${(timeToMaturity * 12).toFixed(0)} mois`,
-        price: price.toFixed(4),
-        pricePercent: (price * 100).toFixed(4),
-        volatility: `${(volatility * 100).toFixed(2)}%`
-      });
-    } catch (error) {
-      throw new Error(`Erreur lors du calcul: ${error}`);
-    }
-  }
-
-  /**
-   * Calcule le forward rate
-   */
-  private async calculateForwardRate(args: any): Promise<string> {
-    const {
-      currencyPair,
-      spotPrice,
-      timeToMaturity,
-      domesticRate = 0.05,
-      foreignRate = 0.04
-    } = args;
-
-    try {
-      const forwardPrice = PricingService.calculateFXForwardPrice(
-        spotPrice,
-        domesticRate,
-        foreignRate,
-        timeToMaturity
-      );
-
-      return JSON.stringify({
-        currencyPair,
-        spotPrice,
-        forwardPrice: forwardPrice.toFixed(4),
-        timeToMaturity: `${(timeToMaturity * 12).toFixed(0)} mois`,
-        domesticRate: `${(domesticRate * 100).toFixed(2)}%`,
-        foreignRate: `${(foreignRate * 100).toFixed(2)}%`
-      });
-    } catch (error) {
-      throw new Error(`Erreur lors du calcul: ${error}`);
+      console.error('Error fetching spot rate:', error);
+      return `❌ Erreur lors de la récupération du taux ${pair.base}/${pair.quote}. Veuillez réessayer plus tard.`;
     }
   }
 
@@ -453,615 +192,750 @@ class ChatService {
   }
 
   /**
-   * Construit et simule une stratégie FX complète
+   * Vérifie si le message demande un calcul de prix d'option
    */
-  private async buildStrategy(args: any): Promise<string> {
+  private isOptionPriceRequest(message: string): boolean {
+    const optionKeywords = ['call', 'put', 'option', 'prix option', 'price option', 'calcule', 'calculer'];
+    const hasOptionKeyword = optionKeywords.some(keyword => message.includes(keyword));
+    
+    // Détecte la présence d'un strike
+    const hasStrike = /\bstrike\b|\bk\s*=\s*|\bà\s*\d+|\b@\s*\d+/i.test(message);
+    
+    return hasOptionKeyword || hasStrike;
+  }
+
+  /**
+   * Extrait les paramètres d'une option depuis le message
+   */
+  private extractOptionParams(message: string): {
+    type: 'call' | 'put' | null;
+    currencyPair: { base: string; quote: string } | null;
+    strike: number | null;
+    maturityMonths: number | null;
+    volatility: number | null;
+  } {
+    const result = {
+      type: null as 'call' | 'put' | null,
+      currencyPair: null as { base: string; quote: string } | null,
+      strike: null as number | null,
+      maturityMonths: null as number | null,
+      volatility: null as number | null
+    };
+
+    // Détecter le type (call ou put)
+    if (/call|achat/i.test(message)) {
+      result.type = 'call';
+    } else if (/put|vente/i.test(message)) {
+      result.type = 'put';
+    }
+
+    // Extraire la paire de devises
+    result.currencyPair = this.extractCurrencyPair(message);
+
+    // Extraire le strike
+    const strikePatterns = [
+      /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bk\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bà\s*(\d+\.?\d*)/i,
+      /\b@\s*(\d+\.?\d*)/i,
+      /\bstrike\s+(\d+\.?\d*)/i
+    ];
+    
+    for (const pattern of strikePatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        result.strike = parseFloat(match[1]);
+        break;
+      }
+    }
+
+    // Extraire la maturité (en mois)
+    const maturityPatterns = [
+      /\b(\d+)\s*mois/i,
+      /\b(\d+)\s*m\b/i,
+      /\b(\d+)\s*month/i,
+      /\b(\d+)\s*jours/i,
+      /\b(\d+)\s*d\b/i,
+      /\b(\d+)\s*day/i,
+      /\b(\d+)\s*semaines/i,
+      /\b(\d+)\s*w\b/i,
+      /\b(\d+)\s*week/i
+    ];
+
+    for (const pattern of maturityPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const value = parseFloat(match[1]);
+        const unit = match[0].toLowerCase();
+        
+        if (unit.includes('jour') || unit.includes('d') || unit.includes('day')) {
+          result.maturityMonths = value / 30;
+        } else if (unit.includes('semaine') || unit.includes('w') || unit.includes('week')) {
+          result.maturityMonths = value / 4.33;
+        } else {
+          result.maturityMonths = value;
+        }
+        break;
+      }
+    }
+
+    // Extraire la volatilité (optionnelle)
+    const volPatterns = [
+      /\bvol\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\bvolatility\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\bvol\s*(\d+\.?\d*)\s*%/i,
+      /\bvol\s*[=:]\s*(\d+\.?\d*)/i
+    ];
+
+    for (const pattern of volPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        result.volatility = parseFloat(match[1]) / 100; // Convertir en décimal
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Gère la demande de calcul de prix d'option
+   */
+  private async handleOptionPriceRequest(message: string): Promise<string> {
+    const params = this.extractOptionParams(message);
+
+    // Vérifications
+    if (!params.type) {
+      return '❓ Veuillez spécifier le type d\'option: "call" ou "put".\n\n💡 Exemple: "Calcule un call EUR/USD strike 1.10 à 3 mois"';
+    }
+
+    if (!params.currencyPair) {
+      return '❓ Je n\'ai pas pu identifier la paire de devises. Veuillez spécifier une paire au format EUR/USD.';
+    }
+
+    if (!params.strike) {
+      return '❓ Veuillez spécifier le strike de l\'option.\n\n💡 Exemple: "Calcule un call EUR/USD strike 1.10 à 3 mois"';
+    }
+
+    if (!params.maturityMonths) {
+      return '❓ Veuillez spécifier la maturité de l\'option.\n\n💡 Exemple: "Calcule un call EUR/USD strike 1.10 à 3 mois"';
+    }
+
     try {
-      const {
-        currencyPair,
+      // Récupérer le spot rate
+      const exchangeData = await this.exchangeRateService.getExchangeRates(params.currencyPair.base);
+      let spotPrice = exchangeData.rates[params.currencyPair.quote];
+
+      if (!spotPrice) {
+        // Essayer avec la quote currency comme base
+        const invertedData = await this.exchangeRateService.getExchangeRates(params.currencyPair.quote);
+        const invertedRate = invertedData.rates[params.currencyPair.base];
+        if (invertedRate) {
+          spotPrice = 1 / invertedRate;
+        } else {
+          return `❌ Impossible de récupérer le spot pour ${params.currencyPair.base}/${params.currencyPair.quote}.`;
+        }
+      }
+
+      // Récupérer les taux d'intérêt
+      const domesticRate = (this.defaultRates[params.currencyPair.quote] || 5.0) / 100;
+      const foreignRate = (this.defaultRates[params.currencyPair.base] || 4.0) / 100;
+
+      // Maturité en années
+      const timeToMaturity = params.maturityMonths / 12;
+
+      // Volatilité
+      const volatility = params.volatility || this.defaultVolatility;
+
+      // Calculer le prix de l'option avec Garman-Kohlhagen
+      const optionPrice = calculateGarmanKohlhagenPrice(
+        params.type,
         spotPrice,
+        params.strike,
         domesticRate,
         foreignRate,
-        baseVolume,
-        startDate,
-        monthsToHedge,
-        components
-      } = args;
+        timeToMaturity,
+        volatility
+      );
 
-      // Valider les inputs
-      if (!components || components.length === 0) {
-        return JSON.stringify({ error: 'Aucun composant de stratégie fourni' });
-      }
+      // Formater la réponse
+      const priceInPercent = (optionPrice / spotPrice) * 100;
+      const volDisplay = (volatility * 100).toFixed(1);
 
-      // Trouver la paire de devises
-      const pair = CURRENCY_PAIRS.find(p => p.symbol === currencyPair);
-      if (!pair) {
-        return JSON.stringify({ error: `Paire de devises ${currencyPair} non trouvée` });
-      }
-
-      // Convertir les taux en décimal
-      const r_d = domesticRate / 100;
-      const r_f = foreignRate / 100;
-
-      // Générer les dates de maturité (fin de chaque mois)
-      const start = new Date(startDate);
-      const months: Date[] = [];
-      const monthlyVolumes: number[] = [];
-      const monthlyVolume = baseVolume / monthsToHedge;
-
-      for (let i = 0; i < monthsToHedge; i++) {
-        const monthEnd = new Date(start.getFullYear(), start.getMonth() + i + 1, 0);
-        months.push(monthEnd);
-        monthlyVolumes.push(monthlyVolume);
-      }
-
-      // Calculer les résultats pour chaque période
-      const results = months.map((date, i) => {
-        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-        const t = calculateTimeToMaturity(date.toISOString().split('T')[0], startDate);
-        
-        // Calculer le forward
-        const forward = calculateFXForwardPrice(spotPrice, r_d, r_f, t);
-
-        // Calculer les prix de chaque composant
-        const optionPrices = components.map((component: any, compIndex: number) => {
-          const strike = component.strikeType === 'percent' 
-            ? spotPrice * (component.strike / 100)
-            : component.strike;
-          
-          const vol = component.volatility / 100;
-          const quantity = component.quantity / 100;
-
-          let price = 0;
-          let label = '';
-
-          if (component.type === 'forward') {
-            price = forward - strike;
-            label = `Forward @ ${strike.toFixed(4)}`;
-          } else if (component.type === 'swap') {
-            // Pour un swap, calculer le prix du swap
-            const forwards = months.map((_, idx) => {
-              const t_swap = calculateTimeToMaturity(_.toISOString().split('T')[0], startDate);
-              return calculateFXForwardPrice(spotPrice, r_d, r_f, t_swap);
-            });
-            const times = months.map((_, idx) => {
-              return calculateTimeToMaturity(_.toISOString().split('T')[0], startDate);
-            });
-            price = calculateSwapPrice(forwards, times, r_d);
-            label = `Swap`;
-          } else if (component.type === 'call' || component.type === 'put') {
-            price = calculateGarmanKohlhagenPrice(
-              component.type,
-              spotPrice,
-              strike,
-              r_d,
-              r_f,
-              t,
-              vol
-            );
-            label = `${component.type.toUpperCase()} @ ${strike.toFixed(4)}`;
-          }
-
-          return {
-            type: component.type,
-            price: price,
-            quantity: quantity,
-            strike: strike,
-            label: label,
-            volatility: component.volatility
-          };
-        });
-
-        // Calculer le prix total de la stratégie
-        const strategyPrice = optionPrices.reduce((sum: number, opt: any) => {
-          return sum + (opt.price * opt.quantity * monthlyVolumes[i]);
-        }, 0);
-
-        // Calculer le payoff total
-        const totalPayoff = optionPrices.reduce((sum: number, opt: any) => {
-          if (opt.type === 'forward') {
-            return sum + ((forward - opt.strike) * opt.quantity * monthlyVolumes[i]);
-          } else if (opt.type === 'swap') {
-            return sum + (opt.price * opt.quantity * monthlyVolumes[i]);
-          } else {
-            // Pour les options, le payoff dépend du prix spot à l'échéance
-            // On utilise le forward comme approximation
-            const intrinsicValue = opt.type === 'call' 
-              ? Math.max(0, forward - opt.strike)
-              : Math.max(0, opt.strike - forward);
-            return sum + (intrinsicValue * opt.quantity * monthlyVolumes[i]);
-          }
-        }, 0);
-
-        // Calculer les coûts hedgés et non hedgés
-        const hedgedCost = strategyPrice;
-        const unhedgedCost = monthlyVolumes[i] * spotPrice;
-        const deltaPnL = hedgedCost - unhedgedCost;
-
-        return {
-          date: date.toISOString().split('T')[0],
-          timeToMaturity: t,
-          forward: forward,
-          realPrice: forward,
-          optionPrices: optionPrices,
-          strategyPrice: strategyPrice,
-          totalPayoff: totalPayoff,
-          monthlyVolume: monthlyVolumes[i],
-          hedgedCost: hedgedCost,
-          unhedgedCost: unhedgedCost,
-          deltaPnL: deltaPnL
-        };
-      });
-
-      // Calculer les statistiques globales
-      const totalHedgedCost = results.reduce((sum, r) => sum + r.hedgedCost, 0);
-      const totalUnhedgedCost = results.reduce((sum, r) => sum + r.unhedgedCost, 0);
-      const totalDeltaPnL = totalHedgedCost - totalUnhedgedCost;
-      const averageStrategyPrice = results.reduce((sum, r) => sum + r.strategyPrice, 0) / results.length;
-
-      return JSON.stringify({
-        currencyPair,
-        spotPrice,
-        domesticRate: `${domesticRate.toFixed(2)}%`,
-        foreignRate: `${foreignRate.toFixed(2)}%`,
-        baseVolume,
-        monthsToHedge,
-        components: components.length,
-        results: results.map(r => ({
-          date: r.date,
-          maturity: `${(r.timeToMaturity * 12).toFixed(1)} mois`,
-          forward: r.forward.toFixed(4),
-          strategyPrice: r.strategyPrice.toFixed(2),
-          deltaPnL: r.deltaPnL.toFixed(2),
-          components: r.optionPrices.map((opt: any) => ({
-            type: opt.type,
-            label: opt.label,
-            price: opt.price.toFixed(4),
-            quantity: `${opt.quantity * 100}%`
-          }))
-        })),
-        summary: {
-          totalHedgedCost: totalHedgedCost.toFixed(2),
-          totalUnhedgedCost: totalUnhedgedCost.toFixed(2),
-          totalDeltaPnL: totalDeltaPnL.toFixed(2),
-          averageStrategyPrice: averageStrategyPrice.toFixed(2)
-        }
-      });
-    } catch (error: any) {
-      throw new Error(`Erreur lors de la construction de la stratégie: ${error.message}`);
+      return `✅ **Prix du ${params.type.toUpperCase()} ${params.currencyPair.base}/${params.currencyPair.quote}**\n\n` +
+        `📊 Spot: ${spotPrice.toFixed(4)}\n` +
+        `🎯 Strike: ${params.strike.toFixed(4)}\n` +
+        `📅 Maturité: ${params.maturityMonths} mois (${timeToMaturity.toFixed(2)} ans)\n` +
+        `📈 Volatilité: ${volDisplay}%\n` +
+        `💰 Prix: ${optionPrice.toFixed(6)} (${priceInPercent.toFixed(4)}% du spot)\n\n` +
+        `💡 Note: Utilisation du modèle Garman-Kohlhagen avec taux d'intérêt par défaut.`;
+    } catch (error) {
+      console.error('Error calculating option price:', error);
+      return `❌ Erreur lors du calcul du prix de l'option. Veuillez réessayer.`;
     }
   }
 
   /**
-   * Convertit l'historique au format Gemini
+   * Vérifie si le message demande un calcul de forward
    */
-  private convertHistoryToGeminiFormat(): any[] {
-    return this.conversationHistory
-      .filter(msg => msg.role !== 'system') // Gemini gère le système différemment
-      .map(msg => {
-        if (msg.role === 'function') {
-          // Format Gemini pour functionResponse
-          let responseContent = msg.content;
-          // Si c'est une string JSON, essayer de la parser
-          if (typeof responseContent === 'string') {
-            try {
-              responseContent = JSON.parse(responseContent);
-            } catch {
-              // Garder comme string si ce n'est pas du JSON valide
-            }
-          }
-          return {
-            role: 'function',
-            parts: [{ 
-              functionResponse: { 
-                name: msg.name, 
-                response: responseContent
-              } 
-            }]
-          };
-        }
-        return {
-          role: msg.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: msg.content }]
-        };
-      });
+  private isForwardRequest(message: string): boolean {
+    const forwardKeywords = ['forward', 'futur', 'future', 'taux forward'];
+    return forwardKeywords.some(keyword => message.includes(keyword));
   }
 
   /**
-   * Convertit les tools au format Gemini
+   * Gère la demande de calcul de forward
    */
-  private getGeminiTools(): any {
-    const tools = this.getAvailableTools();
-    return {
-      functionDeclarations: tools.map(tool => ({
-        name: tool.function.name,
-        description: tool.function.description,
-        parameters: tool.function.parameters
-      }))
-    };
-  }
-
-  /**
-   * Traite un message avec Gemini AI
-   */
-  async processMessage(userMessage: string): Promise<string> {
-    // Détecter les requêtes simples qui peuvent être traitées directement
-    const simpleResponse = await this.handleSimpleQuery(userMessage);
-    if (simpleResponse) {
-      return simpleResponse;
+  private async handleForwardRequest(message: string): Promise<string> {
+    const pair = this.extractCurrencyPair(message);
+    
+    if (!pair) {
+      return '❓ Je n\'ai pas pu identifier la paire de devises. Veuillez spécifier une paire au format EUR/USD.';
     }
 
-    // Si pas de clé API, utiliser le mode fallback
-    if (!this.apiKey) {
-      return this.fallbackMode(userMessage);
-    }
+    // Extraire la maturité
+    const maturityPatterns = [
+      /\b(\d+)\s*mois/i,
+      /\b(\d+)\s*m\b/i,
+      /\b(\d+)\s*month/i
+    ];
 
-    // Ajouter le message de l'utilisateur à l'historique
-    this.conversationHistory.push({
-      role: 'user',
-      content: userMessage
-    });
+    let maturityMonths = 6; // Par défaut 6 mois
+    for (const pattern of maturityPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        maturityMonths = parseFloat(match[1]);
+        break;
+      }
+    }
 
     try {
-      // Utilise UNIQUEMENT Gemini
-      if (!this.isValidGeminiKey()) {
-        throw new Error('Clé API Gemini invalide ou manquante');
-      }
-      return await this.processWithGemini(userMessage);
-    } catch (error: any) {
-      console.error('Chat error:', error);
-      
-      // Si erreur de quota, essayer de traiter directement
-      if (error.message && (error.message.includes('quota') || error.message.includes('Quota exceeded'))) {
-        const directResponse = await this.handleSimpleQuery(userMessage);
-        if (directResponse) {
-          return directResponse;
+      // Récupérer le spot rate
+      const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+      let spotPrice = exchangeData.rates[pair.quote];
+
+      if (!spotPrice) {
+        const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
+        const invertedRate = invertedData.rates[pair.base];
+        if (invertedRate) {
+          spotPrice = 1 / invertedRate;
+        } else {
+          return `❌ Impossible de récupérer le spot pour ${pair.base}/${pair.quote}.`;
         }
-        return `⚠️ Quota API dépassé. Veuillez réessayer plus tard.\n\n${this.fallbackMode(userMessage, error.message)}`;
       }
-      
-      return this.fallbackMode(userMessage, error.message);
+
+      // Récupérer les taux d'intérêt
+      const domesticRate = (this.defaultRates[pair.quote] || 5.0) / 100;
+      const foreignRate = (this.defaultRates[pair.base] || 4.0) / 100;
+
+      // Calculer le forward
+      const timeToMaturity = maturityMonths / 12;
+      const forwardPrice = calculateFXForwardPrice(spotPrice, domesticRate, foreignRate, timeToMaturity);
+
+      const forwardPoints = forwardPrice - spotPrice;
+      const forwardPointsPercent = (forwardPoints / spotPrice) * 100;
+
+      return `✅ **Forward ${pair.base}/${pair.quote} à ${maturityMonths} mois**\n\n` +
+        `📊 Spot: ${spotPrice.toFixed(4)}\n` +
+        `📈 Forward: ${forwardPrice.toFixed(4)}\n` +
+        `📉 Points forward: ${forwardPoints > 0 ? '+' : ''}${forwardPoints.toFixed(4)} (${forwardPointsPercent > 0 ? '+' : ''}${forwardPointsPercent.toFixed(4)}%)\n\n` +
+        `💡 Note: Calcul basé sur la différence de taux d'intérêt entre ${pair.quote} (${(domesticRate * 100).toFixed(2)}%) et ${pair.base} (${(foreignRate * 100).toFixed(2)}%).`;
+    } catch (error) {
+      console.error('Error calculating forward:', error);
+      return `❌ Erreur lors du calcul du forward. Veuillez réessayer.`;
     }
   }
 
   /**
-   * Traite les requêtes simples directement sans passer par Gemini
+   * Détecte si l'utilisateur demande une simulation de stratégie
    */
-  private async handleSimpleQuery(message: string): Promise<string | null> {
-    const normalizedMessage = message.toLowerCase().trim();
-    
-    // 1. Détection de requête de spot rate
-    const spotResult = await this.handleSpotRateQuery(message);
-    if (spotResult) return spotResult;
-
-    // 2. Détection de calcul d'option (call/put)
-    const optionResult = await this.handleOptionPriceQuery(message);
-    if (optionResult) return optionResult;
-
-    // 3. Détection de calcul de forward
-    const forwardResult = await this.handleForwardRateQuery(message);
-    if (forwardResult) return forwardResult;
-
-    return null;
+  private isStrategySimulationRequest(message: string): boolean {
+    const keywords = ['simule', 'simuler', 'simulation', 'stratégie', 'strategy', 'créer stratégie', 'nouvelle stratégie'];
+    return keywords.some(keyword => message.includes(keyword));
   }
 
   /**
-   * Traite les requêtes de spot rate
+   * Détecte si l'utilisateur demande les résultats
    */
-  private async handleSpotRateQuery(message: string): Promise<string | null> {
-    const spotPatterns = [
-      /(?:quel|what|donne|give|show).*(?:est|is|le|the).*(?:spot|taux|cours|rate).*([A-Z]{3})\/?\s*([A-Z]{3})/i,
-      /spot\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
-      /([A-Z]{3})\/?\s*([A-Z]{3})\s+spot/i,
-      /taux\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
-      /cours\s+([A-Z]{3})\/?\s*([A-Z]{3})/i,
-      /([A-Z]{3})\/?\s*([A-Z]{3})/i // Pattern simple pour détecter une paire de devises seule
+  private isResultsRequest(message: string): boolean {
+    const keywords = ['résultats', 'results', 'résultat', 'resultat', 'résumé', 'resume', 'résume'];
+    return keywords.some(keyword => message.includes(keyword));
+  }
+
+  /**
+   * Démarre une nouvelle simulation de stratégie
+   */
+  private async startStrategySimulation(sessionId: string): Promise<string> {
+    const session: StrategySession = {
+      step: 'currency',
+      components: []
+    };
+    this.strategySessions.set(sessionId, session);
+
+    return `🚀 **Simulation de stratégie FX**\n\n` +
+      `Je vais vous guider pour créer votre stratégie de hedging.\n\n` +
+      `**Étape 1/4**: Quelle paire de devises souhaitez-vous hedger?\n` +
+      `💡 Exemple: "EUR/USD" ou "GBP/USD"`;
+  }
+
+  /**
+   * Gère la construction de stratégie étape par étape
+   */
+  private async handleStrategyBuilding(message: string, sessionId: string): Promise<string> {
+    const session = this.strategySessions.get(sessionId);
+    if (!session) {
+      return '❌ Session de stratégie introuvable. Veuillez recommencer.';
+    }
+
+    switch (session.step) {
+      case 'currency':
+        return await this.handleCurrencyStep(message, sessionId);
+      case 'volume':
+        return await this.handleVolumeStep(message, sessionId);
+      case 'maturity':
+        return await this.handleMaturityStep(message, sessionId);
+      case 'components':
+        return await this.handleComponentsStep(message, sessionId);
+      default:
+        return '❌ Étape inconnue.';
+    }
+  }
+
+  /**
+   * Étape 1: Collecte de la paire de devises
+   */
+  private async handleCurrencyStep(message: string, sessionId: string): Promise<string> {
+    const session = this.strategySessions.get(sessionId);
+    if (!session) return '❌ Session introuvable.';
+
+    const pair = this.extractCurrencyPair(message);
+    if (!pair) {
+      return '❓ Je n\'ai pas pu identifier la paire de devises.\n\n💡 Veuillez spécifier une paire au format EUR/USD ou GBP/USD.';
+    }
+
+    try {
+      // Récupérer le spot
+      const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+      let spotPrice = exchangeData.rates[pair.quote];
+
+      if (!spotPrice) {
+        const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
+        const invertedRate = invertedData.rates[pair.base];
+        if (invertedRate) {
+          spotPrice = 1 / invertedRate;
+        } else {
+          return `❌ Impossible de récupérer le spot pour ${pair.base}/${pair.quote}.`;
+        }
+      }
+
+      session.currencyPair = pair;
+      session.spotPrice = spotPrice;
+      session.step = 'volume';
+
+      return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n` +
+        `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
+        `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+        `💡 Exemple: "10 millions EUR" ou "15M USD" ou "10000000 EUR"`;
+    } catch (error) {
+      return '❌ Erreur lors de la récupération du spot. Veuillez réessayer.';
+    }
+  }
+
+  /**
+   * Étape 2: Collecte du volume
+   */
+  private handleVolumeStep(message: string, sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currencyPair) return '❌ Session introuvable.';
+
+    // Extraire le volume
+    const volumePatterns = [
+      /(\d+(?:\.\d+)?)\s*millions?\s*([A-Z]{3})/i,
+      /(\d+(?:\.\d+)?)\s*M\s*([A-Z]{3})/i,
+      /(\d+(?:\.\d+)?)\s*([A-Z]{3})/i,
+      /(\d+(?:,\d+)?)\s*([A-Z]{3})/i
     ];
 
-    for (const pattern of spotPatterns) {
+    let volume = 0;
+    let currency = '';
+
+    for (const pattern of volumePatterns) {
       const match = message.match(pattern);
       if (match) {
-        const base = match[1] || match[2];
-        const quote = match[2] || match[3];
-        if (base && quote && base.length === 3 && quote.length === 3) {
-          try {
-            const result = await this.getSpotRate(`${base}/${quote}`);
-            const data = JSON.parse(result);
-            return `💱 **Spot ${data.currencyPair}**\n\n📊 Taux: **${data.rate}**\n🕐 Mis à jour: ${data.timestamp}`;
-          } catch (error) {
-            return null;
-          }
+        volume = parseFloat(match[1].replace(',', ''));
+        currency = match[2].toUpperCase();
+        
+        // Convertir millions en unités
+        if (message.toLowerCase().includes('million') || message.toLowerCase().includes('M')) {
+          volume = volume * 1000000;
         }
+        break;
       }
     }
 
-    return null;
+    if (volume === 0) {
+      return '❓ Je n\'ai pas pu identifier le volume.\n\n💡 Veuillez spécifier un volume, par exemple: "10 millions EUR" ou "15M USD".';
+    }
+
+    if (currency === session.currencyPair.base) {
+      session.baseVolume = volume;
+      session.quoteVolume = volume * (session.spotPrice || 1);
+    } else if (currency === session.currencyPair.quote) {
+      session.quoteVolume = volume;
+      session.baseVolume = volume / (session.spotPrice || 1);
+    } else {
+      return `❓ La devise du volume (${currency}) ne correspond pas à la paire ${session.currencyPair.base}/${session.currencyPair.quote}.`;
+    }
+
+    session.step = 'maturity';
+
+    return `✅ Volume: **${this.formatVolume(session.baseVolume)} ${session.currencyPair.base}**\n` +
+      `   (${this.formatVolume(session.quoteVolume)} ${session.currencyPair.quote})\n\n` +
+      `**Étape 3/4**: Quelle est la maturité de votre hedging?\n` +
+      `💡 Exemple: "12 mois" ou "6 mois" ou "1 an"`;
   }
 
   /**
-   * Traite les requêtes de calcul d'option
+   * Étape 3: Collecte de la maturité
    */
-  private async handleOptionPriceQuery(message: string): Promise<string | null> {
-    // Patterns pour détecter les requêtes d'option avec paramètres
-    const optionPatterns = [
-      // Format: "call EUR/USD strike 1.10 spot 1.0850 3 mois vol 15%"
-      /(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:strike|k)\s+([\d.]+)\s+(?:spot|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)\s*(?:vol|volatility)?\s*([\d.]+)?%?/i,
-      // Format: "prix call EUR/USD strike 1.10 spot 1.0850 3 mois"
-      /(?:prix|price|calcul|calculate)\s+(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:strike|k)\s+([\d.]+)\s+(?:spot|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
-      // Format: "option call EUR/USD 1.10 1.0850 3 mois 15%"
-      /(?:option|option\s+price)\s+(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)\s*([\d.]+)?%?/i,
-      // Format: "call EUR/USD 1.10 à 3 mois" (utilise le spot actuel)
-      /(call|put)\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(?:à|at|for)\s+(\d+)\s*(?:mois|months|m)/i
+  private handleMaturityStep(message: string, sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session) return '❌ Session introuvable.';
+
+    const maturityPatterns = [
+      /\b(\d+)\s*mois/i,
+      /\b(\d+)\s*m\b/i,
+      /\b(\d+)\s*month/i,
+      /\b(\d+)\s*an/i,
+      /\b(\d+)\s*année/i
     ];
 
-    for (const pattern of optionPatterns) {
+    let months = 0;
+    for (const pattern of maturityPatterns) {
       const match = message.match(pattern);
       if (match) {
-        try {
-          const optionType = match[1].toLowerCase();
-          const base = match[2];
-          const quote = match[3];
-          
-          // Extraire les paramètres selon le pattern
-          let strike: number;
-          let spotPrice: number;
-          let months: number;
-          let volatility = 0.15; // Par défaut 15%
-
-          if (match[4] && match[5] && match[6]) {
-            // Pattern avec strike et spot explicites
-            strike = parseFloat(match[4]);
-            spotPrice = parseFloat(match[5]);
-            months = parseInt(match[6]);
-            if (match[7]) volatility = parseFloat(match[7]) / 100;
-          } else if (match[4] && match[5]) {
-            // Pattern avec seulement strike et spot (sans mois explicite)
-            strike = parseFloat(match[4]);
-            spotPrice = parseFloat(match[5]);
-            months = 3; // Par défaut 3 mois
-          } else {
-            // Pattern simple avec strike et mois
-            strike = parseFloat(match[4]);
-            months = parseInt(match[5]);
-            // Récupérer le spot actuel
-            try {
-              const spotResult = await this.getSpotRate(`${base}/${quote}`);
-              const spotData = JSON.parse(spotResult);
-              spotPrice = parseFloat(spotData.rate);
-            } catch {
-              return null; // Impossible de récupérer le spot
-            }
-          }
-
-          if (optionType && base && quote && strike && spotPrice && months && !isNaN(strike) && !isNaN(spotPrice) && !isNaN(months)) {
-            const timeToMaturity = months / 12;
-            const result = await this.calculateOptionPrice({
-              optionType,
-              currencyPair: `${base}/${quote}`,
-              spotPrice,
-              strike,
-              timeToMaturity,
-              volatility
-            });
-            const data = JSON.parse(result);
-            return `📈 **Prix ${optionType.toUpperCase()} ${data.currencyPair}**\n\n` +
-                   `💰 Prix: **${data.price}** (${data.pricePercent}%)\n` +
-                   `📊 Strike: ${data.strike}\n` +
-                   `📈 Spot: ${data.spotPrice}\n` +
-                   `📅 Maturité: ${data.timeToMaturity}\n` +
-                   `📉 Volatilité: ${data.volatility}`;
-          }
-        } catch (error) {
-          // Continuer avec le pattern suivant
-          continue;
+        months = parseFloat(match[1]);
+        if (message.toLowerCase().includes('an') || message.toLowerCase().includes('année')) {
+          months = months * 12;
         }
+        break;
       }
     }
 
-    return null;
+    if (months === 0) {
+      return '❓ Je n\'ai pas pu identifier la maturité.\n\n💡 Veuillez spécifier une maturité, par exemple: "12 mois" ou "6 mois".';
+    }
+
+    session.monthsToHedge = months;
+    session.step = 'components';
+
+    return `✅ Maturité: **${months} mois**\n\n` +
+      `**Étape 4/4**: Quels composants souhaitez-vous ajouter à votre stratégie?\n\n` +
+      `💡 Exemples:\n` +
+      `• "Ajoute un call EUR/USD strike 1.10"\n` +
+      `• "Un put strike 1.05"\n` +
+      `• "Un forward"\n` +
+      `• "Terminer" ou "C'est tout" pour finaliser`;
   }
 
   /**
-   * Traite les requêtes de calcul de forward
+   * Étape 4: Collecte des composants
    */
-  private async handleForwardRateQuery(message: string): Promise<string | null> {
-    // Patterns pour détecter les requêtes de forward avec paramètres
-    const forwardPatterns = [
-      // Format: "forward EUR/USD spot 1.0850 3 mois"
-      /forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(?:spot|spot\s+price|s)\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
-      // Format: "taux forward EUR/USD 1.0850 à 3 mois"
-      /(?:taux\s+)?forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(?:à|at|for)\s+(\d+)\s*(?:mois|months|m)/i,
-      // Format: "calcul forward EUR/USD 1.0850 3 mois"
-      /(?:calcul|calculate)\s+forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+([\d.]+)\s+(\d+)\s*(?:mois|months|m)/i,
-      // Format: "forward EUR/USD 3 mois" (utilise le spot actuel)
-      /forward\s+([A-Z]{3})\/?\s*([A-Z]{3})\s+(\d+)\s*(?:mois|months|m)/i
-    ];
+  private handleComponentsStep(message: string, sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currencyPair) return '❌ Session introuvable.';
 
-    for (const pattern of forwardPatterns) {
-      const match = message.match(pattern);
-      if (match) {
-        try {
-          const base = match[1];
-          const quote = match[2];
-          let spotPrice: number;
-          let months: number;
+    const normalized = message.toLowerCase();
 
-          if (match[3] && match[4]) {
-            // Pattern avec spot explicite
-            spotPrice = parseFloat(match[3]);
-            months = parseInt(match[4]);
-          } else if (match[3]) {
-            // Pattern simple avec seulement les mois (récupérer le spot)
-            months = parseInt(match[3]);
-            try {
-              const spotResult = await this.getSpotRate(`${base}/${quote}`);
-              const spotData = JSON.parse(spotResult);
-              spotPrice = parseFloat(spotData.rate);
-            } catch {
-              return null; // Impossible de récupérer le spot
-            }
-          } else {
-            continue;
-          }
-          
-          if (base && quote && spotPrice && months && !isNaN(spotPrice) && !isNaN(months)) {
-            const timeToMaturity = months / 12;
-            const result = await this.calculateForwardRate({
-              currencyPair: `${base}/${quote}`,
-              spotPrice,
-              timeToMaturity
-            });
-            const data = JSON.parse(result);
-            return `📊 **Forward ${data.currencyPair}**\n\n` +
-                   `💰 Prix Forward: **${data.forwardPrice}**\n` +
-                   `📈 Spot: ${data.spotPrice}\n` +
-                   `📅 Maturité: ${data.timeToMaturity}\n` +
-                   `💹 Taux domestique: ${data.domesticRate}\n` +
-                   `💹 Taux étranger: ${data.foreignRate}`;
-          }
-        } catch (error) {
-          // Continuer avec le pattern suivant
-          continue;
+    // Vérifier si l'utilisateur veut terminer
+    if (normalized.includes('terminer') || normalized.includes('terminé') || 
+        normalized.includes('c\'est tout') || normalized.includes('fini') ||
+        normalized.includes('done')) {
+      return this.finalizeStrategy(sessionId);
+    }
+
+    // Détecter le type de composant
+    let componentType: 'option' | 'forward' | 'swap' | null = null;
+    let optionType: 'call' | 'put' | null = null;
+
+    if (normalized.includes('forward')) {
+      componentType = 'forward';
+    } else if (normalized.includes('swap')) {
+      componentType = 'swap';
+    } else if (normalized.includes('call') || normalized.includes('achat')) {
+      componentType = 'option';
+      optionType = 'call';
+    } else if (normalized.includes('put') || normalized.includes('vente')) {
+      componentType = 'option';
+      optionType = 'put';
+    }
+
+    if (!componentType) {
+      return '❓ Type de composant non reconnu.\n\n💡 Veuillez spécifier: "call", "put", "forward" ou "swap".';
+    }
+
+    // Pour les options, extraire le strike
+    let strike: number | undefined;
+    if (componentType === 'option') {
+      const strikePatterns = [
+        /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bk\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bstrike\s+(\d+\.?\d*)/i,
+        /\bà\s*(\d+\.?\d*)/i
+      ];
+
+      for (const pattern of strikePatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          strike = parseFloat(match[1]);
+          break;
         }
+      }
+
+      if (!strike) {
+        return `❓ Veuillez spécifier le strike pour le ${optionType}.\n\n💡 Exemple: "call strike 1.10" ou "put à 1.05"`;
       }
     }
 
-    return null;
-  }
-
-  /**
-   * Traite un message avec Gemini API
-   */
-  private async processWithGemini(userMessage: string): Promise<string> {
-    const contents = this.convertHistoryToGeminiFormat();
-    const tools = this.getGeminiTools();
-
-    const requestBody: any = {
-      contents: contents,
-      tools: [tools],
-      systemInstruction: {
-        parts: [{ text: this.getSystemPrompt() }]
-      }
+    // Ajouter le composant
+    const component: any = {
+      type: componentType === 'option' ? 'option' : componentType,
+      quantity: 100 // Par défaut 100%
     };
 
-    // Utiliser gemini-2.5-flash (modèle disponible dans v1beta et supporte generateContent)
-    // Modèles disponibles vérifiés: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, gemini-pro-latest
-    const model = 'gemini-2.5-flash';
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+    if (componentType === 'option') {
+      component.optionType = optionType;
+      component.strike = strike;
+      component.strikeType = 'absolute';
+      component.volatility = this.defaultVolatility * 100; // En pourcentage
+    }
+
+    session.components.push(component);
+
+    const componentDesc = componentType === 'option' 
+      ? `${optionType?.toUpperCase()} strike ${strike}`
+      : componentType.toUpperCase();
+
+    return `✅ Composant ajouté: **${componentDesc}**\n\n` +
+      `📊 Total composants: ${session.components.length}\n\n` +
+      `💡 Ajoutez d'autres composants ou dites "Terminer" pour finaliser la stratégie.`;
+  }
+
+  /**
+   * Finalise la stratégie et l'exporte vers Strategy Builder
+   */
+  private finalizeStrategy(sessionId: string): string {
+    const session = this.strategySessions.get(sessionId);
+    if (!session || !session.currencyPair || !session.baseVolume || !session.monthsToHedge) {
+      return '❌ Paramètres manquants. Veuillez recommencer la simulation.';
+    }
+
+    try {
+      // Construire la structure pour Strategy Builder
+      const currencyPair = {
+        symbol: `${session.currencyPair.base}/${session.currencyPair.quote}`,
+        name: `${session.currencyPair.base}/${session.currencyPair.quote}`,
+        base: session.currencyPair.base,
+        quote: session.currencyPair.quote,
+        category: 'majors' as const,
+        defaultSpotRate: session.spotPrice || 1.0
+      };
+
+      const calculatorState = {
+        params: {
+          startDate: new Date().toISOString().split('T')[0],
+          strategyStartDate: new Date().toISOString().split('T')[0],
+          monthsToHedge: session.monthsToHedge,
+          domesticRate: (this.defaultRates[session.currencyPair.quote] || 5.0) / 100,
+          foreignRate: (this.defaultRates[session.currencyPair.base] || 4.0) / 100,
+          baseVolume: session.baseVolume,
+          quoteVolume: session.quoteVolume,
+          spotPrice: session.spotPrice || 1.0,
+          currencyPair: currencyPair,
+          useCustomPeriods: false,
+          customPeriods: [],
+          volumeType: 'receivable' as const
         },
-        body: JSON.stringify(requestBody)
-      }
-    );
+        strategy: session.components.map(comp => ({
+          type: comp.type,
+          optionType: comp.optionType,
+          strike: comp.strike,
+          strikeType: comp.strikeType || 'absolute',
+          quantity: comp.quantity || 100,
+          volatility: comp.volatility || this.defaultVolatility * 100
+        })),
+        results: null,
+        payoffData: [],
+        manualForwards: {},
+        realPrices: {},
+        realPriceParams: {
+          useSimulation: false,
+          volatility: this.defaultVolatility,
+          drift: 0.01,
+          numSimulations: 1000
+        },
+        barrierOptionSimulations: 1000,
+        useClosedFormBarrier: false,
+        activeTab: 'parameters',
+        customScenario: null,
+        stressTestScenarios: {},
+        useImpliedVol: false,
+        impliedVolatilities: {},
+        customOptionPrices: {}
+      };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let error;
-      try {
-        error = JSON.parse(errorText);
-      } catch {
-        error = { error: { message: errorText } };
-      }
-      
-      // Détecter les erreurs de quota spécifiquement
-      const errorMessage = error.error?.message || errorText;
-      if (errorMessage.includes('quota') || errorMessage.includes('Quota exceeded') || response.status === 429) {
-        throw new Error(`Quota API dépassé: ${errorMessage}`);
-      }
-      
-      throw new Error(errorMessage || `Erreur API Gemini: ${response.status}`);
+      // Sauvegarder dans localStorage
+      localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+
+      // Marquer la session comme complète
+      session.step = 'complete';
+
+      return `✅ **Stratégie créée avec succès!**\n\n` +
+        `📊 **Résumé:**\n` +
+        `• Paire: ${session.currencyPair.base}/${session.currencyPair.quote}\n` +
+        `• Volume: ${this.formatVolume(session.baseVolume)} ${session.currencyPair.base}\n` +
+        `• Maturité: ${session.monthsToHedge} mois\n` +
+        `• Composants: ${session.components.length}\n\n` +
+        `🚀 **Prochaines étapes:**\n` +
+        `1. Allez sur **Strategy Builder**\n` +
+        `2. Cliquez sur **"Calculate Strategy Results"**\n` +
+        `3. Les résultats apparaîtront automatiquement ici une fois calculés\n\n` +
+        `💡 La stratégie a été chargée dans Strategy Builder!\n` +
+        `📊 Le chat surveille automatiquement les résultats et vous notifiera dès qu'ils seront disponibles.`;
+    } catch (error) {
+      console.error('Error finalizing strategy:', error);
+      return '❌ Erreur lors de la création de la stratégie. Veuillez réessayer.';
     }
-
-    const data = await response.json();
-    
-    if (!data.candidates || data.candidates.length === 0) {
-      throw new Error('Aucune réponse de Gemini');
-    }
-
-    const candidate = data.candidates[0];
-    
-    if (!candidate.content || !candidate.content.parts) {
-      throw new Error('Format de réponse invalide de Gemini');
-    }
-
-    const content = candidate.content;
-
-    // Vérifier si Gemini veut utiliser une fonction
-    const functionCallPart = content.parts.find((part: any) => part.functionCall);
-    if (functionCallPart) {
-      const functionCall = functionCallPart.functionCall;
-      const functionName = functionCall.name;
-      const functionArgs = functionCall.args || {};
-
-      // Ajouter le message de l'IA à l'historique
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: `Appel de fonction: ${functionName}`
-      });
-
-      // Exécuter la fonction
-      const functionResult = await this.executeFunction(functionName, functionArgs);
-
-      // Ajouter le résultat de la fonction à l'historique
-      this.conversationHistory.push({
-        role: 'function',
-        name: functionName,
-        content: functionResult
-      });
-
-      // Rappeler Gemini avec le résultat
-      return await this.processMessage('');
-    }
-
-    // Réponse directe de Gemini
-    const textParts = content.parts.filter((part: any) => part.text);
-    const assistantMessage = textParts.map((part: any) => part.text).join('\n');
-
-    if (!assistantMessage) {
-      throw new Error('Réponse vide de Gemini');
-    }
-
-    this.conversationHistory.push({
-      role: 'assistant',
-      content: assistantMessage
-    });
-
-    return assistantMessage;
-  }
-
-
-  /**
-   * Mode fallback si pas d'API ou erreur
-   */
-  private fallbackMode(message: string, error?: string): string {
-    const normalizedMessage = message.toLowerCase().trim();
-    
-    // Détection simple de spot rate
-    const currencyPairPattern = /([A-Z]{3})\/?\s*([A-Z]{3})/i;
-    const match = message.match(currencyPairPattern);
-    
-    if (match) {
-      const base = match[1].toUpperCase();
-      const quote = match[2].toUpperCase();
-      return `⚠️ Mode limité activé (API non configurée).\n\nPour obtenir le spot ${base}/${quote}, veuillez configurer VITE_GEMINI_API_KEY dans votre fichier .env\n\n${error ? `Erreur: ${error}` : ''}`;
-    }
-
-    return `⚠️ Mode limité activé. Pour utiliser toutes les fonctionnalités du chatbot, veuillez configurer VITE_GEMINI_API_KEY dans votre fichier .env\n\n${error ? `Erreur: ${error}` : ''}`;
   }
 
   /**
-   * Réinitialise l'historique de conversation
+   * Récupère et affiche les résultats de la stratégie
    */
-  resetConversation(): void {
-    this.conversationHistory = [{
-      role: 'system',
-      content: this.getSystemPrompt()
-    }];
+  private handleResultsRequest(): string {
+    try {
+      // Utiliser ChatSyncService pour récupérer les résultats
+      const syncService = ChatSyncService.getInstance();
+      const results = syncService.getResults();
+
+      if (!results || !Array.isArray(results) || results.length === 0) {
+        return '⏳ **Aucun résultat calculé pour le moment.**\n\n' +
+          `💡 Veuillez:\n` +
+          `1. Aller sur **Strategy Builder**\n` +
+          `2. Cliquer sur **"Calculate Strategy Results"**\n` +
+          `3. Les résultats apparaîtront automatiquement ici une fois calculés`;
+      }
+
+      const savedState = localStorage.getItem('calculatorState');
+      if (!savedState) {
+        return '❌ Aucune stratégie trouvée. Veuillez d\'abord créer une stratégie.';
+      }
+
+      const state = JSON.parse(savedState);
+
+      // Calculer les totaux
+      const totals = results.reduce((acc: any, result: any) => {
+        acc.hedgedCost += result.hedgedCost || 0;
+        acc.unhedgedCost += result.unhedgedCost || 0;
+        acc.deltaPnL += result.deltaPnL || 0;
+        acc.totalVolume += result.monthlyVolume || 0;
+        acc.strategyPremium += (result.strategyPrice || 0) * (result.monthlyVolume || 0);
+        return acc;
+      }, {
+        hedgedCost: 0,
+        unhedgedCost: 0,
+        deltaPnL: 0,
+        totalVolume: 0,
+        strategyPremium: 0
+      });
+
+      // Calculer par année
+      const yearlyResults: Record<string, any> = {};
+      results.forEach((result: any) => {
+        const year = result.date.split('-')[0];
+        if (!yearlyResults[year]) {
+          yearlyResults[year] = {
+            hedgedCost: 0,
+            unhedgedCost: 0,
+            deltaPnL: 0,
+            volume: 0
+          };
+        }
+        yearlyResults[year].hedgedCost += result.hedgedCost || 0;
+        yearlyResults[year].unhedgedCost += result.unhedgedCost || 0;
+        yearlyResults[year].deltaPnL += result.deltaPnL || 0;
+        yearlyResults[year].volume += result.monthlyVolume || 0;
+      });
+
+      const currencyPair = state.params?.currencyPair;
+      const currency = currencyPair?.quote || 'USD';
+
+      let response = `📊 **Résultats de la stratégie**\n\n`;
+      response += `**Résumé global:**\n`;
+      response += `• Coût hedgé: ${this.formatCurrency(totals.hedgedCost, currency)}\n`;
+      response += `• Coût non-hedgé: ${this.formatCurrency(totals.unhedgedCost, currency)}\n`;
+      response += `• P&L Delta: ${this.formatCurrency(totals.deltaPnL, currency)}\n`;
+      response += `• Premium stratégie: ${this.formatCurrency(totals.strategyPremium, currency)}\n`;
+      response += `• Volume total: ${this.formatVolume(totals.totalVolume)}\n\n`;
+
+      if (Object.keys(yearlyResults).length > 0) {
+        response += `**Par année:**\n`;
+        Object.entries(yearlyResults).sort().forEach(([year, data]: [string, any]) => {
+          response += `\n**${year}:**\n`;
+          response += `  • P&L: ${this.formatCurrency(data.deltaPnL, currency)}\n`;
+          response += `  • Volume: ${this.formatVolume(data.volume)}\n`;
+        });
+      }
+
+      return response;
+    } catch (error) {
+      console.error('Error reading results:', error);
+      return '❌ Erreur lors de la lecture des résultats.';
+    }
+  }
+
+  /**
+   * Formate un montant en devise
+   */
+  private formatCurrency(amount: number, currency: string = 'USD'): string {
+    if (isNaN(amount)) return 'N/A';
+    const absAmount = Math.abs(amount);
+    if (absAmount >= 1000000) {
+      return `${(amount / 1000000).toFixed(2)}M ${currency}`;
+    } else if (absAmount >= 1000) {
+      return `${(amount / 1000).toFixed(2)}K ${currency}`;
+    }
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+
+  /**
+   * Formate un volume
+   */
+  private formatVolume(volume: number): string {
+    if (volume >= 1000000) {
+      return `${(volume / 1000000).toFixed(2)}M`;
+    } else if (volume >= 1000) {
+      return `${(volume / 1000).toFixed(2)}K`;
+    }
+    return volume.toFixed(0);
+  }
+
+  /**
+   * Réponse par défaut avec toutes les fonctionnalités disponibles
+   */
+  private getDefaultResponse(): string {
+    return `Je peux vous aider avec plusieurs fonctionnalités:\n\n` +
+      `📊 **Taux de change spot**\n` +
+      `• "Quel est le spot EUR/USD?"\n` +
+      `• "Donne-moi le taux GBP/USD"\n\n` +
+      `💰 **Calcul de prix d'options**\n` +
+      `• "Calcule un call EUR/USD strike 1.10 à 3 mois"\n` +
+      `• "Prix d'un put GBP/USD strike 1.25 à 6 mois vol 12%"\n\n` +
+      `📈 **Calcul de forward FX**\n` +
+      `• "Quel est le forward EUR/USD à 6 mois?"\n` +
+      `• "Forward USD/JPY à 3 mois"\n\n` +
+      `💡 Posez votre question en langage naturel!`;
   }
 }
 
 export default ChatService;
+
