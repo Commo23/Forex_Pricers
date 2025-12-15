@@ -859,6 +859,11 @@ class ChatService {
    * Extrait les paramètres depuis le message utilisateur
    */
   private extractParamsFromMessage(message: string, component: any, spotPrice: number): void {
+    // Déterminer quel paramètre est prioritaire (le premier dans missingParams)
+    const priorityParam = component.missingParams && component.missingParams.length > 0 
+      ? component.missingParams[0] 
+      : null;
+
     // Extraire le strike
     const strikePatterns = [
       /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
@@ -882,19 +887,52 @@ class ChatService {
       }
     }
 
-    // Extraire la volatilité
+    // Extraire la volatilité (prioritaire si c'est le paramètre manquant)
     const volPatterns = [
       /\bvol(?:atilit[ée])?\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+      /\bvol(?:atilit[ée])?\s+(\d+\.?\d*)\s*%/i,
       /\bvol\s*[=:]\s*(\d+\.?\d*)/i,
+      /\bvol\s+(\d+\.?\d*)/i,
+      /\b(\d+\.?\d*)\s*%\s*vol(?:atilit[ée])?/i,
       /\b(\d+\.?\d*)\s*%\s*vol/i
     ];
 
+    let volatilityFound = false;
     for (const pattern of volPatterns) {
       const match = message.match(pattern);
       if (match) {
-        component.volatility = parseFloat(match[1]);
-        if (component.missingParams) {
-          component.missingParams = component.missingParams.filter((p: string) => p !== 'volatility');
+        const volValue = parseFloat(match[1]);
+        if (volValue > 0 && volValue <= 100) {
+          component.volatility = volValue;
+          if (component.missingParams) {
+            component.missingParams = component.missingParams.filter((p: string) => p !== 'volatility');
+          }
+          volatilityFound = true;
+          break; // Sortir de la boucle après avoir trouvé la volatilité
+        }
+      }
+    }
+
+    // Si aucun pattern explicite ne correspond mais que le message contient juste un nombre avec %, 
+    // et que la volatilité est le paramètre manquant prioritaire, l'utiliser
+    if (!volatilityFound && priorityParam === 'volatility') {
+      const simplePercentPattern = /\b(\d+\.?\d*)\s*%/i;
+      const simpleMatch = message.match(simplePercentPattern);
+      if (simpleMatch) {
+        const volValue = parseFloat(simpleMatch[1]);
+        // Vérifier que ce n'est pas une quantité (qui serait aussi un pourcentage)
+        // Si le message ne contient pas "quantité" ou "qty", c'est probablement la volatilité
+        if (volValue > 0 && volValue <= 100 && 
+            !message.toLowerCase().includes('quantité') && 
+            !message.toLowerCase().includes('qty') &&
+            !message.toLowerCase().includes('quantity') &&
+            !message.toLowerCase().includes('barrière') &&
+            !message.toLowerCase().includes('barrier') &&
+            !message.toLowerCase().includes('rebate')) {
+          component.volatility = volValue;
+          if (component.missingParams) {
+            component.missingParams = component.missingParams.filter((p: string) => p !== 'volatility');
+          }
         }
       }
     }
@@ -943,19 +981,36 @@ class ChatService {
       }
     }
 
-    // Extraire la quantité
-    const quantityPatterns = [
-      /\bquantit[ée]\s*[=:]\s*(\d+\.?\d*)\s*%/i,
-      /\bqty\s*[=:]\s*(\d+\.?\d*)/i,
-      /\b(\d+)\s*%/i
-    ];
+    // Extraire la quantité (seulement si ce n'est pas la volatilité qui est demandée)
+    // Pour éviter les conflits avec les pourcentages simples
+    if (priorityParam !== 'volatility') {
+      const quantityPatterns = [
+        /\bquantit[ée]\s*[=:]\s*(\d+\.?\d*)\s*%/i,
+        /\bqty\s*[=:]\s*(\d+\.?\d*)/i
+      ];
 
-    for (const pattern of quantityPatterns) {
-      const match = message.match(pattern);
-      if (match) {
-        component.quantity = parseFloat(match[1]);
-        if (component.missingParams) {
-          component.missingParams = component.missingParams.filter((p: string) => p !== 'quantity');
+      for (const pattern of quantityPatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          component.quantity = parseFloat(match[1]);
+          if (component.missingParams) {
+            component.missingParams = component.missingParams.filter((p: string) => p !== 'quantity');
+          }
+        }
+      }
+      
+      // Si la quantité est le paramètre manquant et qu'on a un simple pourcentage, l'utiliser
+      if (priorityParam === 'quantity') {
+        const simplePercentPattern = /\b(\d+\.?\d*)\s*%/i;
+        const simpleMatch = message.match(simplePercentPattern);
+        if (simpleMatch && !component.quantity) {
+          const qtyValue = parseFloat(simpleMatch[1]);
+          if (qtyValue > 0 && qtyValue <= 100) {
+            component.quantity = qtyValue;
+            if (component.missingParams) {
+              component.missingParams = component.missingParams.filter((p: string) => p !== 'quantity');
+            }
+          }
         }
       }
     }
