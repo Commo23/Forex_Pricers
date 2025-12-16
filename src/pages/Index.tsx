@@ -1160,7 +1160,7 @@ const Index = () => {
       clearInterval(interval);
     };
   }, []);
-
+  
   // Synchroniser calculatorState avec Strategy Builder (pour le chat)
   React.useEffect(() => {
     let lastCalculatorStateHash = '';
@@ -3268,15 +3268,15 @@ const Index = () => {
                 // This will be used to display in the UI
                 // Vérifier que strike et forward sont valides avant d'appeler toFixed
                 if (strike !== undefined && !isNaN(strike) && forward !== undefined && !isNaN(forward) && forward > 0) {
-                  option.dynamicStrikeInfo = {
-                    calculatedStrike: strike,
-                    calculatedStrikePercent: (strike / forward * 100).toFixed(2) + '%',
-                    forwardRate: forward,
-                    timeToMaturity: t
-                  };
-                  
-                  // Optional: Log the calculated strike for debugging
-                  console.log(`Period ${i} (${monthKey}): Calculated strike for ${currentType} at ${strike.toFixed(4)} (${(strike/forward*100).toFixed(2)}% of forward)`);
+                option.dynamicStrikeInfo = {
+                  calculatedStrike: strike,
+                  calculatedStrikePercent: (strike / forward * 100).toFixed(2) + '%',
+                  forwardRate: forward,
+                  timeToMaturity: t
+                };
+                
+                // Optional: Log the calculated strike for debugging
+                console.log(`Period ${i} (${monthKey}): Calculated strike for ${currentType} at ${strike.toFixed(4)} (${(strike/forward*100).toFixed(2)}% of forward)`);
                 } else {
                   console.warn(`Invalid strike or forward for dynamic strike calculation: strike=${strike}, forward=${forward}`);
                   option.dynamicStrikeInfo = {
@@ -3560,9 +3560,9 @@ const Index = () => {
           price: price || 0,
           quantity: (option.quantity || 100) / 100,
           strike: strike || 0,
-          label: optionLabel,
-          dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
-        };
+              label: optionLabel,
+              dynamicStrikeInfo: option.dynamicStrike ? option.dynamicStrikeInfo : undefined
+            };
         });
 
       // Add swap and forward prices
@@ -3571,11 +3571,11 @@ const Index = () => {
         ...swaps.map((swap, swapIndex) => {
           const swapPriceValue = swapPrice !== undefined && !isNaN(swapPrice) ? swapPrice : 0;
           return {
-            type: 'swap',
+          type: 'swap',
             price: swapPriceValue,
             quantity: (swap.quantity || 100) / 100,
             strike: swap.strike || 0,
-            label: `Swap Price ${swapIndex + 1}`
+          label: `Swap Price ${swapIndex + 1}`
           };
         }),
         ...forwards.map((forwardItem, forwardIndex) => {

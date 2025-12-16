@@ -1869,10 +1869,10 @@ const Reports = () => {
             <CardHeader>
               <div className="flex justify-between items-center">
                 <div>
-                  <CardTitle>All Reports</CardTitle>
-                  <CardDescription>
-                    Complete list of all saved reports and analytics
-                  </CardDescription>
+              <CardTitle>All Reports</CardTitle>
+              <CardDescription>
+                Complete list of all saved reports and analytics
+              </CardDescription>
                 </div>
                 <div className="flex gap-2">
                   <input

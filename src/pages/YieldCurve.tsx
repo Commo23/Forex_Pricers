@@ -15,19 +15,13 @@ const COUNTRIES = [
   "Morocco", "Austria", "Portugal", "Cyprus", "Finland", "Slovenia",
   "Croatia", "South Korea", "Spain", "Belgium", "Canada", "Greece",
   "Italy", "Slovakia", "France", "Malta", "Malaysia", "Lithuania",
-  "Bulgaria", "Israel", "Vietnam", "Norway", "United States", "Qatar",
+  "Bulgaria (*)", "Israel", "Vietnam", "Norway", "United States", "Qatar (*)",
   "United Kingdom", "New Zealand", "Czech Republic", "Australia", "Serbia",
-  "Peru", "Poland", "Chile", "Mauritius", "Philippines", "Indonesia",
-  "Bahrain", "Iceland", "India", "Romania", "Hungary", "South Africa",
-  "Jordan", "Mexico", "Namibia", "Bangladesh", "Sri Lanka", "Botswana",
-  "Pakistan", "Colombia", "Kenya", "Brazil", "Ukraine", "Kazakhstan",
+  "Perù (*)", "Poland", "Chile", "Mauritius", "Philippines", "Indonesia",
+  "Bahrain (*)", "Iceland", "India", "Romania", "Hungary", "South Africa",
+  "Jordan (*)", "Mexico", "Namibia", "Bangladesh", "Sri Lanka", "Botswana (*)",
+  "Pakistan", "Colombia", "Kenya", "Brazil", "Ukraine (*)", "Kazakhstan",
   "Nigeria", "Uganda", "Zambia", "Egypt", "Turkey"
-];
-
-const MATURITIES = [
-  "1 month", "3 months", "6 months", "9 months", "1 year",
-  "2 years", "3 years", "4 years", "5 years", "6 years",
-  "7 years", "8 years", "9 years", "10 years"
 ];
 
 const YieldCurve: React.FC = () => {
@@ -38,6 +32,42 @@ const YieldCurve: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState("");
 
   const yieldCurveService = YieldCurveService.getInstance();
+
+  // Extract all unique maturities from loaded data
+  const getAllMaturities = (): string[] => {
+    const maturitySet = new Set<string>();
+    
+    yieldData.forEach(countryData => {
+      if (!countryData.error && countryData.data.length > 0) {
+        countryData.data.forEach(point => {
+          if (point.maturity) {
+            maturitySet.add(point.maturity);
+          }
+        });
+      }
+    });
+
+    // Sort maturities intelligently
+    const maturities = Array.from(maturitySet);
+    return maturities.sort((a, b) => {
+      // Extract numeric value and unit
+      const aMatch = a.match(/(\d+)\s*(month|year|m|y)/i);
+      const bMatch = b.match(/(\d+)\s*(month|year|m|y)/i);
+      
+      if (!aMatch || !bMatch) return a.localeCompare(b);
+      
+      const aNum = parseInt(aMatch[1]);
+      const bNum = parseInt(bMatch[1]);
+      const aUnit = aMatch[2].toLowerCase();
+      const bUnit = bMatch[2].toLowerCase();
+      
+      // Convert months to years for comparison (approximate)
+      const aValue = aUnit.includes('month') || aUnit === 'm' ? aNum / 12 : aNum;
+      const bValue = bUnit.includes('month') || bUnit === 'm' ? bNum / 12 : bNum;
+      
+      return aValue - bValue;
+    });
+  };
 
   // Load yield curve data for selected countries
   const loadYieldData = async () => {
@@ -68,7 +98,7 @@ const YieldCurve: React.FC = () => {
       console.error('Error loading yield data:', error);
       toast({
         title: "Error",
-        description: "Failed to load yield curve data",
+        description: "Failed to load yield curve data. Make sure the backend server is running on port 3001.",
         variant: "destructive"
       });
     } finally {
@@ -95,7 +125,16 @@ const YieldCurve: React.FC = () => {
     const countryData = yieldData.find(d => d.country === country);
     if (!countryData || countryData.error) return null;
 
-    // Try to match maturity (flexible matching)
+    // Exact match first
+    const exactMatch = countryData.data.find(d => 
+      d.maturity.toLowerCase() === maturity.toLowerCase()
+    );
+    
+    if (exactMatch) {
+      return exactMatch.yield;
+    }
+
+    // Try flexible matching
     const maturityLower = maturity.toLowerCase();
     const maturityData = countryData.data.find(d => {
       const dMaturity = d.maturity.toLowerCase();
@@ -106,6 +145,8 @@ const YieldCurve: React.FC = () => {
     return maturityData?.yield || null;
   };
 
+  const allMaturities = getAllMaturities();
+
   return (
     <Layout>
       <div className="container mx-auto p-6 space-y-6">
@@ -115,7 +156,11 @@ const YieldCurve: React.FC = () => {
               <div>
                 <CardTitle>Yield Curve Data</CardTitle>
                 <CardDescription>
-                  Government bond yields by country and maturity
+                  Government bond yields by country and maturity. Data scraped from worldgovernmentbonds.com using Puppeteer.
+                  <br />
+                  <span className="text-xs text-muted-foreground">
+                    Make sure the backend server is running on port 3001 (run: npm run server)
+                  </span>
                 </CardDescription>
               </div>
               <div className="flex gap-2">
@@ -173,14 +218,16 @@ const YieldCurve: React.FC = () => {
             </div>
 
             {/* Yield Curve Table */}
-            {yieldData.length > 0 && (
-              <div className="overflow-x-auto">
+            {yieldData.length > 0 && allMaturities.length > 0 && (
+              <div className="overflow-x-auto border rounded-md">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="sticky left-0 bg-background z-10">Country</TableHead>
-                      {MATURITIES.map(maturity => (
-                        <TableHead key={maturity} className="text-center min-w-[100px]">
+                      <TableHead className="sticky left-0 bg-background z-10 min-w-[150px] border-r">
+                        Country
+                      </TableHead>
+                      {allMaturities.map(maturity => (
+                        <TableHead key={maturity} className="text-center min-w-[100px] whitespace-nowrap">
                           {maturity}
                         </TableHead>
                       ))}
@@ -189,7 +236,7 @@ const YieldCurve: React.FC = () => {
                   <TableBody>
                     {yieldData.map((countryData) => (
                       <TableRow key={countryData.country}>
-                        <TableCell className="sticky left-0 bg-background font-medium z-10">
+                        <TableCell className="sticky left-0 bg-background font-medium z-10 border-r">
                           <div className="flex items-center gap-2">
                             {countryData.country}
                             {countryData.error && (
@@ -203,12 +250,12 @@ const YieldCurve: React.FC = () => {
                             )}
                           </div>
                         </TableCell>
-                        {MATURITIES.map(maturity => {
+                        {allMaturities.map(maturity => {
                           const yieldValue = getYield(countryData.country, maturity);
                           return (
                             <TableCell key={maturity} className="text-center">
                               {yieldValue !== null ? (
-                                <span className="font-mono">{yieldValue.toFixed(2)}%</span>
+                                <span className="font-mono text-sm">{yieldValue.toFixed(2)}%</span>
                               ) : (
                                 <span className="text-muted-foreground">-</span>
                               )}
@@ -219,6 +266,12 @@ const YieldCurve: React.FC = () => {
                     ))}
                   </TableBody>
                 </Table>
+              </div>
+            )}
+
+            {yieldData.length > 0 && allMaturities.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground">
+                No maturity data found in the loaded countries
               </div>
             )}
 
