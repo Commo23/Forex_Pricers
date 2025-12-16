@@ -31,6 +31,7 @@ import DatabaseSync from "./pages/DatabaseSync";
 import SavedScenarios from "./pages/SavedScenarios";
 import RegressionAnalysis from "./pages/RegressionAnalysis";
 import OptionsMarketData from "./pages/OptionsMarketData";
+import YieldCurve from "./pages/YieldCurve";
 import LandingPage from "./pages/LandingPage";
 import SupabaseLogin from "./pages/SupabaseLogin";
 import AuthCallback from "./pages/AuthCallback";
@@ -88,6 +89,7 @@ const App = () => {
             <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
             <Route path="/forex-market" element={<ProtectedRoute><ForexMarket /></ProtectedRoute>} />
             <Route path="/options-market-data" element={<ProtectedRoute><OptionsMarketData /></ProtectedRoute>} />
+            <Route path="/yield-curve" element={<ProtectedRoute><YieldCurve /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute><UserManagement /></ProtectedRoute>} />
             <Route path="/database-sync" element={<ProtectedRoute><DatabaseSync /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

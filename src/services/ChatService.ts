@@ -1,5 +1,4 @@
 import ExchangeRateService from './ExchangeRateService';
-import { calculateGarmanKohlhagenPrice, calculateFXForwardPrice } from './PricingService';
 import ChatSyncService from './ChatSyncService';
 
 /**
@@ -361,31 +360,84 @@ class ChatService {
       // Maturité en années
       const timeToMaturity = params.maturityMonths / 12;
 
-      // Volatilité
-      const volatility = params.volatility || this.defaultVolatility;
+      // Volatilité (en pourcentage)
+      const volatility = params.volatility ? params.volatility : (this.defaultVolatility * 100);
 
-      // Calculer le prix de l'option avec Garman-Kohlhagen
-      const optionPrice = calculateGarmanKohlhagenPrice(
-        params.type,
-        spotPrice,
-        params.strike,
-        domesticRate,
-        foreignRate,
-        timeToMaturity,
-        volatility
-      );
+      // Créer la structure pour Strategy Builder au lieu de calculer directement
+      const currencyPair = {
+        symbol: `${params.currencyPair.base}/${params.currencyPair.quote}`,
+        name: `${params.currencyPair.base}/${params.currencyPair.quote}`,
+        base: params.currencyPair.base,
+        quote: params.currencyPair.quote,
+        category: 'majors' as const,
+        defaultSpotRate: spotPrice
+      };
 
-      // Formater la réponse
-      const priceInPercent = (optionPrice / spotPrice) * 100;
-      const volDisplay = (volatility * 100).toFixed(1);
+      const calculatorState = {
+        params: {
+          startDate: new Date().toISOString().split('T')[0],
+          strategyStartDate: new Date().toISOString().split('T')[0],
+          monthsToHedge: params.maturityMonths,
+          domesticRate: domesticRate,
+          foreignRate: foreignRate,
+          baseVolume: 10000000, // Volume par défaut
+          quoteVolume: 10000000 * spotPrice,
+          spotPrice: spotPrice,
+          currencyPair: currencyPair,
+          useCustomPeriods: false,
+          customPeriods: [],
+          volumeType: 'receivable' as const
+        },
+        strategy: [{
+          type: params.type,
+          optionType: params.type,
+          strike: params.strike,
+          strikeType: 'absolute' as const,
+          quantity: 100,
+          volatility: volatility
+        }],
+        results: null,
+        payoffData: [],
+        manualForwards: {},
+        realPrices: {},
+        realPriceParams: {
+          useSimulation: false,
+          volatility: this.defaultVolatility,
+          drift: 0.01,
+          numSimulations: 1000
+        },
+        barrierOptionSimulations: 1000,
+        useClosedFormBarrier: false,
+        activeTab: 'parameters',
+        customScenario: null,
+        stressTestScenarios: {},
+        useImpliedVol: false,
+        impliedVolatilities: {},
+        customOptionPrices: {}
+      };
 
-      return `✅ **Prix du ${params.type.toUpperCase()} ${params.currencyPair.base}/${params.currencyPair.quote}**\n\n` +
-        `📊 Spot: ${spotPrice.toFixed(4)}\n` +
-        `🎯 Strike: ${params.strike.toFixed(4)}\n` +
-        `📅 Maturité: ${params.maturityMonths} mois (${timeToMaturity.toFixed(2)} ans)\n` +
-        `📈 Volatilité: ${volDisplay}%\n` +
-        `💰 Prix: ${optionPrice.toFixed(6)} (${priceInPercent.toFixed(4)}% du spot)\n\n` +
-        `💡 Note: Utilisation du modèle Garman-Kohlhagen avec taux d'intérêt par défaut.`;
+      // Sauvegarder dans localStorage
+      localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+
+      // Déclencher un événement personnalisé pour notifier Strategy Builder
+      window.dispatchEvent(new CustomEvent('calculatorStateUpdated', {
+        detail: { source: 'chat' }
+      }));
+
+      const volDisplay = volatility.toFixed(1);
+
+      return `✅ **Option ${params.type.toUpperCase()} créée dans Strategy Builder**\n\n` +
+        `📊 **Paramètres:**\n` +
+        `• Paire: ${params.currencyPair.base}/${params.currencyPair.quote}\n` +
+        `• Spot: ${spotPrice.toFixed(4)}\n` +
+        `• Strike: ${params.strike.toFixed(4)}\n` +
+        `• Maturité: ${params.maturityMonths} mois\n` +
+        `• Volatilité: ${volDisplay}%\n\n` +
+        `🚀 **Prochaines étapes:**\n` +
+        `1. Allez sur **Strategy Builder**\n` +
+        `2. Cliquez sur **"Calculate Strategy Results"**\n` +
+        `3. Les résultats apparaîtront automatiquement ici une fois calculés\n\n` +
+        `💡 La stratégie a été chargée dans Strategy Builder!`;
     } catch (error) {
       console.error('Error calculating option price:', error);
       return `❌ Erreur lors du calcul du prix de l'option. Veuillez réessayer.`;
@@ -445,18 +497,91 @@ class ChatService {
       const domesticRate = (this.defaultRates[pair.quote] || 5.0) / 100;
       const foreignRate = (this.defaultRates[pair.base] || 4.0) / 100;
 
-      // Calculer le forward
-      const timeToMaturity = maturityMonths / 12;
-      const forwardPrice = calculateFXForwardPrice(spotPrice, domesticRate, foreignRate, timeToMaturity);
+      // Extraire le strike si fourni
+      const strikePatterns = [
+        /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bk\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bstrike\s+(\d+\.?\d*)/i
+      ];
 
-      const forwardPoints = forwardPrice - spotPrice;
-      const forwardPointsPercent = (forwardPoints / spotPrice) * 100;
+      let strike: number | undefined;
+      for (const pattern of strikePatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          strike = parseFloat(match[1]);
+          break;
+        }
+      }
 
-      return `✅ **Forward ${pair.base}/${pair.quote} à ${maturityMonths} mois**\n\n` +
-        `📊 Spot: ${spotPrice.toFixed(4)}\n` +
-        `📈 Forward: ${forwardPrice.toFixed(4)}\n` +
-        `📉 Points forward: ${forwardPoints > 0 ? '+' : ''}${forwardPoints.toFixed(4)} (${forwardPointsPercent > 0 ? '+' : ''}${forwardPointsPercent.toFixed(4)}%)\n\n` +
-        `💡 Note: Calcul basé sur la différence de taux d'intérêt entre ${pair.quote} (${(domesticRate * 100).toFixed(2)}%) et ${pair.base} (${(foreignRate * 100).toFixed(2)}%).`;
+      // Créer la structure pour Strategy Builder au lieu de calculer directement
+      const currencyPair = {
+        symbol: `${pair.base}/${pair.quote}`,
+        name: `${pair.base}/${pair.quote}`,
+        base: pair.base,
+        quote: pair.quote,
+        category: 'majors' as const,
+        defaultSpotRate: spotPrice
+      };
+
+      const calculatorState = {
+        params: {
+          startDate: new Date().toISOString().split('T')[0],
+          strategyStartDate: new Date().toISOString().split('T')[0],
+          monthsToHedge: maturityMonths,
+          domesticRate: domesticRate,
+          foreignRate: foreignRate,
+          baseVolume: 10000000, // Volume par défaut
+          quoteVolume: 10000000 * spotPrice,
+          spotPrice: spotPrice,
+          currencyPair: currencyPair,
+          useCustomPeriods: false,
+          customPeriods: [],
+          volumeType: 'receivable' as const
+        },
+        strategy: [{
+          type: 'forward',
+          strike: strike || spotPrice, // Utiliser le strike fourni ou le spot par défaut
+          quantity: 100
+        }],
+        results: null,
+        payoffData: [],
+        manualForwards: {},
+        realPrices: {},
+        realPriceParams: {
+          useSimulation: false,
+          volatility: this.defaultVolatility,
+          drift: 0.01,
+          numSimulations: 1000
+        },
+        barrierOptionSimulations: 1000,
+        useClosedFormBarrier: false,
+        activeTab: 'parameters',
+        customScenario: null,
+        stressTestScenarios: {},
+        useImpliedVol: false,
+        impliedVolatilities: {},
+        customOptionPrices: {}
+      };
+
+      // Sauvegarder dans localStorage
+      localStorage.setItem('calculatorState', JSON.stringify(calculatorState));
+
+      // Déclencher un événement personnalisé pour notifier Strategy Builder
+      window.dispatchEvent(new CustomEvent('calculatorStateUpdated', {
+        detail: { source: 'chat' }
+      }));
+
+      return `✅ **Forward créé dans Strategy Builder**\n\n` +
+        `📊 **Paramètres:**\n` +
+        `• Paire: ${pair.base}/${pair.quote}\n` +
+        `• Spot: ${spotPrice.toFixed(4)}\n` +
+        `${strike ? `• Strike: ${strike.toFixed(4)}\n` : ''}` +
+        `• Maturité: ${maturityMonths} mois\n\n` +
+        `🚀 **Prochaines étapes:**\n` +
+        `1. Allez sur **Strategy Builder**\n` +
+        `2. Cliquez sur **"Calculate Strategy Results"**\n` +
+        `3. Les résultats apparaîtront automatiquement ici une fois calculés\n\n` +
+        `💡 La stratégie a été chargée dans Strategy Builder!`;
     } catch (error) {
       console.error('Error calculating forward:', error);
       return `❌ Erreur lors du calcul du forward. Veuillez réessayer.`;
@@ -565,12 +690,17 @@ class ChatService {
     const session = this.strategySessions.get(sessionId);
     if (!session || !session.currencyPair) return '❌ Session introuvable.';
 
-    // Extraire le volume
+    // Extraire le volume avec patterns améliorés
+    // Utiliser [A-Za-z]{3} pour accepter majuscules et minuscules
     const volumePatterns = [
-      /(\d+(?:\.\d+)?)\s*millions?\s*([A-Z]{3})/i,
-      /(\d+(?:\.\d+)?)\s*M\s*([A-Z]{3})/i,
-      /(\d+(?:\.\d+)?)\s*([A-Z]{3})/i,
-      /(\d+(?:,\d+)?)\s*([A-Z]{3})/i
+      /(\d+(?:\.\d+)?)\s*millions?\s*([A-Za-z]{3})/i,
+      /(\d+(?:\.\d+)?)\s*M\s*([A-Za-z]{3})/i,
+      /(\d+(?:\.\d+)?)\s*milles?\s*([A-Za-z]{3})/i, // Pour "milles" (mille/thousand)
+      /(\d+(?:\.\d+)?)\s*K\s*([A-Za-z]{3})/i, // Pour "K" (thousand)
+      /(\d+(?:\.\d+)?)\s*milliards?\s*([A-Za-z]{3})/i, // Pour "milliards" (billion)
+      /(\d+(?:\.\d+)?)\s*B\s*([A-Za-z]{3})/i, // Pour "B" (billion)
+      /(\d+(?:\.\d+)?)\s*([A-Za-z]{3})/i, // Format simple
+      /(\d+(?:,\d+)?)\s*([A-Za-z]{3})/i // Avec virgule
     ];
 
     let volume = 0;
@@ -579,21 +709,27 @@ class ChatService {
     for (const pattern of volumePatterns) {
       const match = message.match(pattern);
       if (match) {
-        volume = parseFloat(match[1].replace(',', ''));
+        volume = parseFloat(match[1].replace(/,/g, '').replace(/\s/g, ''));
         currency = match[2].toUpperCase();
         
-        // Convertir millions en unités
-        if (message.toLowerCase().includes('million') || message.toLowerCase().includes('M')) {
+        // Convertir selon le multiplicateur
+        const messageLower = message.toLowerCase();
+        if (messageLower.includes('million') || messageLower.includes(' M ') || messageLower.match(/\d+\s*M\s*[a-z]{3}/i)) {
           volume = volume * 1000000;
+        } else if (messageLower.includes('mille') || messageLower.includes('milles') || messageLower.includes(' K ') || messageLower.match(/\d+\s*K\s*[a-z]{3}/i)) {
+          volume = volume * 1000;
+        } else if (messageLower.includes('milliard') || messageLower.includes('milliards') || messageLower.includes(' B ') || messageLower.match(/\d+\s*B\s*[a-z]{3}/i)) {
+          volume = volume * 1000000000;
         }
         break;
       }
     }
 
-    if (volume === 0) {
-      return '❓ Je n\'ai pas pu identifier le volume.\n\n💡 Veuillez spécifier un volume, par exemple: "10 millions EUR" ou "15M USD".';
+    if (volume === 0 || !currency) {
+      return '❓ Je n\'ai pas pu identifier le volume.\n\n💡 Veuillez spécifier un volume, par exemple: "10 millions EUR" ou "15M USD" ou "10 milles EUR".';
     }
 
+    // Vérifier que la devise correspond à la paire
     if (currency === session.currencyPair.base) {
       session.baseVolume = volume;
       session.quoteVolume = volume * (session.spotPrice || 1);
@@ -601,7 +737,8 @@ class ChatService {
       session.quoteVolume = volume;
       session.baseVolume = volume / (session.spotPrice || 1);
     } else {
-      return `❓ La devise du volume (${currency}) ne correspond pas à la paire ${session.currencyPair.base}/${session.currencyPair.quote}.`;
+      return `❓ La devise du volume (${currency}) ne correspond pas à la paire ${session.currencyPair.base}/${session.currencyPair.quote}.\n\n` +
+        `💡 Veuillez utiliser ${session.currencyPair.base} ou ${session.currencyPair.quote}.`;
     }
 
     session.step = 'maturity';
