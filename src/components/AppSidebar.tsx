@@ -103,12 +103,6 @@ const menuItems = [
     icon: Zap,
     description: "Real-time options market data and analytics"
   },
-  {
-    title: "Yield Curve",
-    url: "/yield-curve",
-    icon: TrendingUp,
-    description: "Yield curve analysis and visualization"
-  }
 ];
 
 const reportingItems = [
