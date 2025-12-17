@@ -1,14 +1,176 @@
 import ExchangeRateService from './ExchangeRateService';
 import ChatSyncService from './ChatSyncService';
+import GeminiService from './GeminiService';
 
 /**
  * Service de chat pour l'assistant FX
- * Système basé sur des règles et pattern matching (sans IA externe)
+ * Système basé sur des règles et pattern matching
+ * Optionnellement assisté par Gemini AI pour clarifier les messages
  * Fonctionnalités:
  * - Obtenir le spot rate d'une paire de devises
  * - Calculer le prix d'une option (Call/Put)
  * - Calculer le forward FX
  */
+
+/**
+ * Dictionnaire de définitions financières prédéfinies
+ */
+const FINANCIAL_DEFINITIONS: Record<string, string> = {
+  'zero cost collar': `📚 **Zéro Cost Collar (Collar Zéro Coût)**
+
+Un **zéro cost collar** est une stratégie de couverture de change qui combine :
+• **Un Call** (option d'achat) avec un strike élevé
+• **Un Put** (option de vente) avec un strike bas
+
+**Caractéristiques principales :**
+• Le coût net de la stratégie est **zéro** (la prime du call = la prime du put)
+• Protège contre les mouvements défavorables tout en permettant de bénéficier des mouvements favorables dans une fourchette
+• Le strike du call définit le **plafond** (prix maximum)
+• Le strike du put définit le **plancher** (prix minimum)
+
+**Exemple :** Pour EUR/USD à 1.10, un collar pourrait avoir un call à 1.12 (plafond) et un put à 1.08 (plancher). Si le taux monte au-dessus de 1.12, vous êtes protégé. S'il descend en dessous de 1.08, vous êtes également protégé. Entre les deux, vous bénéficiez des mouvements favorables.`,
+
+  'collar': `📚 **Collar (Collar de Change)**
+
+Un **collar** est une stratégie de couverture qui limite les risques de change en créant une fourchette de prix :
+• **Plafond (Cap)** : Prix maximum via un Call
+• **Plancher (Floor)** : Prix minimum via un Put
+
+**Avantages :**
+• Protection contre les mouvements défavorables
+• Coût réduit (ou nul dans le cas d'un zéro cost collar)
+• Flexibilité dans le choix des strikes
+
+**Utilisation :** Idéal pour les entreprises qui veulent se protéger tout en conservant un potentiel de gain limité.`,
+
+  'zero cost': `📚 **Zéro Cost (Zéro Coût)**
+
+Une stratégie **zéro cost** est une combinaison d'options où les primes s'annulent :
+• La prime reçue d'une option = la prime payée pour l'autre
+• Coût net = 0
+
+**Exemples courants :**
+• Zero Cost Collar
+• Zero Cost Straddle
+• Zero Cost Strangle
+
+**Avantage principal :** Protection sans coût initial, idéal pour les entreprises soucieuses de leur budget.`,
+
+  'call': `📚 **Call Option (Option d'Achat)**
+
+Un **Call** est une option qui donne le droit (mais pas l'obligation) d'acheter une devise à un prix fixe (strike) à une date déterminée.
+
+**Caractéristiques :**
+• **Achat** : Vous avez le droit d'acheter à un prix fixe
+• **Strike** : Prix d'exercice de l'option
+• **Maturité** : Date d'expiration
+• **Prime** : Coût de l'option
+
+**Utilisation :** Protection contre la hausse d'une devise (ex: si vous devez acheter des USD et que l'EUR/USD monte).`,
+
+  'put': `📚 **Put Option (Option de Vente)**
+
+Un **Put** est une option qui donne le droit (mais pas l'obligation) de vendre une devise à un prix fixe (strike) à une date déterminée.
+
+**Caractéristiques :**
+• **Vente** : Vous avez le droit de vendre à un prix fixe
+• **Strike** : Prix d'exercice de l'option
+• **Maturité** : Date d'expiration
+• **Prime** : Coût de l'option
+
+**Utilisation :** Protection contre la baisse d'une devise (ex: si vous devez vendre des USD et que l'EUR/USD baisse).`,
+
+  'forward': `📚 **Forward (Contrat à Terme)**
+
+Un **forward** est un accord pour acheter ou vendre une devise à un prix fixe à une date future déterminée.
+
+**Caractéristiques :**
+• **Prix fixe** : Déterminé aujourd'hui pour une transaction future
+• **Date de livraison** : Date d'échéance du contrat
+• **Engagement ferme** : Obligation d'exécuter la transaction
+
+**Avantages :**
+• Prix garanti
+• Pas de prime à payer
+• Simplicité
+
+**Inconvénients :**
+• Pas de flexibilité (obligation d'exécuter)
+• Pas de protection contre les mouvements favorables`,
+
+  'strike': `📚 **Strike (Prix d'Exercice)**
+
+Le **strike** est le prix auquel une option peut être exercée.
+
+**Types de strike :**
+• **At-the-money (ATM)** : Strike = prix spot actuel
+• **In-the-money (ITM)** : Option avec valeur intrinsèque
+• **Out-of-the-money (OTM)** : Option sans valeur intrinsèque
+
+**Exemple :** Pour EUR/USD à 1.10, un call avec strike 1.12 est OTM, un call avec strike 1.08 est ITM.`,
+
+  'volatility': `📚 **Volatilité**
+
+La **volatilité** mesure l'amplitude des variations de prix d'une devise.
+
+**Types :**
+• **Volatilité historique** : Basée sur les variations passées
+• **Volatilité implicite** : Dérivée des prix d'options sur le marché
+
+**Impact :**
+• Plus la volatilité est élevée, plus les options sont chères
+• Mesurée en pourcentage annuel (ex: 10% = volatilité modérée)
+
+**Utilisation :** Essentielle pour le pricing des options.`,
+
+  'spot': `📚 **Spot Rate (Taux au Comptant)**
+
+Le **spot rate** est le taux de change actuel pour une transaction immédiate (généralement dans 2 jours ouvrables).
+
+**Caractéristiques :**
+• Prix de marché actuel
+• Livraison dans 2 jours (T+2)
+• Base de référence pour tous les autres instruments
+
+**Exemple :** EUR/USD = 1.10 signifie qu'1 euro = 1.10 dollars américains.`,
+
+  'hedging': `📚 **Hedging (Couverture)**
+
+Le **hedging** est une stratégie pour réduire ou éliminer le risque de change.
+
+**Instruments utilisés :**
+• Forwards
+• Options (Call/Put)
+• Swaps
+• Options exotiques (barrières, digitales)
+
+**Objectif :** Protéger contre les mouvements défavorables des taux de change tout en conservant un potentiel de gain si possible.`,
+
+  'barrier option': `📚 **Barrier Option (Option à Barrière)**
+
+Une **barrier option** est une option exotique qui s'active ou se désactive selon qu'un niveau de prix (barrière) est atteint ou non.
+
+**Types :**
+• **Knock-in** : L'option s'active si la barrière est touchée
+• **Knock-out** : L'option se désactive si la barrière est touchée
+
+**Avantages :**
+• Moins cher qu'une option vanilla
+• Protection personnalisée selon vos besoins
+
+**Exemple :** Un knock-out call se désactive si le prix dépasse un certain niveau.`,
+
+  'digital option': `📚 **Digital Option (Option Digitale)**
+
+Une **digital option** (ou option binaire) paie un montant fixe si une condition est remplie à l'échéance.
+
+**Caractéristiques :**
+• **Paiement fixe** : Montant prédéterminé si l'option est dans la monnaie
+• **Tout ou rien** : Soit le paiement complet, soit rien
+• **Moins cher** : Généralement moins coûteux qu'une option vanilla
+
+**Utilisation :** Idéal pour des scénarios où vous voulez une protection simple avec un coût réduit.`
+};
 interface StrategySession {
   step: 'currency' | 'volume' | 'maturity' | 'components' | 'complete';
   currencyPair?: { base: string; quote: string };
@@ -46,6 +208,7 @@ interface StrategySession {
 class ChatService {
   private static instance: ChatService;
   private exchangeRateService: ExchangeRateService;
+  private geminiService: GeminiService;
   private strategySessions: Map<string, StrategySession> = new Map();
 
   // Taux d'intérêt par défaut (en pourcentage annuel)
@@ -65,6 +228,31 @@ class ChatService {
 
   private constructor() {
     this.exchangeRateService = ExchangeRateService.getInstance();
+    this.geminiService = GeminiService.getInstance();
+    
+    // Recharger la clé API au démarrage pour s'assurer qu'elle est à jour
+    this.reloadGeminiApiKey();
+  }
+
+  /**
+   * Recharge la clé API Gemini depuis les settings
+   */
+  private reloadGeminiApiKey(): void {
+    try {
+      const settings = localStorage.getItem('fxRiskManagerSettings');
+      if (settings) {
+        const parsed = JSON.parse(settings);
+        if (parsed.chat?.geminiApiKey && parsed.chat?.enableAI) {
+          this.geminiService.updateApiKey(parsed.chat.geminiApiKey);
+          console.log('[ChatService] Clé API Gemini rechargée depuis les settings');
+        } else {
+          this.geminiService.updateApiKey(null);
+          console.log('[ChatService] Gemini désactivé dans les settings');
+        }
+      }
+    } catch (error) {
+      console.error('[ChatService] Erreur lors du rechargement de la clé API:', error);
+    }
   }
 
   static getInstance(): ChatService {
@@ -78,12 +266,135 @@ class ChatService {
    * Traite un message de l'utilisateur et retourne une réponse
    */
   async processMessage(message: string, sessionId: string = 'default'): Promise<string> {
-    const normalizedMessage = message.toLowerCase().trim();
+    // Étape 1: Clarifier le message avec Gemini si disponible
+    let processedMessage = message;
+    let clarificationUsed = false;
+    let detectedIntent: string | undefined;
+    
+    // Vérifier si Gemini est disponible et recharger la clé si nécessaire
+    const isGeminiAvailable = this.geminiService.isAvailable();
+    console.log('[ChatService] Gemini disponible:', isGeminiAvailable);
+    
+    if (isGeminiAvailable) {
+      try {
+        const session = this.strategySessions.get(sessionId);
+        console.log('[ChatService] Appel Gemini pour clarifier:', message);
+        
+        const clarification = await this.geminiService.clarifyMessage(message, {
+          currentStep: session?.step,
+          previousMessages: [], // Pourrait être enrichi avec l'historique
+        });
+        
+        console.log('[ChatService] Réponse Gemini:', clarification);
+        
+        if (clarification.clarifiedMessage) {
+          processedMessage = clarification.clarifiedMessage;
+          detectedIntent = clarification.detectedIntent;
+          clarificationUsed = true;
+          console.log('[ChatService] Message clarifié par Gemini:', {
+            original: message,
+            clarified: processedMessage,
+            confidence: clarification.confidence,
+            detectedIntent: detectedIntent,
+            corrections: clarification.corrections
+          });
+        } else {
+          console.warn('[ChatService] Gemini n\'a pas retourné de message clarifié');
+        }
+      } catch (error) {
+        console.error('[ChatService] Erreur lors de la clarification Gemini:', error);
+        // En cas d'erreur, utiliser le message original
+      }
+    } else {
+      console.log('[ChatService] Gemini non disponible, utilisation du message original');
+    }
+    
+    const normalizedMessage = processedMessage.toLowerCase().trim();
+
+    // Si Gemini a détecté une question de définition, chercher une définition prédéfinie
+    if (detectedIntent === 'definition_question') {
+      // Normaliser le message pour la recherche (enlever accents, tirets, etc.)
+      const normalizeForSearch = (text: string): string => {
+        return text
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') // Enlever accents
+          .replace(/[-\s]/g, ' ') // Normaliser tirets et espaces
+          .replace(/\s+/g, ' ')
+          .trim();
+      };
+      
+      const normalizedProcessed = normalizeForSearch(processedMessage);
+      
+      // Mapping des termes de recherche vers les clés du dictionnaire
+      const termMapping: Record<string, string> = {
+        'zero cost collar': 'zero cost collar',
+        'zero-cost collar': 'zero cost collar',
+        'zero costcollar': 'zero cost collar',
+        'collar': 'collar',
+        'zero cost': 'zero cost',
+        'zero-cost': 'zero cost',
+        'call option': 'call',
+        'option call': 'call',
+        'call': 'call',
+        'put option': 'put',
+        'option put': 'put',
+        'put': 'put',
+        'forward': 'forward',
+        'contrat a terme': 'forward',
+        'strike': 'strike',
+        'prix dexercice': 'strike',
+        'volatility': 'volatility',
+        'volatilite': 'volatility',
+        'spot': 'spot',
+        'taux spot': 'spot',
+        'spot rate': 'spot',
+        'hedging': 'hedging',
+        'couverture': 'hedging',
+        'barrier option': 'barrier option',
+        'option barriere': 'barrier option',
+        'digital option': 'digital option',
+        'option digitale': 'digital option',
+        'option binaire': 'digital option'
+      };
+      
+      // Chercher les termes les plus longs d'abord
+      const sortedKeys = Object.keys(termMapping).sort((a, b) => b.length - a.length);
+      
+      for (const searchTerm of sortedKeys) {
+        if (normalizedProcessed.includes(normalizeForSearch(searchTerm))) {
+          const dictKey = termMapping[searchTerm];
+          const definition = FINANCIAL_DEFINITIONS[dictKey];
+          if (definition) {
+            console.log(`[ChatService] Définition trouvée pour: ${searchTerm} -> ${dictKey}`);
+            return definition;
+          }
+        }
+      }
+      
+      // Si aucune définition trouvée, retourner un message générique avec suggestions
+      return `❓ Je comprends que vous cherchez une définition, mais je n'ai pas d'information prédéfinie sur ce terme spécifique.\n\n` +
+        `💡 **Termes que je peux expliquer** :\n` +
+        `• Zero Cost Collar\n` +
+        `• Call / Put Options\n` +
+        `• Forward\n` +
+        `• Strike\n` +
+        `• Volatilité\n` +
+        `• Spot Rate\n` +
+        `• Hedging\n` +
+        `• Barrier Options\n` +
+        `• Digital Options\n\n` +
+        `💡 **Ce que je peux faire** :\n` +
+        `• Obtenir des taux de change spot\n` +
+        `• Calculer des prix d'options (Call/Put)\n` +
+        `• Calculer des forwards FX\n` +
+        `• Simuler des stratégies de hedging`;
+    }
 
     // Vérifier si on est en train de construire une stratégie
     const session = this.strategySessions.get(sessionId);
     if (session && session.step !== 'complete') {
-      return await this.handleStrategyBuilding(message, sessionId);
+      return await this.handleStrategyBuilding(processedMessage, sessionId);
     }
 
     // Vérifier si l'utilisateur demande à voir les résultats
@@ -116,14 +427,49 @@ class ChatService {
    * Vérifie si le message demande un spot rate
    */
   private isSpotRateRequest(message: string): boolean {
+    const normalized = message.toLowerCase();
+    
+    // Exclure les questions de définition
+    const definitionKeywords = [
+      'c\'est quoi', 'qu\'est-ce que', 'qu\'est ce que', 'what is', 'what\'s',
+      'définition', 'definition', 'explique', 'explain', 'explique-moi',
+      'comment ça marche', 'how does', 'how do', 'décris', 'describe',
+      'peux-tu expliquer', 'can you explain', 'qu\'est-ce qu\'un', 'qu\'est-ce qu\'une',
+      'c\'est quoi un', 'c\'est quoi une', 'définis', 'define'
+    ];
+    
+    if (definitionKeywords.some(keyword => normalized.includes(keyword))) {
+      return false;
+    }
+    
+    // Exclure les termes financiers qui pourraient être confondus avec des paires
+    const financialTerms = [
+      'collar', 'zero cost', 'knockout', 'knockin', 'one-touch', 'no-touch',
+      'double-touch', 'range-binary', 'forward', 'swap', 'option', 'call', 'put',
+      'straddle', 'strangle', 'butterfly', 'spread'
+    ];
+    
+    // Si le message contient un terme financier sans contexte de paire de devises, ce n'est pas un spot rate
+    const hasFinancialTerm = financialTerms.some(term => normalized.includes(term));
+    if (hasFinancialTerm) {
+      // Vérifier s'il y a vraiment une paire de devises explicite
+      const explicitPairPattern = /\b([A-Z]{3})\/?\s*([A-Z]{3})\b/i;
+      if (!explicitPairPattern.test(message)) {
+        return false;
+      }
+    }
+    
     const spotKeywords = ['spot', 'taux', 'rate', 'cours', 'prix', 'change'];
-    const hasSpotKeyword = spotKeywords.some(keyword => message.includes(keyword));
+    const hasSpotKeyword = spotKeywords.some(keyword => normalized.includes(keyword));
     
     // Détecte les paires de devises (format XXX/YYY ou XXX YYY)
-    const currencyPairPattern = /([A-Z]{3})\/?\s*([A-Z]{3})/i;
+    // Mais seulement si c'est explicite et pas un terme financier
+    const currencyPairPattern = /\b([A-Z]{3})\/?\s*([A-Z]{3})\b/i;
     const hasCurrencyPair = currencyPairPattern.test(message);
 
-    return hasSpotKeyword || hasCurrencyPair;
+    // Pour être un spot rate, il faut soit un mot-clé spot, soit une paire explicite
+    // ET ne pas être une question de définition ou un terme financier seul
+    return (hasSpotKeyword || hasCurrencyPair) && !hasFinancialTerm;
   }
 
   /**
@@ -1002,20 +1348,76 @@ class ChatService {
       : null;
 
     // Extraire le strike
-    const strikePatterns = [
-      /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
-      /\bk\s*[=:]\s*(\d+\.?\d*)/i,
-      /\bstrike\s+(\d+\.?\d*)/i,
-      /\bà\s*(\d+\.?\d*)/i,
-      /\b(\d+\.\d{2,4})\b/ // Format simple comme "1.10"
+    // D'abord, vérifier les pourcentages relatifs au spot
+    const strikePercentPatterns = [
+      /\b(\d+\.?\d*)\s*%\s*(?:du\s*)?spot/i, // "100% du spot" ou "100% spot"
+      /\bstrike\s*(?:à|à\s*)?(\d+\.?\d*)\s*%\s*(?:du\s*)?spot/i, // "strike à 100% du spot"
+      /\bstrike\s*(\d+\.?\d*)\s*%/i, // "strike 100%"
+      /\b(\d+\.?\d*)\s*%\s*(?:du\s*)?spot\s*actuel/i, // "100% du spot actuel"
+      /\bstrike\s*(?:à|à\s*)?(\d+\.?\d*)\s*%/i, // "strike à 100%"
     ];
 
-    for (const pattern of strikePatterns) {
+    let strikeFound = false;
+    for (const pattern of strikePercentPatterns) {
       const match = message.match(pattern);
       if (match) {
-        const value = parseFloat(match[1]);
-        if (value > 0) {
-          component.strike = value;
+        const percentValue = parseFloat(match[1]);
+        if (percentValue > 0 && percentValue <= 200) { // Limite raisonnable
+          // Calculer le strike en fonction du pourcentage du spot
+          component.strike = spotPrice * (percentValue / 100);
+          component.strikeType = 'absolute'; // On convertit en valeur absolue
+          if (component.missingParams) {
+            component.missingParams = component.missingParams.filter((p: string) => p !== 'strike');
+          }
+          strikeFound = true;
+          break;
+        }
+      }
+    }
+
+    // Si pas de pourcentage trouvé, chercher les valeurs absolues
+    if (!strikeFound) {
+      const strikePatterns = [
+        /\bstrike\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bk\s*[=:]\s*(\d+\.?\d*)/i,
+        /\bstrike\s+(\d+\.?\d*)/i,
+        /\bà\s*(\d+\.?\d*)/i,
+        /\b(\d+\.\d{2,4})\b/ // Format simple comme "1.10"
+      ];
+
+      for (const pattern of strikePatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          const value = parseFloat(match[1]);
+          if (value > 0) {
+            component.strike = value;
+            component.strikeType = 'absolute';
+            if (component.missingParams) {
+              component.missingParams = component.missingParams.filter((p: string) => p !== 'strike');
+            }
+            strikeFound = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Si le paramètre manquant est le strike et qu'on a un pourcentage simple sans contexte
+    // (ex: "100%" quand on demande le strike), l'interpréter comme pourcentage du spot
+    if (!strikeFound && priorityParam === 'strike') {
+      const simplePercentPattern = /\b(\d+\.?\d*)\s*%/i;
+      const simpleMatch = message.match(simplePercentPattern);
+      if (simpleMatch && 
+          !message.toLowerCase().includes('vol') && 
+          !message.toLowerCase().includes('volatilité') &&
+          !message.toLowerCase().includes('quantité') &&
+          !message.toLowerCase().includes('qty') &&
+          !message.toLowerCase().includes('rebate') &&
+          !message.toLowerCase().includes('barrière') &&
+          !message.toLowerCase().includes('barrier')) {
+        const percentValue = parseFloat(simpleMatch[1]);
+        if (percentValue > 0 && percentValue <= 200) {
+          component.strike = spotPrice * (percentValue / 100);
           component.strikeType = 'absolute';
           if (component.missingParams) {
             component.missingParams = component.missingParams.filter((p: string) => p !== 'strike');
@@ -1210,7 +1612,10 @@ class ChatService {
     switch (nextParam) {
       case 'strike':
         question += `❓ **Quel est le strike?**\n` +
-          `💡 Exemple: "1.10" ou "strike 1.10" (spot actuel: ${spotPrice.toFixed(4)})`;
+          `💡 Exemples:\n` +
+          `• Valeur absolue: "1.10" ou "strike 1.10"\n` +
+          `• Pourcentage du spot: "100% du spot" ou "110%" (spot actuel: ${spotPrice.toFixed(4)})\n` +
+          `• 100% = ${spotPrice.toFixed(4)}, 110% = ${(spotPrice * 1.1).toFixed(4)}`;
         break;
       case 'volatility':
         question += `❓ **Quelle est la volatilité?**\n` +

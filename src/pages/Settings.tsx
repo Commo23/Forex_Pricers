@@ -38,7 +38,8 @@ import {
   Eraser,
   ZoomIn,
   ZoomOut,
-  Monitor
+  Monitor,
+  MessageSquare
 } from "lucide-react";
 import { useCompanySettings, companySettingsEmitter } from "@/hooks/useCompanySettings";
 import { getLocalStorageStats, performEmergencyRecovery } from "@/utils/emergencyRecovery";
@@ -132,6 +133,12 @@ interface AppSettings {
     approvalWorkflow: boolean;
     documentationRequired: string[];
   };
+
+  // Chat settings
+  chat: {
+    geminiApiKey: string;
+    enableAI: boolean;
+  };
 }
 
 const Settings = () => {
@@ -215,6 +222,10 @@ const Settings = () => {
       settlementPreferences: "physical",
       approvalWorkflow: true,
       documentationRequired: ["ISDA", "CSA", "Confirmation"]
+    },
+    chat: {
+      geminiApiKey: "",
+      enableAI: false
     }
   });
 
@@ -265,6 +276,27 @@ const Settings = () => {
               }
             }));
             applyZoom(zoomLevel);
+          }
+        }
+
+        // Charger la clé API Gemini dans GeminiService
+        // Utiliser parsed de la première parsing si disponible
+        if (savedSettings) {
+          try {
+            const parsedSettings = JSON.parse(savedSettings);
+            if (parsedSettings?.chat?.geminiApiKey) {
+              import('@/services/GeminiService').then(({ default: GeminiService }) => {
+                const geminiService = GeminiService.getInstance();
+                // Mettre à jour avec la clé ET l'état enableAI
+                if (parsedSettings.chat.enableAI) {
+                  geminiService.updateApiKey(parsedSettings.chat.geminiApiKey);
+                } else {
+                  geminiService.updateApiKey(null);
+                }
+              });
+            }
+          } catch (error) {
+            console.error('Error loading Gemini API key:', error);
           }
         }
       } catch (error) {
@@ -354,6 +386,17 @@ const Settings = () => {
       }
       if (newSettings.ui?.dashboardRefresh) {
         localStorage.setItem('dashboard-refresh-interval', newSettings.ui.dashboardRefresh.toString());
+      }
+
+      // Mettre à jour GeminiService avec la nouvelle clé API
+      if (newSettings.chat?.geminiApiKey) {
+        const { default: GeminiService } = await import('@/services/GeminiService');
+        const geminiService = GeminiService.getInstance();
+        if (newSettings.chat.enableAI) {
+          geminiService.updateApiKey(newSettings.chat.geminiApiKey);
+        } else {
+          geminiService.updateApiKey(null);
+        }
       }
       
       // Finaliser
@@ -728,7 +771,7 @@ const Settings = () => {
       )}
 
       <Tabs defaultValue="general" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-9">
+        <TabsList className="grid w-full grid-cols-10">
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="risk">Risk</TabsTrigger>
           <TabsTrigger value="pricing">Pricing</TabsTrigger>
@@ -737,6 +780,7 @@ const Settings = () => {
           <TabsTrigger value="data">Data</TabsTrigger>
           <TabsTrigger value="fxexposures">FX Exposures</TabsTrigger>
           <TabsTrigger value="hedging">Hedging</TabsTrigger>
+          <TabsTrigger value="chat">Chat</TabsTrigger>
           <TabsTrigger value="diagnostic">Diagnostic</TabsTrigger>
         </TabsList>
 
@@ -2231,6 +2275,133 @@ const Settings = () => {
                     rows={3}
                   />
                 </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="chat">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                Chat AI Settings
+              </CardTitle>
+              <CardDescription>
+                Configurez l'assistant IA pour améliorer la compréhension des messages
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  L'IA Gemini est utilisée uniquement pour clarifier et normaliser les messages utilisateur.
+                  Elle ne fait aucune action, seulement de la compréhension de texte.
+                  Sans clé API, le chat fonctionne en mode basique (sans IA).
+                </AlertDescription>
+              </Alert>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="gemini-api-key">Clé API Gemini</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="gemini-api-key"
+                      type="password"
+                      placeholder="Entrez votre clé API Gemini (optionnel)"
+                      value={settings.chat.geminiApiKey}
+                      onChange={async (e) => {
+                        const value = e.target.value;
+                        const hasValue = value.trim().length > 0;
+                        updateSettings('chat', { 
+                          geminiApiKey: value,
+                          // Désactiver enableAI si la clé est supprimée
+                          enableAI: hasValue ? settings.chat.enableAI : false
+                        });
+                        // Mettre à jour GeminiService immédiatement
+                        const { default: GeminiService } = await import('@/services/GeminiService');
+                        const geminiService = GeminiService.getInstance();
+                        if (hasValue && settings.chat.enableAI) {
+                          geminiService.updateApiKey(value.trim());
+                        } else {
+                          geminiService.updateApiKey(null);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={async () => {
+                        const { default: GeminiService } = await import('@/services/GeminiService');
+                        const geminiService = GeminiService.getInstance();
+                        const isConnected = await geminiService.testConnection();
+                        if (isConnected) {
+                          toast({
+                            title: "✅ Connexion réussie",
+                            description: "La clé API Gemini est valide et fonctionne correctement.",
+                          });
+                        } else {
+                          toast({
+                            title: "❌ Connexion échouée",
+                            description: "Vérifiez que votre clé API est correcte.",
+                            variant: "destructive",
+                          });
+                        }
+                      }}
+                      disabled={!settings.chat.geminiApiKey || settings.chat.geminiApiKey.trim().length === 0}
+                    >
+                      Tester
+                    </Button>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Obtenez votre clé API sur{" "}
+                    <a
+                      href="https://makersuite.google.com/app/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      Google AI Studio
+                    </a>
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id="enable-ai"
+                    checked={settings.chat.enableAI && !!settings.chat.geminiApiKey}
+                    onCheckedChange={async (checked) => {
+                      updateSettings('chat', { enableAI: checked });
+                      // Mettre à jour GeminiService
+                      const { default: GeminiService } = await import('@/services/GeminiService');
+                      const geminiService = GeminiService.getInstance();
+                      if (checked && settings.chat.geminiApiKey) {
+                        geminiService.updateApiKey(settings.chat.geminiApiKey);
+                      } else {
+                        geminiService.updateApiKey(null);
+                      }
+                    }}
+                    disabled={!settings.chat.geminiApiKey || settings.chat.geminiApiKey.trim().length === 0}
+                  />
+                  <Label htmlFor="enable-ai">Activer l'assistance IA</Label>
+                </div>
+
+                {settings.chat.geminiApiKey && settings.chat.enableAI && (
+                  <Alert>
+                    <CheckCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      ✅ L'assistance IA est activée. Le chat utilisera Gemini pour clarifier les messages utilisateur.
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {(!settings.chat.geminiApiKey || settings.chat.geminiApiKey.trim().length === 0) && (
+                  <Alert variant="default">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      Le chat fonctionne en mode basique sans IA. Ajoutez une clé API Gemini pour activer l'assistance intelligente.
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
             </CardContent>
           </Card>
