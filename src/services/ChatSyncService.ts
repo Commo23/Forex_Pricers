@@ -2,12 +2,17 @@
  * Service de synchronisation entre le chat et l'application
  * Détecte les changements dans Strategy Builder et notifie le chat
  */
+import { ChatConfig } from '@/config/chatConfig';
+import LoggerService from './LoggerService';
+
 class ChatSyncService {
   private static instance: ChatSyncService;
   private listeners: Map<string, Set<(data: any) => void>> = new Map();
   private lastResultsHash: string = '';
   private pollingInterval: NodeJS.Timeout | null = null;
   private isPolling: boolean = false;
+  private isPaused: boolean = false;
+  private logger = LoggerService.getInstance();
 
   private constructor() {
     this.setupStorageListener();
@@ -45,13 +50,50 @@ class ChatSyncService {
   /**
    * Démarre le polling pour détecter les résultats
    */
-  startPolling(intervalMs: number = 2000) {
-    if (this.isPolling) return;
+  startPolling(intervalMs: number = ChatConfig.pollingInterval) {
+    if (this.isPolling) {
+      this.logger.debug('Polling déjà actif');
+      return;
+    }
     
     this.isPolling = true;
-    this.pollingInterval = setInterval(() => {
-      this.checkForResults();
-    }, intervalMs);
+    this.isPaused = false;
+    
+    // Utiliser requestIdleCallback si disponible pour optimiser
+    if ('requestIdleCallback' in window) {
+      const poll = () => {
+        if (!this.isPolling || this.isPaused) return;
+        this.checkForResults();
+        this.pollingInterval = setTimeout(poll, intervalMs);
+      };
+      poll();
+    } else {
+      this.pollingInterval = setInterval(() => {
+        if (!this.isPaused) {
+          this.checkForResults();
+        }
+      }, intervalMs);
+    }
+    
+    this.logger.debug('Polling démarré', { intervalMs });
+  }
+  
+  /**
+   * Met en pause le polling (quand le chat est fermé)
+   */
+  pausePolling(): void {
+    if (ChatConfig.pollingPauseWhenClosed) {
+      this.isPaused = true;
+      this.logger.debug('Polling mis en pause');
+    }
+  }
+  
+  /**
+   * Reprend le polling
+   */
+  resumePolling(): void {
+    this.isPaused = false;
+    this.logger.debug('Polling repris');
   }
 
   /**
@@ -59,9 +101,15 @@ class ChatSyncService {
    */
   stopPolling() {
     if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
+      if ('requestIdleCallback' in window) {
+        clearTimeout(this.pollingInterval);
+      } else {
+        clearInterval(this.pollingInterval);
+      }
       this.pollingInterval = null;
       this.isPolling = false;
+      this.isPaused = false;
+      this.logger.debug('Polling arrêté');
     }
   }
 
@@ -119,7 +167,7 @@ class ChatSyncService {
         });
       }
     } catch (error) {
-      console.error('Error checking for results:', error);
+      this.logger.error('Erreur lors de la vérification des résultats', error);
     }
   }
 

@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import ChatService from '@/services/ChatService';
 import ChatSyncService from '@/services/ChatSyncService';
+import { ChatConfig } from '@/config/chatConfig';
 
 interface Message {
   id: string;
@@ -88,7 +89,10 @@ const ChatWidget: React.FC = () => {
     return () => {
       unsubscribeResults();
       unsubscribeUpdated();
-      syncService.stopPolling();
+      // Ne pas arrêter complètement le polling, juste le mettre en pause
+      if (ChatConfig.pollingPauseWhenClosed) {
+        syncService.pausePolling();
+      }
     };
   }, [isOpen, isMinimized]);
 
@@ -148,6 +152,9 @@ const ChatWidget: React.FC = () => {
 
   // Fonction pour actualiser le chat
   const handleRefresh = async () => {
+    // Effacer toutes les sessions (mémoire et localStorage)
+    chatService.clearAllSessions();
+    
     // Réinitialiser les messages au message de bienvenue
     setMessages([{
       id: 'welcome',

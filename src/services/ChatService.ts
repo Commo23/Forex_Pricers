@@ -1,6 +1,11 @@
 import ExchangeRateService from './ExchangeRateService';
 import ChatSyncService from './ChatSyncService';
 import GeminiService from './GeminiService';
+import LoggerService from './LoggerService';
+import InputValidator from './InputValidator';
+import SessionManager from './SessionManager';
+import RateLimiter from './RateLimiter';
+import { ChatConfig } from '@/config/chatConfig';
 
 /**
  * Service de chat pour l'assistant FX
@@ -171,7 +176,7 @@ Une **digital option** (ou option binaire) paie un montant fixe si une condition
 
 **Utilisation :** Idéal pour des scénarios où vous voulez une protection simple avec un coût réduit.`
 };
-interface StrategySession {
+export interface StrategySession {
   step: 'currency' | 'volume' | 'maturity' | 'components' | 'complete';
   currencyPair?: { base: string; quote: string };
   spotPrice?: number;
@@ -210,6 +215,9 @@ class ChatService {
   private exchangeRateService: ExchangeRateService;
   private geminiService: GeminiService;
   private strategySessions: Map<string, StrategySession> = new Map();
+  private logger = LoggerService.getInstance();
+  private sessionManager = SessionManager.getInstance();
+  private rateLimiter = RateLimiter.getInstance();
 
   // Taux d'intérêt par défaut (en pourcentage annuel)
   private defaultRates: { [key: string]: number } = {
@@ -263,56 +271,178 @@ class ChatService {
   }
 
   /**
+   * Efface toutes les sessions en mémoire et dans le localStorage
+   * Utilisé lors du refresh du chat
+   */
+  clearAllSessions(): void {
+    // Effacer toutes les sessions en mémoire
+    this.strategySessions.clear();
+    this.logger.debug('Toutes les sessions en mémoire effacées');
+    
+    // Effacer toutes les sessions du localStorage
+    this.sessionManager.clearAllSessions();
+  }
+
+  /**
    * Traite un message de l'utilisateur et retourne une réponse
    */
   async processMessage(message: string, sessionId: string = 'default'): Promise<string> {
-    // Étape 1: Clarifier le message avec Gemini si disponible
-    let processedMessage = message;
-    let clarificationUsed = false;
+    try {
+      // Validation des entrées
+      const messageValidation = InputValidator.validateMessage(message);
+      if (!messageValidation.valid) {
+        this.logger.warn('Message invalide rejeté', { error: messageValidation.error, message });
+        return `❌ ${messageValidation.error || 'Message invalide'}`;
+      }
+      
+      const sanitizedMessage = messageValidation.sanitized!;
+    
+    // Validation du sessionId
+    const sessionValidation = InputValidator.validateSessionId(sessionId);
+    if (!sessionValidation.valid) {
+      this.logger.warn('SessionId invalide', { error: sessionValidation.error, sessionId });
+      sessionId = 'default'; // Utiliser la session par défaut
+    } else {
+      sessionId = sessionValidation.sanitized!;
+    }
+    
+    // Rate limiting
+    const rateLimitCheck = this.rateLimiter.checkAndRecord(sessionId, ChatConfig.rateLimit);
+    if (!rateLimitCheck.allowed) {
+      const resetIn = Math.ceil((rateLimitCheck.resetAt - Date.now()) / 1000);
+      this.logger.warn('Rate limit atteint', { sessionId, resetIn });
+      return `⏱️ Trop de requêtes. Veuillez patienter ${resetIn} seconde(s) avant de réessayer.`;
+    }
+    
+    let processedMessage = sanitizedMessage;
     let detectedIntent: string | undefined;
     
-    // Vérifier si Gemini est disponible et recharger la clé si nécessaire
-    const isGeminiAvailable = this.geminiService.isAvailable();
-    console.log('[ChatService] Gemini disponible:', isGeminiAvailable);
+    const normalizedMessage = sanitizedMessage.toLowerCase().trim();
     
-    if (isGeminiAvailable) {
+    // D'abord, vérifier si on est dans une session de stratégie en cours
+    // Essayer de charger depuis le SessionManager si pas en mémoire
+    let session = this.strategySessions.get(sessionId);
+    if (!session) {
+      session = this.sessionManager.getSession(sessionId);
+      if (session) {
+        this.strategySessions.set(sessionId, session);
+      }
+    }
+    
+    if (session && session.step !== 'complete') {
+      // Si on est dans une session active, ne pas appeler Gemini
+      // Le système de règles gère déjà les étapes
+      this.logger.debug('Session active, utilisation directe du système de règles', { sessionId, step: session.step });
+      return await this.handleStrategyBuilding(sanitizedMessage, sessionId);
+    }
+
+    // Détecter les requêtes simples et claires qui ne nécessitent pas Gemini
+    const isSimpleRequest = this.isSimpleClearRequest(normalizedMessage);
+    const isDefinition = this.isDefinitionQuestion(normalizedMessage);
+    
+    const isGeminiAvailable = this.geminiService.isAvailable();
+    this.logger.debug('Traitement du message', {
+      isGeminiAvailable,
+      isSimpleRequest,
+      isDefinition,
+      sessionId
+    });
+    
+    // Variable pour stocker les paramètres extraits par Gemini
+    let extractedParams: any = null;
+    let fxData: any = null;
+    
+    // Appeler Gemini seulement si :
+    // 1. Gemini est disponible
+    // 2. La requête n'est pas simple/claire (besoin de clarification)
+    // 3. Ce n'est pas une question de définition (gérée par le dictionnaire)
+    if (isGeminiAvailable && !isSimpleRequest && !isDefinition) {
       try {
-        const session = this.strategySessions.get(sessionId);
-        console.log('[ChatService] Appel Gemini pour clarifier:', message);
+        this.logger.debug('Appel Gemini pour clarifier', { message: sanitizedMessage });
         
-        const clarification = await this.geminiService.clarifyMessage(message, {
+        const clarification = await this.geminiService.clarifyMessage(sanitizedMessage, {
           currentStep: session?.step,
           previousMessages: [], // Pourrait être enrichi avec l'historique
         });
         
-        console.log('[ChatService] Réponse Gemini:', clarification);
-        
         if (clarification.clarifiedMessage) {
           processedMessage = clarification.clarifiedMessage;
           detectedIntent = clarification.detectedIntent;
-          clarificationUsed = true;
-          console.log('[ChatService] Message clarifié par Gemini:', {
-            original: message,
+          extractedParams = clarification.extractedParams;
+          fxData = clarification.fxData;
+          
+          // Si fxData est présent et contient des champs manquants, retourner la question
+          if (fxData && typeof fxData === 'object') {
+            if (fxData.missingFields && Array.isArray(fxData.missingFields) && fxData.missingFields.length > 0) {
+              const question = (fxData.question && typeof fxData.question === 'string') 
+                ? fxData.question 
+                : `Il manque des informations: ${fxData.missingFields.join(', ')}`;
+              this.logger.debug('Champs FX manquants détectés', { missingFields: fxData.missingFields });
+              // S'assurer que la question se termine par "?"
+              return question.endsWith('?') ? question : question + '?';
+            }
+            
+            // Si fxData est complet, chercher currentRate si null
+            if (fxData.currency && typeof fxData.currency === 'string' && 
+                fxData.baseCurrency && typeof fxData.baseCurrency === 'string' && 
+                !fxData.currentRate) {
+              try {
+                const exchangeData = await this.exchangeRateService.getExchangeRates(fxData.baseCurrency);
+                if (exchangeData && exchangeData.rates && typeof exchangeData.rates === 'object') {
+                  const rate = exchangeData.rates[fxData.currency];
+                  if (rate && !isNaN(rate) && typeof rate === 'number') {
+                    fxData.currentRate = rate;
+                    this.logger.debug('Taux de change récupéré', { 
+                      pair: `${fxData.baseCurrency}/${fxData.currency}`,
+                      rate 
+                    });
+                  }
+                }
+              } catch (error) {
+                this.logger.warn('Impossible de récupérer le taux de change', error);
+                // Ne pas bloquer si on ne peut pas récupérer le taux
+              }
+            }
+          }
+          
+          this.logger.debug('Message clarifié par Gemini', {
+            original: sanitizedMessage,
             clarified: processedMessage,
             confidence: clarification.confidence,
-            detectedIntent: detectedIntent,
-            corrections: clarification.corrections
+            detectedIntent,
+            extractedParams,
+            fxData
           });
         } else {
-          console.warn('[ChatService] Gemini n\'a pas retourné de message clarifié');
+          this.logger.warn('Gemini n\'a pas retourné de message clarifié');
         }
-      } catch (error) {
-        console.error('[ChatService] Erreur lors de la clarification Gemini:', error);
-        // En cas d'erreur, utiliser le message original
+      } catch (error: any) {
+        this.logger.error('Erreur lors de la clarification Gemini', error, { 
+          message: sanitizedMessage,
+          errorMessage: error?.message,
+          errorStack: error?.stack 
+        });
+        // En cas d'erreur, utiliser le message original et continuer
+        // Ne pas throw l'erreur, juste logger et continuer avec le message original
+        processedMessage = sanitizedMessage;
+        detectedIntent = undefined;
+        extractedParams = null;
+        fxData = null;
       }
     } else {
-      console.log('[ChatService] Gemini non disponible, utilisation du message original');
+      if (isSimpleRequest) {
+        this.logger.debug('Requête simple détectée, pas besoin de Gemini');
+      } else if (isDefinition) {
+        this.logger.debug('Question de définition détectée, utilisation du dictionnaire');
+      } else {
+        this.logger.debug('Gemini non disponible, utilisation du message original');
+      }
     }
     
-    const normalizedMessage = processedMessage.toLowerCase().trim();
+    const normalizedProcessed = processedMessage.toLowerCase().trim();
 
-    // Si Gemini a détecté une question de définition, chercher une définition prédéfinie
-    if (detectedIntent === 'definition_question') {
+    // Si Gemini a détecté une question de définition OU si on a détecté une définition localement
+    if (detectedIntent === 'definition_question' || isDefinition) {
       // Normaliser le message pour la recherche (enlever accents, tirets, etc.)
       const normalizeForSearch = (text: string): string => {
         return text
@@ -324,7 +454,7 @@ class ChatService {
           .trim();
       };
       
-      const normalizedProcessed = normalizeForSearch(processedMessage);
+      const normalizedForDef = normalizeForSearch(processedMessage);
       
       // Mapping des termes de recherche vers les clés du dictionnaire
       const termMapping: Record<string, string> = {
@@ -362,11 +492,11 @@ class ChatService {
       const sortedKeys = Object.keys(termMapping).sort((a, b) => b.length - a.length);
       
       for (const searchTerm of sortedKeys) {
-        if (normalizedProcessed.includes(normalizeForSearch(searchTerm))) {
+        if (normalizedForDef.includes(normalizeForSearch(searchTerm))) {
           const dictKey = termMapping[searchTerm];
           const definition = FINANCIAL_DEFINITIONS[dictKey];
           if (definition) {
-            console.log(`[ChatService] Définition trouvée pour: ${searchTerm} -> ${dictKey}`);
+            this.logger.debug('Définition trouvée', { searchTerm, dictKey });
             return definition;
           }
         }
@@ -391,36 +521,122 @@ class ChatService {
         `• Simuler des stratégies de hedging`;
     }
 
-    // Vérifier si on est en train de construire une stratégie
-    const session = this.strategySessions.get(sessionId);
-    if (session && session.step !== 'complete') {
-      return await this.handleStrategyBuilding(processedMessage, sessionId);
-    }
-
     // Vérifier si l'utilisateur demande à voir les résultats
-    if (this.isResultsRequest(normalizedMessage)) {
+    if (this.isResultsRequest(normalizedProcessed)) {
       return await this.handleResultsRequest();
     }
 
     // Détection des différentes intentions
-    if (this.isStrategySimulationRequest(normalizedMessage)) {
+    // Vérifier d'abord avec le message original (pour la détection locale)
+    // puis avec le message clarifié (pour Gemini)
+    const originalNormalized = sanitizedMessage.toLowerCase().trim();
+    const isStrategyRequest = 
+      detectedIntent === 'strategy_simulation' || 
+      this.isStrategySimulationRequest(normalizedProcessed) ||
+      this.isStrategySimulationRequest(originalNormalized); // Fallback sur message original
+    
+    if (isStrategyRequest) {
+      this.logger.debug('Demande de stratégie détectée', {
+        detectedIntent,
+        hasExtractedParams: !!extractedParams,
+        extractedParams
+      });
+      
+      // Si Gemini a extrait des paramètres, les utiliser
+      // Sinon, essayer d'extraire localement depuis le message
+      if (!extractedParams) {
+        extractedParams = this.extractParamsFromMessage(sanitizedMessage);
+        this.logger.debug('Paramètres extraits localement', { extractedParams });
+      }
+      
+      // Si on a des paramètres (de Gemini ou extraction locale), les utiliser
+      if (extractedParams && (extractedParams.currencyPair || extractedParams.countries)) {
+        return await this.startStrategySimulationWithParams(sessionId, extractedParams);
+      }
+      
+      // Sinon, démarrer normalement
       return await this.startStrategySimulation(sessionId);
     }
 
-    if (this.isOptionPriceRequest(normalizedMessage)) {
-      return await this.handleOptionPriceRequest(message);
+    if (this.isOptionPriceRequest(normalizedProcessed)) {
+      return await this.handleOptionPriceRequest(processedMessage);
     }
 
-    if (this.isForwardRequest(normalizedMessage)) {
-      return await this.handleForwardRequest(message);
+    if (this.isForwardRequest(normalizedProcessed)) {
+      return await this.handleForwardRequest(processedMessage);
     }
 
-    if (this.isSpotRateRequest(normalizedMessage)) {
-      return await this.handleSpotRateRequest(message);
+    if (this.isSpotRateRequest(normalizedProcessed)) {
+      return await this.handleSpotRateRequest(processedMessage);
     }
 
     // Réponse par défaut avec suggestions
     return this.getDefaultResponse();
+    } catch (error: any) {
+      // Capturer toutes les erreurs non gérées
+      this.logger.error('Erreur non gérée dans processMessage', error, { 
+        message, 
+        sessionId,
+        errorMessage: error?.message,
+        errorStack: error?.stack 
+      });
+      
+      // Retourner un message d'erreur convivial
+      return `❌ Désolé, une erreur est survenue lors du traitement de votre message.\n\n` +
+        `💡 Veuillez réessayer ou reformuler votre demande.\n\n` +
+        `Si le problème persiste, vérifiez que:\n` +
+        `• Votre message est clair et complet\n` +
+        `• Les informations fournies sont correctes\n` +
+        `• Le service est bien configuré`;
+    }
+  }
+
+  /**
+   * Vérifie si la requête est simple et claire (ne nécessite pas Gemini)
+   * Les messages contextuels complexes doivent passer par Gemini
+   */
+  private isSimpleClearRequest(message: string): boolean {
+    // Détecter les messages contextuels complexes qui nécessitent Gemini
+    const complexIndicators = [
+      /\b(je|j'|mon|ma|mes|nous|notre|nos)\b/i, // Messages personnels
+      /\b(réside|habite|vivre|vivant)\b/i, // Mentions de localisation
+      /\b(acheter|achat|vendre|vente|opération|transaction)\b/i, // Mentions d'opérations
+      /\b(protéger|proteger|protection|couverture|hedging)\b/i, // Mentions de protection
+      /\b(élaborer|elaborer|créer|faire)\s+(une|un)?\s*(stratégie|strategy)\b/i, // Création de stratégie contextuelle
+      /\b(maroc|mexique|france|allemagne|espagne|italie|usa|états-unis|royaume-uni|japon|suisse|australie|canada)\b/i // Mentions de pays
+    ];
+    
+    // Si le message contient des indicateurs de complexité, il n'est pas "simple"
+    if (complexIndicators.some(pattern => pattern.test(message))) {
+      return false;
+    }
+    
+    // Requêtes simples et directes qui sont bien détectées par le système de règles
+    const simplePatterns = [
+      /^(quel|quelle|quels|quelles)\s+(est|sont)\s+(le|la|les)\s+(spot|taux|rate)/i,
+      /^(spot|taux)\s+[a-z]{3}\/[a-z]{3}/i,
+      /^(calcule|calculer|price)\s+(un|une|le|la)?\s*(call|put|option)/i,
+      /^(forward|futur|future)/i,
+      /^(résultats|results|résumé|resume)/i,
+      /^(simule|simuler|simulation)\s+(une|un)?\s*(stratégie|strategy)\s*$/i // Seulement si c'est juste "simule une stratégie" sans contexte
+    ];
+    
+    return simplePatterns.some(pattern => pattern.test(message));
+  }
+
+  /**
+   * Vérifie si c'est une question de définition
+   */
+  private isDefinitionQuestion(message: string): boolean {
+    const definitionKeywords = [
+      'c\'est quoi', 'qu\'est-ce que', 'qu\'est ce que', 'what is', 'what\'s',
+      'définition', 'definition', 'explique', 'explain', 'explique-moi',
+      'comment ça marche', 'how does', 'how do', 'décris', 'describe',
+      'peux-tu expliquer', 'can you explain', 'qu\'est-ce qu\'un', 'qu\'est-ce qu\'une',
+      'c\'est quoi un', 'c\'est quoi une', 'définis', 'define'
+    ];
+    
+    return definitionKeywords.some(keyword => message.includes(keyword));
   }
 
   /**
@@ -936,10 +1152,46 @@ class ChatService {
 
   /**
    * Détecte si l'utilisateur demande une simulation de stratégie
+   * Tolérant aux fautes d'orthographe et variations
    */
   private isStrategySimulationRequest(message: string): boolean {
-    const keywords = ['simule', 'simuler', 'simulation', 'stratégie', 'strategy', 'créer stratégie', 'nouvelle stratégie'];
-    return keywords.some(keyword => message.includes(keyword));
+    // Normaliser le message pour la recherche (enlever accents, variations)
+    const normalized = message
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Enlever accents
+      .replace(/[-\s]/g, ' ') // Normaliser espaces
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    const keywords = [
+      'simule', 'simuler', 'simulation', 'strategie', 'strategy', 
+      'creer strategie', 'nouvelle strategie', 'elaborer', 'elaborer une strategie',
+      'me proteger', 'protection', 'hedging', 'couverture',
+      'creer une strategie', 'creer un strategie', 'faire une strategie',
+      'je veux me proteger', 'je veux proteger', 'je veux elaborer',
+      'je veux elaborer une strategie', 'besoin de protection', 'besoin de couverture',
+      'elaborer une strategie pour', 'elaborer une strategie de', 'elaborer strategie',
+      'proteger', 'protege', 'protegie', 'protege moi', 'protege moi de',
+      'operation', 'transaction', 'montant', 'volume', 'hedger', 'hedge'
+    ];
+    
+    // Vérifier si le message contient au moins un mot-clé
+    const hasKeyword = keywords.some(keyword => normalized.includes(keyword));
+    
+    // Vérifier aussi les patterns contextuels (pays + montant + protection)
+    // Plus flexible pour détecter même avec des fautes d'orthographe
+    const hasCountry = /\b(maroc|mexique|france|allemagne|usa|royaume-uni|japon|suisse|australie|canada|espagne|italie)\b/i.test(message);
+    const hasAmount = /\b(million|millions|m\s*drhams|m\s*euros|m\s*usd|montant|volume|operation|transaction|mt\s*total|total)\b/i.test(message);
+    const hasProtection = /\b(proteger|protege|protegie|protection|hedging|couverture|elaborer|strategie|strategy)\b/i.test(message);
+    
+    const hasContextualPattern = hasCountry && hasAmount && hasProtection;
+    
+    // Aussi détecter si le message contient "elaborer" + "strategie" même sans pays/montant explicite
+    const hasElaborateStrategy = /\belaborer\b.*\bstrategie\b/i.test(normalized) || 
+                                  /\bstrategie\b.*\belaborer\b/i.test(normalized);
+    
+    return hasKeyword || hasContextualPattern || hasElaborateStrategy;
   }
 
   /**
@@ -959,11 +1211,236 @@ class ChatService {
       components: []
     };
     this.strategySessions.set(sessionId, session);
+    this.sessionManager.saveSession(sessionId, session);
 
     return `🚀 **Simulation de stratégie FX**\n\n` +
       `Je vais vous guider pour créer votre stratégie de hedging.\n\n` +
       `**Étape 1/4**: Quelle paire de devises souhaitez-vous hedger?\n` +
       `💡 Exemple: "EUR/USD" ou "GBP/USD"`;
+  }
+
+  /**
+   * Démarre une simulation de stratégie avec des paramètres pré-extraits par Gemini
+   */
+  private async startStrategySimulationWithParams(sessionId: string, extractedParams: any): Promise<string> {
+    const session: StrategySession = {
+      step: 'currency',
+      components: []
+    };
+
+    // Si Gemini a extrait une paire de devises, la proposer pour confirmation
+    if (extractedParams?.currencyPair?.base && extractedParams?.currencyPair?.quote) {
+      try {
+        const pair = {
+          base: extractedParams.currencyPair.base,
+          quote: extractedParams.currencyPair.quote
+        };
+
+        // Stocker la paire proposée dans la session pour la confirmation
+        session.currencyPair = pair; // Temporaire, sera confirmé ou changé
+        
+        // Construire le message de proposition avec contexte
+        let response = `🚀 **Simulation de stratégie FX**\n\n`;
+        
+        // Ajouter le contexte si disponible
+        if (extractedParams?.countries?.from || extractedParams?.countries?.to) {
+          const fromCountry = extractedParams.countries.from || '';
+          const toCountry = extractedParams.countries.to || '';
+          response += `📍 D'après votre message, vous résidez au **${fromCountry}** et souhaitez effectuer une opération au **${toCountry}**.\n\n`;
+        }
+        
+        if (extractedParams?.amount?.value && extractedParams?.amount?.currency) {
+          const amountValue = extractedParams.amount.value;
+          const amountCurrency = extractedParams.amount.currency.toUpperCase();
+          response += `💰 Montant détecté: **${this.formatAmount(amountValue)} ${amountCurrency}**\n\n`;
+        }
+        
+        response += `**Étape 1/4**: J'ai déduit la paire de devises **${pair.base}/${pair.quote}**.\n\n`;
+        response += `✅ Confirmez avec "Oui", "OK", "Confirmer" ou "C'est correct"\n`;
+        response += `🔄 Ou indiquez une autre paire si vous souhaitez la changer\n\n`;
+        response += `💡 Exemple: "Oui" ou "EUR/USD" pour changer`;
+
+        this.strategySessions.set(sessionId, session);
+        this.sessionManager.saveSession(sessionId, session);
+        return response;
+      } catch (error) {
+        this.logger.error('Erreur lors de l\'initialisation avec paramètres extraits', error);
+        // En cas d'erreur, continuer avec le processus normal
+      }
+    }
+
+    // Si on n'a pas pu utiliser les paramètres, démarrer normalement
+    this.strategySessions.set(sessionId, session);
+    this.sessionManager.saveSession(sessionId, session);
+
+    return `🚀 **Simulation de stratégie FX**\n\n` +
+      `Je vais vous guider pour créer votre stratégie de hedging.\n\n` +
+      `**Étape 1/4**: Quelle paire de devises souhaitez-vous hedger?\n` +
+      `💡 Exemple: "EUR/USD" ou "GBP/USD"`;
+  }
+
+  /**
+   * Formate un montant pour l'affichage
+   */
+  private formatAmount(amount: number): string {
+    if (amount >= 1000000) {
+      return `${(amount / 1000000).toFixed(2)} millions`;
+    } else if (amount >= 1000) {
+      return `${(amount / 1000).toFixed(2)} milles`;
+    }
+    return amount.toLocaleString('fr-FR');
+  }
+
+  /**
+   * Extrait les paramètres depuis le message utilisateur (extraction locale sans Gemini)
+   * Utilisé comme fallback si Gemini n'est pas disponible ou ne retourne pas de paramètres
+   */
+  private extractParamsFromMessage(message: string): any {
+    const normalized = message.toLowerCase();
+    const params: any = {};
+    
+    // Mapping pays → devises (avec variantes françaises et anglaises)
+    const countryToCurrency: Record<string, string> = {
+      'maroc': 'MAD',
+      'morocco': 'MAD',
+      'mexique': 'MXN',
+      'mexico': 'MXN',
+      'france': 'EUR',
+      'france': 'EUR',
+      'allemagne': 'EUR',
+      'germany': 'EUR',
+      'espagne': 'EUR',
+      'spain': 'EUR',
+      'italie': 'EUR',
+      'italy': 'EUR',
+      'portugal': 'EUR',
+      'belgique': 'EUR',
+      'belgium': 'EUR',
+      'pays-bas': 'EUR',
+      'netherlands': 'EUR',
+      'usa': 'USD',
+      'états-unis': 'USD',
+      'etats-unis': 'USD',
+      'united states': 'USD',
+      'royaume-uni': 'GBP',
+      'uk': 'GBP',
+      'united kingdom': 'GBP',
+      'japon': 'JPY',
+      'japan': 'JPY',
+      'suisse': 'CHF',
+      'switzerland': 'CHF',
+      'australie': 'AUD',
+      'australia': 'AUD',
+      'canada': 'CAD',
+      'nouvelle-zélande': 'NZD',
+      'nouvelle zelande': 'NZD',
+      'new zealand': 'NZD'
+    };
+    
+    // Détecter les pays mentionnés (tolérant aux fautes d'orthographe comme "ou" au lieu de "au")
+    const countries: string[] = [];
+    for (const [country, currency] of Object.entries(countryToCurrency)) {
+      // Recherche directe
+      if (normalized.includes(country)) {
+        countries.push(country);
+      } else {
+        // Recherche avec variations (ex: "ou maroc" au lieu de "au maroc")
+        // Normaliser "ou" et "au" pour la détection
+        const normalizedForCountry = normalized.replace(/\bou\b/g, 'au');
+        if (normalizedForCountry.includes(country)) {
+          countries.push(country);
+        }
+      }
+    }
+    
+    // Si on a trouvé au moins 2 pays, créer une paire de devises
+    if (countries.length >= 2) {
+      const fromCountry = countries[0];
+      const toCountry = countries[1];
+      const fromCurrency = countryToCurrency[fromCountry];
+      const toCurrency = countryToCurrency[toCountry];
+      
+      if (fromCurrency && toCurrency) {
+        params.currencyPair = {
+          base: fromCurrency,
+          quote: toCurrency
+        };
+        params.countries = {
+          from: fromCountry.charAt(0).toUpperCase() + fromCountry.slice(1),
+          to: toCountry.charAt(0).toUpperCase() + toCountry.slice(1)
+        };
+      }
+    } else if (countries.length === 1) {
+      // Si un seul pays, essayer de déduire depuis le contexte
+      const country = countries[0];
+      const currency = countryToCurrency[country];
+      
+      // Si le message mentionne "dirhams" ou "dirham", c'est probablement MAD
+      if (normalized.includes('dirham') && currency === 'MAD') {
+        // Chercher un autre pays ou devise
+        if (normalized.includes('mexique')) {
+          params.currencyPair = {
+            base: 'MAD',
+            quote: 'MXN'
+          };
+          params.countries = {
+            from: 'Maroc',
+            to: 'Mexique'
+          };
+        }
+      }
+    }
+    
+    // Extraire le montant
+    const amountPatterns = [
+      /(\d+(?:\.\d+)?)\s*millions?\s*(?:de\s*)?(dirhams?|euros?|usd|dollars?|gbp|livres?|yen|jpy|chf|aud|cad)/i,
+      /(\d+(?:\.\d+)?)\s*M\s*(dirhams?|euros?|usd|dollars?|gbp|livres?|yen|jpy|chf|aud|cad)/i,
+      /(\d+(?:\.\d+)?)\s*m\s*(dirhams?|euros?|usd|dollars?|gbp|livres?|yen|jpy|chf|aud|cad)/i,
+      /mt\s*total\s*(?:de\s*l'?operation\s*)?(?:est\s*)?(\d+(?:\.\d+)?)\s*m\s*(dirhams?|euros?|usd|dollars?|gbp|livres?|yen|jpy|chf|aud|cad)/i
+    ];
+    
+    for (const pattern of amountPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        let value = parseFloat(match[1]);
+        const currencyText = match[2]?.toLowerCase() || '';
+        
+        // Convertir en nombre complet
+        if (normalized.includes('million') || normalized.includes(' M ') || normalized.match(/\d+\s*M\s*[a-z]/i)) {
+          value = value * 1000000;
+        }
+        
+        // Déterminer la devise
+        let currency = '';
+        if (currencyText.includes('dirham')) {
+          currency = 'MAD';
+        } else if (currencyText.includes('euro')) {
+          currency = 'EUR';
+        } else if (currencyText.includes('usd') || currencyText.includes('dollar')) {
+          currency = 'USD';
+        } else if (currencyText.includes('gbp') || currencyText.includes('livre')) {
+          currency = 'GBP';
+        } else if (currencyText.includes('yen') || currencyText.includes('jpy')) {
+          currency = 'JPY';
+        } else if (currencyText.includes('chf')) {
+          currency = 'CHF';
+        } else if (currencyText.includes('aud')) {
+          currency = 'AUD';
+        } else if (currencyText.includes('cad')) {
+          currency = 'CAD';
+        }
+        
+        if (currency && value > 0) {
+          params.amount = {
+            value: value,
+            currency: currency
+          };
+        }
+        break;
+      }
+    }
+    
+    return Object.keys(params).length > 0 ? params : null;
   }
 
   /**
@@ -996,8 +1473,52 @@ class ChatService {
     const session = this.strategySessions.get(sessionId);
     if (!session) return '❌ Session introuvable.';
 
+    const normalizedMessage = message.toLowerCase().trim();
+    
+    // Vérifier si c'est une confirmation (si une paire est déjà proposée)
+    if (session.currencyPair) {
+      const confirmationKeywords = ['oui', 'ok', 'confirmer', 'confirme', 'c\'est correct', 'c\'est bon', 'correct', 'valider', 'valide', 'yes', 'confirm'];
+      if (confirmationKeywords.some(keyword => normalizedMessage.includes(keyword))) {
+        // Confirmation : utiliser la paire proposée
+        try {
+          const pair = session.currencyPair;
+          
+          // Récupérer le spot
+          const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+          let spotPrice = exchangeData.rates[pair.quote];
+
+          if (!spotPrice) {
+            const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
+            const invertedRate = invertedData.rates[pair.base];
+            if (invertedRate) {
+              spotPrice = 1 / invertedRate;
+            } else {
+              return `❌ Impossible de récupérer le spot pour ${pair.base}/${pair.quote}.`;
+            }
+          }
+
+          session.spotPrice = spotPrice;
+          session.step = 'volume';
+
+          return `✅ Paire de devises confirmée: **${pair.base}/${pair.quote}**\n` +
+            `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
+            `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+            `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+        } catch (error) {
+          return '❌ Erreur lors de la récupération du spot. Veuillez réessayer.';
+        }
+      }
+    }
+
+    // Si ce n'est pas une confirmation, essayer d'extraire une nouvelle paire
     const pair = this.extractCurrencyPair(message);
     if (!pair) {
+      if (session.currencyPair) {
+        // Si une paire était proposée mais la réponse n'est pas claire
+        return `❓ Je n'ai pas compris votre réponse.\n\n` +
+          `✅ Pour confirmer **${session.currencyPair.base}/${session.currencyPair.quote}**, dites "Oui" ou "OK"\n` +
+          `🔄 Pour changer, indiquez une autre paire (ex: "EUR/USD")`;
+      }
       return '❓ Je n\'ai pas pu identifier la paire de devises.\n\n💡 Veuillez spécifier une paire au format EUR/USD ou GBP/USD.';
     }
 
@@ -1023,7 +1544,7 @@ class ChatService {
       return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n` +
         `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
         `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
-        `💡 Exemple: "10 millions EUR" ou "15M USD" ou "10000000 EUR"`;
+        `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
     } catch (error) {
       return '❌ Erreur lors de la récupération du spot. Veuillez réessayer.';
     }
@@ -1088,6 +1609,7 @@ class ChatService {
     }
 
     session.step = 'maturity';
+    this.sessionManager.saveSession(sessionId, session);
 
     return `✅ Volume: **${this.formatVolume(session.baseVolume)} ${session.currencyPair.base}**\n` +
       `   (${this.formatVolume(session.quoteVolume)} ${session.currencyPair.quote})\n\n` +
@@ -1128,6 +1650,7 @@ class ChatService {
 
     session.monthsToHedge = months;
     session.step = 'components';
+    this.sessionManager.saveSession(sessionId, session);
 
     return `✅ Maturité: **${months} mois**\n\n` +
       `**Étape 4/4**: Quels composants souhaitez-vous ajouter à votre stratégie?\n\n` +
@@ -1808,6 +2331,7 @@ class ChatService {
 
       // Marquer la session comme complète
       session.step = 'complete';
+      this.sessionManager.saveSession(sessionId, session);
 
       return `✅ **Stratégie créée avec succès!**\n\n` +
         `📊 **Résumé:**\n` +
@@ -1907,7 +2431,7 @@ class ChatService {
 
       return response;
     } catch (error) {
-      console.error('Error reading results:', error);
+      this.logger.error('Erreur lors de la lecture des résultats', error);
       return '❌ Erreur lors de la lecture des résultats.';
     }
   }

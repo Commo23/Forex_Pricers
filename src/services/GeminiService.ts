@@ -7,6 +7,25 @@ interface ClarificationResult {
   confidence: number;
   detectedIntent?: string;
   corrections?: string[];
+  extractedParams?: {
+    currencyPair?: { base: string; quote: string };
+    amount?: { value: number; currency: string };
+    countries?: { from?: string; to?: string };
+    strategyType?: string;
+    timeHorizon?: string;
+  };
+  fxData?: {
+    amount: number | null;
+    currency: string | null;
+    direction: 'receive' | 'pay' | null;
+    maturity: string | null; // Format "XM" ou "YYYY-MM-DD", toujours converti en années dans le service
+    baseCurrency: string | null;
+    currentRate: number | null;
+    Barriere: number | null;
+    hedgeDirection: 'upside' | 'downside' | null;
+    missingFields?: string[]; // Champs obligatoires manquants
+    question?: string; // Question à poser si champs manquants (avec "?")
+  };
 }
 
 class GeminiService {
@@ -124,7 +143,9 @@ class GeminiService {
           clarifiedMessage: response.clarifiedMessage,
           confidence: response.confidence || 0.8,
           detectedIntent: response.detectedIntent,
-          corrections: response.corrections
+          corrections: response.corrections,
+          extractedParams: response.extractedParams,
+          fxData: response.fxData
         };
       }
 
@@ -161,50 +182,155 @@ class GeminiService {
       availableOptions?: string[];
     }
   ): string {
-    let prompt = `Tu es un assistant qui aide à clarifier et normaliser les messages utilisateur pour un système de chat FX (Forex).
+    let prompt = `Tu es un expert en finance de marchés spécialisé dans la gestion du risque de change. Ta mission est d'extraire les informations clés d'un message client concernant sa demande de couverture de change.
 
-**RÈGLE CRITIQUE**: Tu ne dois QUE clarifier/comprendre le message, JAMAIS faire d'actions ou répondre directement à l'utilisateur.
-
-**Tâche**: Normaliser le message utilisateur pour qu'il soit compris par un système basé sur des règles.
+**RÈGLE CRITIQUE**: 
+- ANALYSE UNIQUEMENT le message client et extrait les informations explicitement mentionnées
+- NE JAMAIS inventer ou supposer des valeurs non mentionnées
+- POUR LES CHAMPS OPTIONNELS non mentionnés, utilise null
+- RÉPONDS UNIQUEMENT avec un JSON valide, aucun texte supplémentaire
+- PARSING INTELLIGENT : comprend les variations linguistiques (ex: "1M", "un million", "1 000 000")
 
 **Message utilisateur**: "${userMessage}"
 
 **Contexte actuel**: ${context?.currentStep || 'Aucun contexte spécifique'}
 
-**Instructions**:
+**Instructions d'extraction**:
 1. Corrige les fautes d'orthographe et de frappe
-2. Normalise les formats (ex: "eur/usd" → "EUR/USD", "10 millions" → "10 millions EUR")
-3. Clarifie les ambiguïtés si possible
-4. Détecte l'intention principale (spot rate, option pricing, forward, strategy simulation, etc.)
-5. Garde le sens original du message
+2. Normalise les formats et extrait les champs FX requis
+3. Détecte l'intention principale (spot rate, option pricing, forward, strategy simulation, etc.)
+4. **EXTRAIRE les informations FX selon les spécifications ci-dessous**
+
+**CHAMPS À EXTRAIRE - FX Data Extraction**:
+
+**Champs Obligatoires**:
+- **amount** (number|null): montant numérique sans devise (ex: 1000000 pour "1M", 500000 pour "500K")
+- **currency** (string|null): devise du flux (USD, EUR, GBP, CHF, JPY, CAD, AUD, MAD, MXN, etc.)
+- **direction** (string|null): "receive" (je reçois) ou "pay" (je paie)
+- **maturity** (string|null): format "XM" pour mois (ex: "6M" pour 6 mois) ou date ISO "YYYY-MM-DD". **IMPORTANT**: Tu dois toujours convertir en années (ex: "6M" → "0.5", "3M" → "0.25", "2024-12-31" → calculer les jours jusqu'à cette date / 365)
+- **baseCurrency** (string|null): devise de référence du client (EUR, USD, etc.). Si le client mentionne un pays (ex: "je réside en France"), déduis la devise (EUR)
+
+**Champs Optionnels**:
+- **currentRate** (number|null): taux de change actuel mentionné. Si non mentionné, mets null (le système le cherchera automatiquement)
+- **Barriere** (number|null): niveau de protection souhaité (seuil max/min)
+- **hedgeDirection** (string|null): "upside" (hausse) ou "downside" (baisse)
+
+**Règles de Conversion**:
+
+**Montants**:
+- "1M", "1 million" → 1000000
+- "500K", "500 mille" → 500000
+- "2,5M" → 2500000
+- "1.5M" → 1500000
+- "10 m dirhams" → 10000000
+
+**Devises (normalisation)**:
+- "dollar", "dollars", "$", "USD" → "USD"
+- "euro", "euros", "€", "EUR" → "EUR"
+- "livre", "livres", "£", "GBP" → "GBP"
+- "yen", "¥", "JPY" → "JPY"
+- "dirham", "dirhams", "MAD" → "MAD"
+- "peso", "pesos", "MXN" → "MXN"
+- Mapping pays → devises: Maroc → MAD, Mexique → MXN, France → EUR, USA → USD, UK → GBP, Japon → JPY, Suisse → CHF, etc.
+
+**Direction**:
+- "recevoir", "reçois", "encaisser", "perception", "je reçois" → "receive"
+- "payer", "paie", "décaisser", "verser", "je dois payer" → "pay"
+
+**Maturité** (TOUJOURS convertir en années):
+- "dans X mois" → calculer X/12 (ex: "6 mois" → "0.5")
+- "dans X semaines" → calculer approximatif en mois puis /12
+- Date précise "YYYY-MM-DD" → calculer (date - aujourd'hui) / 365 jours
+- "3M", "6M" → convertir en années (3M = 0.25, 6M = 0.5)
+
+**Direction de couverture**:
+- "couvrir à la baisse", "protection baisse", "ne pas descendre", "se protéger contre la baisse" → "downside"
+- "couvrir à la hausse", "protection hausse", "ne pas monter", "se protéger contre la hausse" → "upside"
+
+**LOGIQUE DE RÉPONSE**:
+
+**Si des champs OBLIGATOIRES manquent** (amount, currency, direction, maturity, baseCurrency):
+- Retourne un JSON avec "fxData" contenant les champs trouvés
+- Ajoute "missingFields" avec la liste des champs manquants
+- Ajoute "question" avec une question en français demandant le champ manquant, **OBLIGATOIREMENT avec le symbole "?" à la fin**
+
+**Si tous les champs obligatoires sont présents**:
+- Retourne le JSON complet avec tous les champs extraits
+- Maturity doit être en années (format décimal, ex: 0.5 pour 6 mois)
 
 **Format de réponse JSON**:
+
+**Cas 1 - Champs manquants**:
 {
-  "clarifiedMessage": "message normalisé et corrigé",
-  "confidence": 0.9,
-  "detectedIntent": "spot_rate|option_price|forward|strategy_simulation|definition_question|other",
-  "corrections": ["liste des corrections apportées"]
+  "clarifiedMessage": "message normalisé",
+  "detectedIntent": "strategy_simulation",
+  "fxData": {
+    "amount": 1000000,
+    "currency": "USD",
+    "direction": "receive",
+    "maturity": null,
+    "baseCurrency": "EUR",
+    "currentRate": null,
+    "Barriere": null,
+    "hedgeDirection": null,
+    "missingFields": ["maturity"],
+    "question": "Quelle est la maturité de votre opération?"
+  }
 }
 
-**IMPORTANT - Détection d'intention**:
-- "definition_question": Questions comme "c'est quoi", "qu'est-ce que", "explique", "définition" → Ce sont des QUESTIONS, pas des ACTIONS
-- "spot_rate": Demande de taux de change spot (ex: "spot EUR/USD", "taux GBP/USD")
-- "option_price": Calcul de prix d'option (ex: "call EUR/USD strike 1.10")
-- "forward": Calcul de forward (ex: "forward EUR/USD à 6 mois")
-- "strategy_simulation": Simulation de stratégie (ex: "simule une stratégie")
-- "other": Autre type de message
+**Cas 2 - Tous les champs présents**:
+{
+  "clarifiedMessage": "message normalisé",
+  "detectedIntent": "strategy_simulation",
+  "fxData": {
+    "amount": 1000000,
+    "currency": "USD",
+    "direction": "receive",
+    "maturity": "0.5",
+    "baseCurrency": "EUR",
+    "currentRate": 1.17,
+    "Barriere": 1.22,
+    "hedgeDirection": "downside"
+  }
+}
 
-**Exemples**:
-- "quel est le spot eur/usd?" → {"clarifiedMessage": "Quel est le spot EUR/USD?", "detectedIntent": "spot_rate"}
-- "calcule un call eurusd strike 1.10 a 3 mois" → {"clarifiedMessage": "Calcule un call EUR/USD strike 1.10 à 3 mois", "detectedIntent": "option_price"}
-- "simule une strategie" → {"clarifiedMessage": "Simule une stratégie", "detectedIntent": "strategy_simulation"}
-- "c'est quoi une zero cost collar?" → {"clarifiedMessage": "C'est quoi une zero cost collar?", "detectedIntent": "definition_question"}
-- "explique-moi un forward" → {"clarifiedMessage": "Explique-moi un forward", "detectedIntent": "definition_question"}
+**Exemples de parsing**:
 
-**ATTENTION**: Ne confonds PAS les termes financiers avec des paires de devises:
-- "zero cost collar" n'est PAS une paire de devises
-- "call option" n'est PAS une paire de devises
-- "knockout option" n'est PAS une paire de devises
+Exemple 1: "Je reçois 1M USD dans 6 mois, ma devise principale est EUR. Le taux actuel est 1,17 et je veux me couvrir à la baisse avec un maximum à 1,22"
+→ {
+  "fxData": {
+    "amount": 1000000,
+    "currency": "USD",
+    "direction": "receive",
+    "maturity": "0.5",
+    "baseCurrency": "EUR",
+    "currentRate": 1.17,
+    "Barriere": 1.22,
+    "hedgeDirection": "downside"
+  }
+}
+
+Exemple 2: "je réside au maroc, je veux acheter du café au mexique, 10 millions dirhams, je veux me protéger"
+→ {
+  "fxData": {
+    "amount": 10000000,
+    "currency": "MAD",
+    "direction": "pay",
+    "maturity": null,
+    "baseCurrency": "MAD",
+    "currentRate": null,
+    "Barriere": null,
+    "hedgeDirection": null,
+    "missingFields": ["maturity"],
+    "question": "Quelle est la maturité de votre opération?"
+  }
+}
+
+**IMPORTANT**:
+- Si l'utilisateur oublie un champ obligatoire, tu DOIS retourner "question" avec "?" à la fin
+- Maturity doit TOUJOURS être en années (format décimal)
+- currentRate peut être null si non mentionné (le système le cherchera)
+- baseCurrency peut être déduit du pays mentionné (ex: "je réside en France" → EUR)
 
 Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire.`;
 
@@ -257,12 +383,12 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire.`;
                   ]
                 }
               ],
-              generationConfig: {
-                temperature: 0.3,
-                topK: 40,
-                topP: 0.95,
-                maxOutputTokens: 500,
-              }
+                generationConfig: {
+                  temperature: 0.3,
+                  topK: 40,
+                  topP: 0.95,
+                  maxOutputTokens: 1000, // Augmenté pour éviter les réponses tronquées
+                }
             })
           });
 
@@ -362,11 +488,53 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire.`;
       if (cleanedText.startsWith('{')) {
         // Trouver la première { et la dernière }
         const firstBrace = cleanedText.indexOf('{');
-        const lastBrace = cleanedText.lastIndexOf('}');
+        let lastBrace = cleanedText.lastIndexOf('}');
+        
+        // Si la dernière } n'existe pas ou est avant la première {, chercher plus intelligemment
+        if (lastBrace === -1 || lastBrace <= firstBrace) {
+          // Compter les accolades pour trouver la fin du JSON
+          let braceCount = 0;
+          let inString = false;
+          let escapeNext = false;
+          
+          for (let i = firstBrace; i < cleanedText.length; i++) {
+            const char = cleanedText[i];
+            
+            if (escapeNext) {
+              escapeNext = false;
+              continue;
+            }
+            
+            if (char === '\\') {
+              escapeNext = true;
+              continue;
+            }
+            
+            if (char === '"' && !escapeNext) {
+              inString = !inString;
+              continue;
+            }
+            
+            if (!inString) {
+              if (char === '{') braceCount++;
+              if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                  lastBrace = i;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
         if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
           cleanedText = cleanedText.substring(firstBrace, lastBrace + 1);
         }
       }
+      
+      // Essayer de réparer le JSON si nécessaire (guillemets non fermés, etc.)
+      cleanedText = this.repairJson(cleanedText);
       
       const parsed = JSON.parse(cleanedText);
       console.log('[GeminiService] JSON parsé avec succès:', parsed);
@@ -374,15 +542,102 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire.`;
     } catch (parseError) {
       console.error('[GeminiService] Erreur lors du parsing JSON:', parseError, 'Texte:', text);
       // Si le parsing échoue, essayer d'extraire le message clarifié directement
-      // Chercher "clarifiedMessage" dans le texte
-      const clarifiedMatch = text.match(/"clarifiedMessage"\s*:\s*"([^"]+)"/);
+      // Chercher "clarifiedMessage" dans le texte (avec gestion des chaînes tronquées)
+      let clarifiedMatch = text.match(/"clarifiedMessage"\s*:\s*"([^"]+)"/);
+      
+      // Si pas trouvé avec le pattern simple, essayer d'extraire même si la chaîne est tronquée
+      if (!clarifiedMatch) {
+        const startPattern = /"clarifiedMessage"\s*:\s*"/;
+        const startMatch = text.match(startPattern);
+        if (startMatch) {
+          const startIndex = startMatch.index! + startMatch[0].length;
+          // Chercher la fin de la chaîne ou prendre jusqu'à la fin si tronquée
+          let endIndex = text.indexOf('"', startIndex);
+          if (endIndex === -1) {
+            // Si pas de guillemet fermant, prendre jusqu'à la fin ou jusqu'à une virgule/accolade
+            endIndex = Math.min(
+              text.indexOf(',', startIndex) !== -1 ? text.indexOf(',', startIndex) : text.length,
+              text.indexOf('\n', startIndex) !== -1 ? text.indexOf('\n', startIndex) : text.length,
+              text.indexOf('}', startIndex) !== -1 ? text.indexOf('}', startIndex) : text.length
+            );
+          }
+          const extractedValue = text.substring(startIndex, endIndex).trim();
+          if (extractedValue) {
+            clarifiedMatch = [null, extractedValue];
+          }
+        }
+      }
+      
       const intentMatch = text.match(/"detectedIntent"\s*:\s*"([^"]+)"/);
+      
+      // Essayer d'extraire les paramètres même si le JSON n'est pas parfait
+      let extractedParams: any = null;
+      
+      // Pattern plus flexible pour currencyPair (gère les espaces et ordre variable)
+      const currencyPairBaseMatch = text.match(/"base"\s*:\s*"([A-Z]{3})"/i);
+      const currencyPairQuoteMatch = text.match(/"quote"\s*:\s*"([A-Z]{3})"/i);
+      
+      // Pattern pour amount
+      const amountValueMatch = text.match(/"value"\s*:\s*(\d+(?:\.\d+)?)/);
+      const amountCurrencyMatch = text.match(/"currency"\s*:\s*"([A-Z]{3})"/i);
+      
+      if (currencyPairBaseMatch && currencyPairQuoteMatch) {
+        extractedParams = extractedParams || {};
+        extractedParams.currencyPair = {
+          base: currencyPairBaseMatch[1].toUpperCase(),
+          quote: currencyPairQuoteMatch[1].toUpperCase()
+        };
+      }
+      
+      if (amountValueMatch && amountCurrencyMatch) {
+        extractedParams = extractedParams || {};
+        extractedParams.amount = {
+          value: parseFloat(amountValueMatch[1]),
+          currency: amountCurrencyMatch[1].toUpperCase()
+        };
+      }
+      
+      // Extraire les pays si présents
+      const countriesFromMatch = text.match(/"from"\s*:\s*"([^"]+)"/i);
+      const countriesToMatch = text.match(/"to"\s*:\s*"([^"]+)"/i);
+      if (countriesFromMatch || countriesToMatch) {
+        extractedParams = extractedParams || {};
+        extractedParams.countries = {};
+        if (countriesFromMatch) extractedParams.countries.from = countriesFromMatch[1];
+        if (countriesToMatch) extractedParams.countries.to = countriesToMatch[1];
+      }
+      
+      // Essayer d'extraire fxData même si le JSON est mal formé
+      let fxData: any = null;
+      const fxDataAmountMatch = text.match(/"amount"\s*:\s*(\d+(?:\.\d+)?)/);
+      const fxDataCurrencyMatch = text.match(/"currency"\s*:\s*"([A-Z]{3})"/i);
+      const fxDataDirectionMatch = text.match(/"direction"\s*:\s*"([^"]+)"/i);
+      const fxDataMaturityMatch = text.match(/"maturity"\s*:\s*"([^"]+)"/i);
+      const fxDataBaseCurrencyMatch = text.match(/"baseCurrency"\s*:\s*"([A-Z]{3})"/i);
+      const missingFieldsMatch = text.match(/"missingFields"\s*:\s*\[([^\]]+)\]/);
+      const questionMatch = text.match(/"question"\s*:\s*"([^"]+)"/);
+      
+      if (fxDataAmountMatch || fxDataCurrencyMatch || fxDataDirectionMatch) {
+        fxData = {};
+        if (fxDataAmountMatch) fxData.amount = parseFloat(fxDataAmountMatch[1]);
+        if (fxDataCurrencyMatch) fxData.currency = fxDataCurrencyMatch[1].toUpperCase();
+        if (fxDataDirectionMatch) fxData.direction = fxDataDirectionMatch[1];
+        if (fxDataMaturityMatch) fxData.maturity = fxDataMaturityMatch[1];
+        if (fxDataBaseCurrencyMatch) fxData.baseCurrency = fxDataBaseCurrencyMatch[1].toUpperCase();
+        if (missingFieldsMatch) {
+          const fields = missingFieldsMatch[1].split(',').map(f => f.trim().replace(/"/g, ''));
+          fxData.missingFields = fields;
+        }
+        if (questionMatch) fxData.question = questionMatch[1];
+      }
       
       if (clarifiedMatch) {
         return {
           clarifiedMessage: clarifiedMatch[1],
           confidence: 0.7,
-          detectedIntent: intentMatch ? intentMatch[1] : undefined
+          detectedIntent: intentMatch ? intentMatch[1] : undefined,
+          extractedParams: extractedParams,
+          fxData: fxData
         };
       }
       
@@ -391,6 +646,56 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire.`;
         clarifiedMessage: text.trim(),
         confidence: 0.5
       };
+    }
+  }
+
+  /**
+   * Tente de réparer un JSON mal formé (chaînes non terminées, etc.)
+   */
+  private repairJson(jsonText: string): string {
+    try {
+      // Vérifier si le JSON est valide
+      JSON.parse(jsonText);
+      return jsonText;
+    } catch (error) {
+      // Si erreur, essayer de réparer
+      let repaired = jsonText;
+      
+      // Réparer les chaînes non terminées dans les valeurs
+      // Chercher les patterns "key": "value non terminée
+      const stringPattern = /"([^"]+)":\s*"([^"]*)$/;
+      const match = repaired.match(stringPattern);
+      
+      if (match) {
+        // Fermer la chaîne et ajouter les accolades manquantes
+        const beforeMatch = repaired.substring(0, match.index! + match[0].length);
+        const afterMatch = repaired.substring(match.index! + match[0].length);
+        
+        // Fermer la chaîne
+        repaired = beforeMatch + '"';
+        
+        // Compter les accolades ouvertes/fermées
+        const openBraces = (repaired.match(/{/g) || []).length;
+        const closeBraces = (repaired.match(/}/g) || []).length;
+        
+        // Ajouter les accolades fermantes manquantes
+        if (openBraces > closeBraces) {
+          // Ajouter les propriétés manquantes si nécessaire
+          if (!repaired.includes('"confidence"')) {
+            repaired += ',\n  "confidence": 0.8';
+          }
+          if (!repaired.includes('"detectedIntent"')) {
+            repaired += ',\n  "detectedIntent": "strategy_simulation"';
+          }
+          
+          // Fermer les accolades
+          for (let i = 0; i < openBraces - closeBraces; i++) {
+            repaired += '\n}';
+          }
+        }
+      }
+      
+      return repaired;
     }
   }
 
