@@ -218,6 +218,9 @@ class ChatService {
   private logger = LoggerService.getInstance();
   private sessionManager = SessionManager.getInstance();
   private rateLimiter = RateLimiter.getInstance();
+  // Mémoire de conversation : stocke les derniers messages par session (max 10 messages)
+  private conversationMemory: Map<string, string[]> = new Map();
+  private readonly MAX_MEMORY_MESSAGES = 10; // Nombre maximum de messages à garder en mémoire
 
   // Taux d'intérêt par défaut (en pourcentage annuel)
   private defaultRates: { [key: string]: number } = {
@@ -281,6 +284,41 @@ class ChatService {
     
     // Effacer toutes les sessions du localStorage
     this.sessionManager.clearAllSessions();
+    
+    // Effacer la mémoire de conversation
+    this.conversationMemory.clear();
+    this.logger.debug('Mémoire de conversation effacée');
+  }
+
+  /**
+   * Récupère l'historique de conversation pour une session
+   * Retourne les derniers MAX_MEMORY_MESSAGES messages
+   */
+  private getConversationHistory(sessionId: string): string[] {
+    const history = this.conversationMemory.get(sessionId) || [];
+    // Retourner les derniers messages (limite à MAX_MEMORY_MESSAGES)
+    return history.slice(-this.MAX_MEMORY_MESSAGES);
+  }
+
+  /**
+   * Ajoute un message à la mémoire de conversation
+   * Limite automatiquement à MAX_MEMORY_MESSAGES messages
+   */
+  private addToConversationMemory(sessionId: string, message: string): void {
+    if (!this.conversationMemory.has(sessionId)) {
+      this.conversationMemory.set(sessionId, []);
+    }
+    
+    const history = this.conversationMemory.get(sessionId)!;
+    history.push(message);
+    
+    // Limiter à MAX_MEMORY_MESSAGES messages (garder les plus récents)
+    if (history.length > this.MAX_MEMORY_MESSAGES) {
+      history.shift(); // Enlever le message le plus ancien
+    }
+    
+    this.conversationMemory.set(sessionId, history);
+    this.logger.debug(`Message ajouté à la mémoire de conversation (${history.length}/${this.MAX_MEMORY_MESSAGES} messages)`, { sessionId });
   }
 
   /**
@@ -330,8 +368,20 @@ class ChatService {
     }
     
     if (session && session.step !== 'complete') {
-      // Si on est dans une session active, ne pas appeler Gemini
-      // Le système de règles gère déjà les étapes
+      // Si on est dans une session active, vérifier d'abord si c'est une question contextuelle
+      const isContextualQuestion = this.isContextualQuestion(normalizedMessage);
+      
+      if (isContextualQuestion) {
+        // L'utilisateur pose une question, répondre de manière interactive
+        this.logger.debug('Question contextuelle détectée pendant session active', { 
+          sessionId, 
+          step: session.step,
+          question: sanitizedMessage 
+        });
+        return await this.handleContextualQuestion(sanitizedMessage, session, sessionId);
+      }
+      
+      // Sinon, continuer avec le système de règles pour la construction de stratégie
       this.logger.debug('Session active, utilisation directe du système de règles', { sessionId, step: session.step });
       return await this.handleStrategyBuilding(sanitizedMessage, sessionId);
     }
@@ -360,50 +410,43 @@ class ChatService {
       try {
         this.logger.debug('Appel Gemini pour clarifier', { message: sanitizedMessage });
         
+        // Récupérer l'historique de conversation pour cette session
+        const previousMessages = this.getConversationHistory(sessionId);
+        
         const clarification = await this.geminiService.clarifyMessage(sanitizedMessage, {
           currentStep: session?.step,
-          previousMessages: [], // Pourrait être enrichi avec l'historique
+          previousMessages: previousMessages, // Historique de conversation pour contexte
         });
         
+        // Ajouter le message actuel à la mémoire après traitement
+        this.addToConversationMemory(sessionId, sanitizedMessage);
+        
         if (clarification.clarifiedMessage) {
-          processedMessage = clarification.clarifiedMessage;
-          detectedIntent = clarification.detectedIntent;
-          extractedParams = clarification.extractedParams;
-          fxData = clarification.fxData;
+          // Si la confiance est faible (< 0.6), utiliser aussi le fallback local pour compléter
+          const useFallback = clarification.confidence < 0.6 || !clarification.fxData;
           
-          // Si fxData est présent et contient des champs manquants, retourner la question
-          if (fxData && typeof fxData === 'object') {
-            if (fxData.missingFields && Array.isArray(fxData.missingFields) && fxData.missingFields.length > 0) {
-              const question = (fxData.question && typeof fxData.question === 'string') 
-                ? fxData.question 
-                : `Il manque des informations: ${fxData.missingFields.join(', ')}`;
-              this.logger.debug('Champs FX manquants détectés', { missingFields: fxData.missingFields });
-              // S'assurer que la question se termine par "?"
-              return question.endsWith('?') ? question : question + '?';
-            }
-            
-            // Si fxData est complet, chercher currentRate si null
-            if (fxData.currency && typeof fxData.currency === 'string' && 
-                fxData.baseCurrency && typeof fxData.baseCurrency === 'string' && 
-                !fxData.currentRate) {
-              try {
-                const exchangeData = await this.exchangeRateService.getExchangeRates(fxData.baseCurrency);
-                if (exchangeData && exchangeData.rates && typeof exchangeData.rates === 'object') {
-                  const rate = exchangeData.rates[fxData.currency];
-                  if (rate && !isNaN(rate) && typeof rate === 'number') {
-                    fxData.currentRate = rate;
-                    this.logger.debug('Taux de change récupéré', { 
-                      pair: `${fxData.baseCurrency}/${fxData.currency}`,
-                      rate 
-                    });
-                  }
-                }
-              } catch (error) {
-                this.logger.warn('Impossible de récupérer le taux de change', error);
-                // Ne pas bloquer si on ne peut pas récupérer le taux
+          if (useFallback) {
+            this.logger.debug('Confiance Gemini faible ou fxData manquant, utilisation du fallback local en complément');
+            const localExtraction = this.extractFXDataLocally(sanitizedMessage);
+            if (localExtraction && localExtraction.hasData) {
+              // Combiner les données de Gemini et du fallback (fallback en priorité si conflit)
+              fxData = { ...clarification.fxData, ...localExtraction.fxData };
+              if (localExtraction.clarifiedMessage && clarification.confidence < 0.5) {
+                processedMessage = localExtraction.clarifiedMessage;
+              } else {
+                processedMessage = clarification.clarifiedMessage;
               }
+            } else {
+              processedMessage = clarification.clarifiedMessage;
+              fxData = clarification.fxData;
             }
+          } else {
+            processedMessage = clarification.clarifiedMessage;
+            fxData = clarification.fxData;
           }
+          
+          detectedIntent = clarification.detectedIntent || detectedIntent;
+          extractedParams = clarification.extractedParams || extractedParams;
           
           this.logger.debug('Message clarifié par Gemini', {
             original: sanitizedMessage,
@@ -411,8 +454,48 @@ class ChatService {
             confidence: clarification.confidence,
             detectedIntent,
             extractedParams,
-            fxData
+            fxData,
+            usedFallback: useFallback
           });
+          
+          // Si fxData est présent et contient des champs manquants, retourner la question
+          if (fxData && typeof fxData === 'object') {
+            try {
+              if (fxData.missingFields && Array.isArray(fxData.missingFields) && fxData.missingFields.length > 0) {
+                const question = (fxData.question && typeof fxData.question === 'string') 
+                  ? fxData.question 
+                  : `Il manque des informations: ${fxData.missingFields.join(', ')}`;
+                this.logger.debug('Champs FX manquants détectés', { missingFields: fxData.missingFields });
+                // S'assurer que la question se termine par "?"
+                return question.endsWith('?') ? question : question + '?';
+              }
+              
+              // Si fxData est complet, chercher currentRate si null
+              if (fxData.currency && typeof fxData.currency === 'string' && 
+                  fxData.baseCurrency && typeof fxData.baseCurrency === 'string' && 
+                  !fxData.currentRate) {
+                try {
+                  const exchangeData = await this.exchangeRateService.getExchangeRates(fxData.baseCurrency);
+                  if (exchangeData && exchangeData.rates && typeof exchangeData.rates === 'object') {
+                    const rate = exchangeData.rates[fxData.currency];
+                    if (rate && !isNaN(rate) && typeof rate === 'number') {
+                      fxData.currentRate = rate;
+                      this.logger.debug('Taux de change récupéré', { 
+                        pair: `${fxData.baseCurrency}/${fxData.currency}`,
+                        rate 
+                      });
+                    }
+                  }
+                } catch (rateError) {
+                  this.logger.warn('Impossible de récupérer le taux de change', rateError);
+                  // Ne pas bloquer si on ne peut pas récupérer le taux
+                }
+              }
+            } catch (fxDataError) {
+              this.logger.error('Erreur lors du traitement de fxData', fxDataError, { fxData });
+              // Continuer même si fxData a une erreur
+            }
+          }
         } else {
           this.logger.warn('Gemini n\'a pas retourné de message clarifié');
         }
@@ -420,14 +503,34 @@ class ChatService {
         this.logger.error('Erreur lors de la clarification Gemini', error, { 
           message: sanitizedMessage,
           errorMessage: error?.message,
-          errorStack: error?.stack 
+          errorStack: error?.stack,
+          errorName: error?.name
         });
-        // En cas d'erreur, utiliser le message original et continuer
-        // Ne pas throw l'erreur, juste logger et continuer avec le message original
-        processedMessage = sanitizedMessage;
-        detectedIntent = undefined;
-        extractedParams = null;
-        fxData = null;
+        
+        // FALLBACK INTELLIGENT : Essayer d'extraire les informations localement
+        this.logger.debug('Tentative d\'extraction locale en fallback');
+        try {
+          const localExtraction = this.extractFXDataLocally(sanitizedMessage);
+          if (localExtraction && localExtraction.hasData) {
+            this.logger.debug('Extraction locale réussie', localExtraction);
+            processedMessage = localExtraction.clarifiedMessage || sanitizedMessage;
+            fxData = localExtraction.fxData;
+            detectedIntent = localExtraction.detectedIntent;
+          } else {
+            // Si l'extraction locale échoue aussi, utiliser le message original
+            processedMessage = sanitizedMessage;
+            detectedIntent = undefined;
+            extractedParams = null;
+            fxData = null;
+          }
+        } catch (fallbackError) {
+          this.logger.error('Erreur lors de l\'extraction locale en fallback', fallbackError);
+          // En dernier recours, utiliser le message original
+          processedMessage = sanitizedMessage;
+          detectedIntent = undefined;
+          extractedParams = null;
+          fxData = null;
+        }
       }
     } else {
       if (isSimpleRequest) {
@@ -539,8 +642,21 @@ class ChatService {
       this.logger.debug('Demande de stratégie détectée', {
         detectedIntent,
         hasExtractedParams: !!extractedParams,
-        extractedParams
+        hasFxData: !!fxData,
+        extractedParams,
+        fxData
       });
+      
+      // Si on a fxData (de Gemini ou du fallback), construire extractedParams depuis fxData
+      if (fxData && typeof fxData === 'object' && fxData.currency && fxData.baseCurrency) {
+        extractedParams = {
+          currencyPair: {
+            base: fxData.baseCurrency,
+            quote: fxData.currency
+          }
+        };
+        this.logger.debug('Paramètres construits depuis fxData', { extractedParams });
+      }
       
       // Si Gemini a extrait des paramètres, les utiliser
       // Sinon, essayer d'extraire localement depuis le message
@@ -549,7 +665,7 @@ class ChatService {
         this.logger.debug('Paramètres extraits localement', { extractedParams });
       }
       
-      // Si on a des paramètres (de Gemini ou extraction locale), les utiliser
+      // Si on a des paramètres (de Gemini, fxData, ou extraction locale), les utiliser
       if (extractedParams && (extractedParams.currencyPair || extractedParams.countries)) {
         return await this.startStrategySimulationWithParams(sessionId, extractedParams);
       }
@@ -581,9 +697,40 @@ class ChatService {
         errorStack: error?.stack 
       });
       
-      // Retourner un message d'erreur convivial
+      // Dernier recours : essayer l'extraction locale même en cas d'erreur
+      try {
+        // Utiliser message directement car sanitizedMessage peut ne pas être défini dans le catch
+        const sanitizedForExtraction = typeof message === 'string' ? message.trim() : String(message || '');
+        const lastResortExtraction = this.extractFXDataLocally(sanitizedForExtraction);
+        if (lastResortExtraction && lastResortExtraction.hasData && lastResortExtraction.fxData) {
+          const fxData = lastResortExtraction.fxData;
+          
+          // Si des champs manquent, retourner la question
+          if (fxData.missingFields && fxData.missingFields.length > 0 && fxData.question) {
+            return fxData.question;
+          }
+          
+          // Si les données sont complètes, essayer de démarrer une simulation
+          if (fxData.amount && fxData.currency && fxData.direction && fxData.maturity && fxData.baseCurrency) {
+            // Construire extractedParams depuis fxData
+            const extractedParams = {
+              currencyPair: {
+                base: fxData.baseCurrency,
+                quote: fxData.currency
+              }
+            };
+            return await this.startStrategySimulationWithParams(sessionId, extractedParams);
+          }
+        }
+      } catch (fallbackError) {
+        this.logger.error('Erreur même dans le fallback final', fallbackError);
+      }
+      
+      // Si tout échoue, retourner un message d'erreur convivial mais informatif
       return `❌ Désolé, une erreur est survenue lors du traitement de votre message.\n\n` +
-        `💡 Veuillez réessayer ou reformuler votre demande.\n\n` +
+        `💡 Veuillez réessayer ou reformuler votre demande de manière plus précise.\n\n` +
+        `**Exemple de message clair** :\n` +
+        `"Je reçois 1M USD dans 6 mois, je suis basé en Suisse"\n\n` +
         `Si le problème persiste, vérifiez que:\n` +
         `• Votre message est clair et complet\n` +
         `• Les informations fournies sont correctes\n` +
@@ -637,6 +784,254 @@ class ChatService {
     ];
     
     return definitionKeywords.some(keyword => message.includes(keyword));
+  }
+
+  /**
+   * Vérifie si c'est une question contextuelle (sur le risque, la stratégie, etc.)
+   */
+  private isContextualQuestion(message: string): boolean {
+    const normalized = message.toLowerCase();
+    const contextualKeywords = [
+      // Questions générales
+      'explique', 'explain', 'explique-moi', 'explain to me', 'expliquez',
+      'comment', 'how', 'comment ça marche', 'how does', 'how do',
+      'qu\'est-ce que', 'what is', 'what\'s', 'c\'est quoi', 'what does',
+      'pourquoi', 'why', 'pourquoi faire', 'why should',
+      'peux-tu', 'can you', 'peux tu', 'pouvez-vous', 'pouvez vous', 'could you',
+      'aide-moi', 'help me', 'aide moi', 'help',
+      'd\'abord', 'first', 'avant', 'before', 'premièrement',
+      'je veux comprendre', 'i want to understand', 'je veux savoir', 'i want to know',
+      'je veux apprendre', 'i want to learn',
+      // Questions spécifiques
+      'c\'est quoi mon risque', 'what is my risk', 'mon risque', 'my risk',
+      'quel est mon risque', 'what risk', 'risque de change', 'fx risk',
+      'fonctionne', 'works', 'work', 'fonctionnement', 'working',
+      'définition', 'definition', 'définis', 'define',
+      'décris', 'describe', 'description'
+    ];
+    
+    // Vérifier aussi si c'est une question (se termine par "?")
+    const isQuestion = message.trim().endsWith('?');
+    
+    // Vérifier les patterns de questions
+    const questionPatterns = [
+      /^(comment|how|pourquoi|why|qu'est-ce|what|explique|explain)/i,
+      /^(peux-tu|can you|pouvez-vous|could you)/i
+    ];
+    
+    const matchesPattern = questionPatterns.some(pattern => pattern.test(message.trim()));
+    
+    return contextualKeywords.some(keyword => normalized.includes(keyword)) || 
+           isQuestion || 
+           matchesPattern;
+  }
+
+  /**
+   * Gère les questions contextuelles de manière interactive
+   */
+  private async handleContextualQuestion(
+    message: string, 
+    session: StrategySession, 
+    sessionId: string
+  ): Promise<string> {
+    const normalized = message.toLowerCase();
+    
+    // PRIORITÉ 1 : Utiliser Gemini pour répondre aux questions de manière interactive
+    if (this.geminiService.isAvailable()) {
+      try {
+        const previousMessages = this.getConversationHistory(sessionId);
+        
+        // Construire un contexte enrichi pour Gemini avec les informations de la session
+        const sessionContext = this.buildSessionContextForGemini(session);
+        
+        const clarification = await this.geminiService.clarifyMessage(message, {
+          currentStep: session.step,
+          previousMessages: [...previousMessages, sessionContext],
+        });
+        
+        if (clarification && clarification.clarifiedMessage) {
+          // Pour les questions, utiliser la réponse de Gemini même avec une confiance faible
+          // car c'est de l'explication/conseil, pas de l'extraction de données
+          const isQuestionResponse = clarification.detectedIntent === 'question_response' || 
+                                     clarification.detectedIntent === 'explanation' ||
+                                     clarification.clarifiedMessage.length > 100; // Réponse longue = probablement une explication
+          
+          if (isQuestionResponse || clarification.confidence > 0.3) {
+            // Ajouter le message à la mémoire de conversation
+            this.addToConversationMemory(sessionId, message);
+            return clarification.clarifiedMessage;
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Erreur lors de la clarification Gemini pour question contextuelle', error);
+        // Continuer avec les fallbacks ci-dessous
+      }
+    }
+    
+    // PRIORITÉ 2 : Réponses spécifiques pour certaines questions courantes
+    // Questions sur le risque
+    if (normalized.includes('risque') || normalized.includes('risk')) {
+      return this.explainRisk(session);
+    }
+    
+    // Questions sur la stratégie
+    if (normalized.includes('stratégie') || normalized.includes('strategy') || 
+        normalized.includes('couverture') || normalized.includes('hedging')) {
+      return this.explainStrategy(session);
+    }
+    
+    // Questions sur la paire de devises
+    if (normalized.includes('paire') || normalized.includes('pair') || 
+        normalized.includes('devise') || normalized.includes('currency')) {
+      return this.explainCurrencyPair(session);
+    }
+    
+    // Fallback : réponse générique mais utile
+    return this.getGenericContextualResponse(session);
+  }
+
+  /**
+   * Construit un contexte de session pour Gemini avec les informations disponibles
+   */
+  private buildSessionContextForGemini(session: StrategySession): string {
+    const contextParts: string[] = [];
+    
+    contextParts.push('Contexte de la session actuelle:');
+    
+    if (session.currencyPair) {
+      contextParts.push(`- Paire de devises: ${session.currencyPair.base}/${session.currencyPair.quote}`);
+    }
+    
+    if (session.spotPrice) {
+      contextParts.push(`- Taux spot actuel: ${session.spotPrice.toFixed(4)}`);
+    }
+    
+    if (session.baseVolume) {
+      contextParts.push(`- Volume: ${session.baseVolume.toLocaleString('fr-FR')} ${session.currencyPair?.base || ''}`);
+    }
+    
+    if (session.monthsToHedge) {
+      contextParts.push(`- Maturité: ${session.monthsToHedge} mois`);
+    }
+    
+    contextParts.push(`- Étape actuelle: ${this.getStepDescription(session.step)}`);
+    
+    if (session.components && session.components.length > 0) {
+      contextParts.push(`- Composants de stratégie: ${session.components.length} composant(s) ajouté(s)`);
+    }
+    
+    return contextParts.join('\n');
+  }
+
+  /**
+   * Explique le risque de change à l'utilisateur
+   */
+  private explainRisk(session: StrategySession): string {
+    if (!session.currencyPair) {
+      return `📊 **Votre risque de change**\n\n` +
+        `Pour expliquer votre risque, j'ai besoin de connaître la paire de devises.\n\n` +
+        `Pouvez-vous me confirmer ou indiquer la paire de devises concernée?`;
+    }
+    
+    const { base, quote } = session.currencyPair;
+    // StrategySession n'a pas de propriété 'direction', utiliser 'receive' par défaut (receivable)
+    // qui correspond au volumeType 'receivable' utilisé dans finalizeStrategy
+    const direction = 'receive'; // Par défaut, on assume receivable (réception)
+    
+    let riskExplanation = `📊 **Votre risque de change**\n\n`;
+    
+    if (direction === 'receive') {
+      riskExplanation += `Vous **recevez** ${quote} et votre devise fonctionnelle est ${base}.\n\n`;
+      riskExplanation += `**Votre risque** : Si le ${quote} **baisse** par rapport au ${base}, vous recevrez moins de ${base} lors de la conversion.\n\n`;
+      riskExplanation += `**Exemple concret** :\n`;
+      riskExplanation += `• Si vous recevez 1M ${quote} et que le taux passe de 1.10 à 1.05 ${base}/${quote}\n`;
+      riskExplanation += `• Vous recevrez 1,050,000 ${base} au lieu de 1,100,000 ${base}\n`;
+      riskExplanation += `• **Perte potentielle** : 50,000 ${base}\n\n`;
+      riskExplanation += `💡 **Solution** : Une couverture (hedge) vous protégera contre cette baisse.`;
+    } else {
+      riskExplanation += `Vous **payez** ${quote} et votre devise fonctionnelle est ${base}.\n\n`;
+      riskExplanation += `**Votre risque** : Si le ${quote} **monte** par rapport au ${base}, vous devrez payer plus de ${base} pour obtenir le ${quote}.\n\n`;
+      riskExplanation += `**Exemple concret** :\n`;
+      riskExplanation += `• Si vous devez payer 1M ${quote} et que le taux passe de 1.10 à 1.15 ${base}/${quote}\n`;
+      riskExplanation += `• Vous devrez payer 1,150,000 ${base} au lieu de 1,100,000 ${base}\n`;
+      riskExplanation += `• **Perte potentielle** : 50,000 ${base}\n\n`;
+      riskExplanation += `💡 **Solution** : Une couverture (hedge) vous protégera contre cette hausse.`;
+    }
+    
+    return riskExplanation;
+  }
+
+  /**
+   * Explique la stratégie en cours
+   */
+  private explainStrategy(session: StrategySession): string {
+    let explanation = `📈 **Votre stratégie de couverture**\n\n`;
+    
+    if (session.currencyPair) {
+      explanation += `**Paire de devises** : ${session.currencyPair.base}/${session.currencyPair.quote}\n`;
+    }
+    
+    if (session.baseVolume) {
+      explanation += `**Volume** : ${session.baseVolume.toLocaleString('fr-FR')} ${session.currencyPair?.base || ''}\n`;
+    }
+    
+    if (session.monthsToHedge) {
+      explanation += `**Maturité** : ${session.monthsToHedge} mois\n`;
+    }
+    
+    explanation += `\n**Étape actuelle** : ${this.getStepDescription(session.step)}\n\n`;
+    
+    explanation += `💡 Nous construisons ensemble votre stratégie de couverture étape par étape.\n\n`;
+    explanation += `Une fois la stratégie complète, je pourrai vous expliquer en détail comment elle fonctionne et quels sont ses avantages.`;
+    
+    return explanation;
+  }
+
+  /**
+   * Explique la paire de devises
+   */
+  private explainCurrencyPair(session: StrategySession): string {
+    if (!session.currencyPair) {
+      return `💱 **Paire de devises**\n\n` +
+        `Je n'ai pas encore identifié votre paire de devises.\n\n` +
+        `Pouvez-vous me la confirmer ou l'indiquer?`;
+    }
+    
+    const { base, quote } = session.currencyPair;
+    
+    return `💱 **Paire de devises : ${base}/${quote}**\n\n` +
+      `**${base}** : Votre devise fonctionnelle (devise de référence)\n` +
+      `**${quote}** : La devise du flux futur\n\n` +
+      `Cette paire indique combien d'unités de ${base} sont nécessaires pour acheter 1 unité de ${quote}.\n\n` +
+      `**Exemple** : Si ${base}/${quote} = 1.10, cela signifie que 1 ${quote} = 1.10 ${base}`;
+  }
+
+  /**
+   * Retourne une description de l'étape actuelle
+   */
+  private getStepDescription(step: string): string {
+    const descriptions: Record<string, string> = {
+      'currency': 'Sélection de la paire de devises',
+      'volume': 'Définition du volume',
+      'maturity': 'Définition de la maturité',
+      'components': 'Ajout des composants de la stratégie',
+      'complete': 'Stratégie complète'
+    };
+    
+    return descriptions[step] || step;
+  }
+
+  /**
+   * Réponse générique pour les questions contextuelles
+   */
+  private getGenericContextualResponse(session: StrategySession): string {
+    return `💬 Je comprends votre question.\n\n` +
+      `Actuellement, nous sommes à l'étape : **${this.getStepDescription(session.step)}**\n\n` +
+      `Je peux vous expliquer :\n` +
+      `• 📊 Votre risque de change\n` +
+      `• 📈 La stratégie de couverture\n` +
+      `• 💱 La paire de devises\n\n` +
+      `Posez-moi une question plus précise, ou continuons la construction de votre stratégie!`;
   }
 
   /**
@@ -1292,6 +1687,202 @@ class ChatService {
   }
 
   /**
+   * Extrait les données FX localement depuis le message (fallback robuste)
+   * Fonctionne même si Gemini échoue complètement
+   */
+  private extractFXDataLocally(message: string): { hasData: boolean; fxData?: any; clarifiedMessage?: string; detectedIntent?: string } {
+    try {
+      const normalized = message.toLowerCase();
+      const fxData: any = {};
+      let hasData = false;
+      const missingFields: string[] = [];
+      
+      // Mapping pays → devises
+      const countryToCurrency: Record<string, string> = {
+        'maroc': 'MAD', 'morocco': 'MAD',
+        'mexique': 'MXN', 'mexico': 'MXN',
+        'france': 'EUR', 'allemagne': 'EUR', 'germany': 'EUR', 'espagne': 'EUR', 'spain': 'EUR',
+        'italie': 'EUR', 'italy': 'EUR', 'portugal': 'EUR', 'belgique': 'EUR', 'belgium': 'EUR',
+        'pays-bas': 'EUR', 'netherlands': 'EUR',
+        'usa': 'USD', 'états-unis': 'USD', 'etats-unis': 'USD', 'united states': 'USD',
+        'royaume-uni': 'GBP', 'uk': 'GBP', 'united kingdom': 'GBP',
+        'japon': 'JPY', 'japan': 'JPY',
+        'suisse': 'CHF', 'switzerland': 'CHF',
+        'australie': 'AUD', 'australia': 'AUD',
+        'canada': 'CAD',
+        'nouvelle-zélande': 'NZD', 'nouvelle zelande': 'NZD', 'new zealand': 'NZD'
+      };
+      
+      // 1. Extraire le montant
+      const amountPatterns = [
+        /(\d+(?:[.,]\d+)?)\s*M\s*(?:USD|EUR|GBP|CHF|JPY|MAD|MXN|AUD|CAD|NZD)/i,
+        /(\d+(?:[.,]\d+)?)\s*millions?\s*(?:de\s*)?(?:USD|EUR|GBP|CHF|JPY|MAD|MXN|AUD|CAD|NZD|dollars?|euros?|dirhams?|livres?)/i,
+        /(\d+(?:[.,]\d+)?)\s*K\s*(?:USD|EUR|GBP|CHF|JPY|MAD|MXN|AUD|CAD|NZD)/i,
+        /(\d+(?:[.,]\d+)?)\s*mille\s*(?:USD|EUR|GBP|CHF|JPY|MAD|MXN|AUD|CAD|NZD|dollars?|euros?)/i
+      ];
+      
+      for (const pattern of amountPatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          let value = parseFloat(match[1].replace(',', '.'));
+          if (normalized.includes('million') || normalized.match(/\d+\s*M\s*[A-Z]/i)) {
+            value = value * 1000000;
+          } else if (normalized.includes('k') || normalized.includes('mille')) {
+            value = value * 1000;
+          }
+          fxData.amount = value;
+          hasData = true;
+          break;
+        }
+      }
+      
+      // 2. Extraire la devise du flux
+      const currencyPatterns = [
+        /\b(USD|EUR|GBP|CHF|JPY|MAD|MXN|AUD|CAD|NZD)\b/i,
+        /(?:dollars?|USD)/i,
+        /(?:euros?|EUR)/i,
+        /(?:livres?|GBP)/i,
+        /(?:dirhams?|MAD)/i,
+        /(?:pesos?|MXN)/i
+      ];
+      
+      for (const pattern of currencyPatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          const currencyText = match[0].toUpperCase();
+          if (currencyText.includes('USD') || currencyText.includes('DOLLAR')) {
+            fxData.currency = 'USD';
+            hasData = true;
+            break;
+          } else if (currencyText.includes('EUR') || currencyText.includes('EURO')) {
+            fxData.currency = 'EUR';
+            hasData = true;
+            break;
+          } else if (currencyText.includes('GBP') || currencyText.includes('LIVRE')) {
+            fxData.currency = 'GBP';
+            hasData = true;
+            break;
+          } else if (currencyText.includes('CHF')) {
+            fxData.currency = 'CHF';
+            hasData = true;
+            break;
+          } else if (currencyText.includes('MAD') || currencyText.includes('DIRHAM')) {
+            fxData.currency = 'MAD';
+            hasData = true;
+            break;
+          } else if (currencyText.includes('MXN') || currencyText.includes('PESO')) {
+            fxData.currency = 'MXN';
+            hasData = true;
+            break;
+          }
+        }
+      }
+      
+      // 3. Extraire la direction
+      if (normalized.includes('reçois') || normalized.includes('recevoir') || normalized.includes('reçoit') || 
+          normalized.includes('receive') || normalized.includes('encaisser') || normalized.includes('perception')) {
+        fxData.direction = 'receive';
+        hasData = true;
+      } else if (normalized.includes('payer') || normalized.includes('paie') || normalized.includes('pay') || 
+                 normalized.includes('décaisser') || normalized.includes('verser')) {
+        fxData.direction = 'pay';
+        hasData = true;
+      }
+      
+      // 4. Extraire la maturité
+      const maturityPatterns = [
+        /(\d+)\s*mois/i,
+        /dans\s*(\d+)\s*mois/i,
+        /(\d+)\s*M\b/i
+      ];
+      
+      for (const pattern of maturityPatterns) {
+        const match = normalized.match(pattern);
+        if (match) {
+          const months = parseInt(match[1]);
+          fxData.maturity = (months / 12).toFixed(2);
+          hasData = true;
+          break;
+        }
+      }
+      
+      // 5. Extraire la devise de base (pays)
+      for (const [country, currency] of Object.entries(countryToCurrency)) {
+        if (normalized.includes(country) || normalized.includes(`basé en ${country}`) || 
+            normalized.includes(`réside en ${country}`) || normalized.includes(`basé ${country}`)) {
+          fxData.baseCurrency = currency;
+          hasData = true;
+          break;
+        }
+      }
+      
+      // 6. Déduire hedgeDirection
+      if (fxData.direction === 'receive' && fxData.currency && fxData.baseCurrency) {
+        fxData.hedgeDirection = 'downside';
+      } else if (fxData.direction === 'pay' && fxData.currency && fxData.baseCurrency) {
+        fxData.hedgeDirection = 'upside';
+      }
+      
+      // 7. Déterminer flowType
+      if (normalized.includes('chaque mois') || normalized.includes('tous les mois') || 
+          normalized.includes('mensuel') || normalized.includes('mensuellement')) {
+        fxData.flowType = 'recurring_monthly';
+        fxData.useCustomPeriods = false;
+      } else if (normalized.includes('puis') || normalized.includes('ensuite') || 
+                 normalized.includes('plusieurs') || normalized.includes('différentes dates')) {
+        fxData.flowType = 'recurring_custom';
+        fxData.useCustomPeriods = true;
+      } else {
+        fxData.flowType = 'single';
+        fxData.useCustomPeriods = false;
+      }
+      
+      // Vérifier les champs manquants
+      if (!fxData.amount) missingFields.push('amount');
+      if (!fxData.currency) missingFields.push('currency');
+      if (!fxData.direction) missingFields.push('direction');
+      if (!fxData.maturity) missingFields.push('maturity');
+      if (!fxData.baseCurrency) missingFields.push('baseCurrency');
+      
+      if (missingFields.length > 0) {
+        fxData.missingFields = missingFields;
+        const questions: Record<string, string> = {
+          'amount': 'Quel est le montant de votre flux?',
+          'currency': 'Dans quelle devise se fera le flux?',
+          'direction': 'S\'agit-il d\'une réception ou d\'un paiement?',
+          'maturity': 'Quelle est la maturité de votre flux de trésorerie?',
+          'baseCurrency': 'Quelle est votre devise fonctionnelle (devise de référence)?'
+        };
+        fxData.question = missingFields.map(f => questions[f] || f).join(' ');
+        if (!fxData.question.endsWith('?')) fxData.question += '?';
+      }
+      
+      // Créer un message clarifié
+      let clarifiedMessage = message;
+      if (hasData) {
+        const parts: string[] = [];
+        if (fxData.amount) parts.push(`${(fxData.amount / 1000000).toFixed(1)}M ${fxData.currency || ''}`);
+        if (fxData.direction) parts.push(fxData.direction === 'receive' ? 'réception' : 'paiement');
+        if (fxData.maturity) parts.push(`maturité ${fxData.maturity} ans`);
+        if (fxData.baseCurrency) parts.push(`devise fonctionnelle ${fxData.baseCurrency}`);
+        if (parts.length > 0) {
+          clarifiedMessage = parts.join(', ');
+        }
+      }
+      
+      return {
+        hasData,
+        fxData: hasData ? fxData : undefined,
+        clarifiedMessage: hasData ? clarifiedMessage : undefined,
+        detectedIntent: hasData ? 'strategy_simulation' : undefined
+      };
+    } catch (error) {
+      this.logger.error('Erreur lors de l\'extraction locale FX', error);
+      return { hasData: false };
+    }
+  }
+
+  /**
    * Extrait les paramètres depuis le message utilisateur (extraction locale sans Gemini)
    * Utilisé comme fallback si Gemini n'est pas disponible ou ne retourne pas de paramètres
    */
@@ -1305,7 +1896,6 @@ class ChatService {
       'morocco': 'MAD',
       'mexique': 'MXN',
       'mexico': 'MXN',
-      'france': 'EUR',
       'france': 'EUR',
       'allemagne': 'EUR',
       'germany': 'EUR',
@@ -1475,6 +2065,11 @@ class ChatService {
 
     const normalizedMessage = message.toLowerCase().trim();
     
+    // Vérifier d'abord si c'est une question contextuelle
+    if (this.isContextualQuestion(normalizedMessage)) {
+      return await this.handleContextualQuestion(message, session, sessionId);
+    }
+    
     // Vérifier si c'est une confirmation (si une paire est déjà proposée)
     if (session.currencyPair) {
       const confirmationKeywords = ['oui', 'ok', 'confirmer', 'confirme', 'c\'est correct', 'c\'est bon', 'correct', 'valider', 'valide', 'yes', 'confirm'];
@@ -1483,29 +2078,44 @@ class ChatService {
         try {
           const pair = session.currencyPair;
           
-          // Récupérer le spot
-          const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
-          let spotPrice = exchangeData.rates[pair.quote];
+          // Récupérer le spot (avec gestion d'erreur gracieuse)
+          let spotPrice: number | null = null;
+          try {
+            const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+            spotPrice = exchangeData.rates[pair.quote];
 
-          if (!spotPrice) {
-            const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
-            const invertedRate = invertedData.rates[pair.base];
-            if (invertedRate) {
-              spotPrice = 1 / invertedRate;
-            } else {
-              return `❌ Impossible de récupérer le spot pour ${pair.base}/${pair.quote}.`;
+            if (!spotPrice) {
+              const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
+              const invertedRate = invertedData.rates[pair.base];
+              if (invertedRate) {
+                spotPrice = 1 / invertedRate;
+              }
             }
+          } catch (spotError) {
+            this.logger.warn('Impossible de récupérer le spot, continuation sans spot', spotError);
+            // Continuer sans spot, l'utilisateur pourra le saisir manuellement
           }
 
-          session.spotPrice = spotPrice;
-          session.step = 'volume';
-
-          return `✅ Paire de devises confirmée: **${pair.base}/${pair.quote}**\n` +
-            `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
-            `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
-            `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+          if (spotPrice) {
+            session.spotPrice = spotPrice;
+            return `✅ Paire de devises confirmée: **${pair.base}/${pair.quote}**\n` +
+              `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
+              `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+              `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+          } else {
+            // Pas de spot disponible, continuer quand même
+            return `✅ Paire de devises confirmée: **${pair.base}/${pair.quote}**\n\n` +
+              `⚠️ Le taux spot n'a pas pu être récupéré automatiquement.\n` +
+              `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+              `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+          }
         } catch (error) {
-          return '❌ Erreur lors de la récupération du spot. Veuillez réessayer.';
+          this.logger.error('Erreur lors de la confirmation de la paire', error);
+          // Même en cas d'erreur, continuer avec la paire
+          session.step = 'volume';
+          return `✅ Paire de devises confirmée: **${session.currencyPair.base}/${session.currencyPair.quote}**\n\n` +
+            `⚠️ Le taux spot n'a pas pu être récupéré, mais nous pouvons continuer.\n` +
+            `**Étape 2/4**: Quel volume souhaitez-vous hedger?`;
         }
       }
     }
@@ -1523,30 +2133,45 @@ class ChatService {
     }
 
     try {
-      // Récupérer le spot
-      const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
-      let spotPrice = exchangeData.rates[pair.quote];
+      // Récupérer le spot (avec gestion d'erreur gracieuse)
+      let spotPrice: number | null = null;
+      try {
+        const exchangeData = await this.exchangeRateService.getExchangeRates(pair.base);
+        spotPrice = exchangeData.rates[pair.quote];
 
-      if (!spotPrice) {
-        const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
-        const invertedRate = invertedData.rates[pair.base];
-        if (invertedRate) {
-          spotPrice = 1 / invertedRate;
-        } else {
-          return `❌ Impossible de récupérer le spot pour ${pair.base}/${pair.quote}.`;
+        if (!spotPrice) {
+          const invertedData = await this.exchangeRateService.getExchangeRates(pair.quote);
+          const invertedRate = invertedData.rates[pair.base];
+          if (invertedRate) {
+            spotPrice = 1 / invertedRate;
+          }
         }
+      } catch (spotError) {
+        this.logger.warn('Impossible de récupérer le spot, continuation sans spot', spotError);
+        // Continuer sans spot
       }
 
       session.currencyPair = pair;
-      session.spotPrice = spotPrice;
-      session.step = 'volume';
-
-      return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n` +
-        `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
-        `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
-        `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+      if (spotPrice) {
+        session.spotPrice = spotPrice;
+        return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n` +
+          `📊 Spot actuel: **${spotPrice.toFixed(4)}**\n\n` +
+          `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+          `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+      } else {
+        return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n\n` +
+          `⚠️ Le taux spot n'a pas pu être récupéré automatiquement.\n` +
+          `**Étape 2/4**: Quel volume souhaitez-vous hedger?\n` +
+          `💡 Exemple: "10 millions ${pair.base}" ou "15M ${pair.quote}"`;
+      }
     } catch (error) {
-      return '❌ Erreur lors de la récupération du spot. Veuillez réessayer.';
+      this.logger.error('Erreur lors de la définition de la paire', error);
+      // Même en cas d'erreur, continuer avec la paire
+      session.currencyPair = pair;
+      session.step = 'volume';
+      return `✅ Paire de devises: **${pair.base}/${pair.quote}**\n\n` +
+        `⚠️ Le taux spot n'a pas pu être récupéré, mais nous pouvons continuer.\n` +
+        `**Étape 2/4**: Quel volume souhaitez-vous hedger?`;
     }
   }
 
@@ -1850,7 +2475,7 @@ class ChatService {
     };
 
     // Extraire les paramètres déjà fournis dans le message
-    this.extractParamsFromMessage(message, session.currentComponent, session.spotPrice || 1.0);
+    this.extractComponentParamsFromMessage(message, session.currentComponent, session.spotPrice || 1.0);
 
     // Si tous les paramètres sont fournis, ajouter directement
     if (session.currentComponent.missingParams!.length === 0) {
@@ -1862,9 +2487,9 @@ class ChatService {
   }
 
   /**
-   * Extrait les paramètres depuis le message utilisateur
+   * Extrait les paramètres de composant depuis le message utilisateur
    */
-  private extractParamsFromMessage(message: string, component: any, spotPrice: number): void {
+  private extractComponentParamsFromMessage(message: string, component: any, spotPrice: number): void {
     // Déterminer quel paramètre est prioritaire (le premier dans missingParams)
     const priorityParam = component.missingParams && component.missingParams.length > 0 
       ? component.missingParams[0] 
@@ -2089,7 +2714,7 @@ class ChatService {
     const spotPrice = session.spotPrice || 1.0;
 
     // Extraire les paramètres du message
-    this.extractParamsFromMessage(message, component, spotPrice);
+    this.extractComponentParamsFromMessage(message, component, spotPrice);
 
     // Vérifier si tous les paramètres sont maintenant fournis
     if (component.missingParams && component.missingParams.length === 0) {
