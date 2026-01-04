@@ -297,79 +297,360 @@ export const calculatePricesFromPaths = (
   return (priceSum / numSimulations) * Math.exp(-r * t);
 };
 
-// Digital option Monte Carlo pricing (complete implementation)
+// Digital option closed-form pricing (analytical formulas)
+// ✅ V5 FINAL : Formule exacte de Reiner & Rubinstein (1991) pour One-Touch
+// Source: "Breaking Down Barriers" (Risk Magazine, 1991)
+export const calculateDigitalOptionPriceClosedForm = (
+  optionType: string,
+  S: number,      // Current price (Spot)
+  K: number,       // Strike level (utilisé pour range-binary)
+  r_d: number,     // Domestic risk-free rate
+  r_f: number,     // Foreign risk-free rate
+  t: number,       // Time to maturity
+  sigma: number,  // Volatility
+  barrier?: number,
+  secondBarrier?: number,
+  rebate: number = 1,
+  payAtTouch: boolean = true
+): number => {
+  // Conversion du rebate en décimal (rebate est en %)
+  const R = rebate / 100;
+  
+  // Validation
+  if (t <= 0 || sigma <= 0 || S <= 0) {
+    return 0;
+  }
+  
+  // Paramètres Garman-Kohlhagen
+  const b = r_d - r_f; // Cost of carry pour FX
+  const v = sigma;
+  const v2 = v * v;
+  const sqrtT = Math.sqrt(t);
+  
+  switch (optionType) {
+    case 'one-touch': {
+      // ======================================================================
+      // ONE-TOUCH (American Cash-or-Nothing Binary)
+      // Formule de Reiner & Rubinstein (1991) - "Breaking Down Barriers"
+      // ======================================================================
+      if (barrier === undefined) return 0;
+      
+      const H = barrier;
+      
+      // Paramètre mu = (b - v²/2) / v²
+      const mu = (b - v2 / 2) / v2;
+      
+      // Paramètre lambda = sqrt(mu² + 2r/v²) pour pay-at-hit
+      // où r est le taux d'actualisation (r_d)
+      const lambda = Math.sqrt(mu * mu + 2 * r_d / v2);
+      
+      // x1 = ln(S/H) / (v*sqrtT) + (1 + mu) * v * sqrtT
+      // y1 = ln(H/S) / (v*sqrtT) + (1 + mu) * v * sqrtT
+      const x1 = Math.log(S / H) / (v * sqrtT) + (1 + mu) * v * sqrtT;
+      const y1 = Math.log(H / S) / (v * sqrtT) + (1 + mu) * v * sqrtT;
+      
+      // z = ln(H/S) / (v*sqrtT) + lambda * v * sqrtT
+      const z = Math.log(H / S) / (v * sqrtT) + lambda * v * sqrtT;
+      
+      if (H > S) {
+        // ==========================================
+        // BARRIÈRE SUPÉRIEURE (Up-and-In) : H > S
+        // ==========================================
+        if (payAtTouch) {
+          // Pay-at-hit: utilise lambda
+          // B = R * [(H/S)^(mu+lambda) * N(z) + (H/S)^(mu-lambda) * N(z - 2*lambda*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + lambda) * CND(z);
+          const term2 = Math.pow(H / S, mu - lambda) * CND(z - 2 * lambda * v * sqrtT);
+          return R * (term1 + term2);
+        } else {
+          // Pay-at-expiry: utilise mu+1 au lieu de lambda
+          // B = R * e^(-r*T) * [(H/S)^(mu+1) * N(y1) + (H/S)^(mu-1) * N(y1 - 2*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + 1) * CND(y1);
+          const term2 = Math.pow(H / S, mu - 1) * CND(y1 - 2 * v * sqrtT);
+          return R * Math.exp(-r_d * t) * (term1 + term2);
+        }
+      } else {
+        // ==========================================
+        // BARRIÈRE INFÉRIEURE (Down-and-In) : H < S
+        // ==========================================
+        if (payAtTouch) {
+          // Pay-at-hit
+          const term1 = Math.pow(H / S, mu + lambda) * CND(-z);
+          const term2 = Math.pow(H / S, mu - lambda) * CND(-z + 2 * lambda * v * sqrtT);
+          return R * (term1 + term2);
+        } else {
+          // Pay-at-expiry
+          const term1 = Math.pow(H / S, mu + 1) * CND(-y1);
+          const term2 = Math.pow(H / S, mu - 1) * CND(-y1 + 2 * v * sqrtT);
+          return R * Math.exp(-r_d * t) * (term1 + term2);
+        }
+      }
+    }
+    
+    case 'no-touch': {
+      // ======================================================================
+      // NO-TOUCH = PV(Rebate) - One-Touch(at maturity)
+      // ======================================================================
+      if (barrier === undefined) return 0;
+      
+      // One-Touch avec paiement à l'échéance
+      const oneTouchDeferred = calculateDigitalOptionPriceClosedForm(
+        'one-touch', S, K, r_d, r_f, t, sigma, barrier, secondBarrier, rebate, false
+      );
+      
+      // No-Touch paie à l'échéance si jamais touché
+      return R * Math.exp(-r_d * t) - oneTouchDeferred;
+    }
+    
+    case 'range-binary': {
+      // ======================================================================
+      // RANGE BINARY : paie si S(T) ∈ [K, barrier] à l'échéance
+      // = Digital Call(K) - Digital Call(barrier)
+      // ======================================================================
+      if (barrier === undefined || K === undefined) return 0;
+      
+      const lowerBound = Math.min(K, barrier);
+      const upperBound = Math.max(K, barrier);
+      
+      const digitalCallLower = calculateDigitalCallPrice(S, lowerBound, r_d, r_f, t, sigma, R);
+      const digitalCallUpper = calculateDigitalCallPrice(S, upperBound, r_d, r_f, t, sigma, R);
+      
+      return Math.max(0, digitalCallLower - digitalCallUpper);
+    }
+    
+    case 'outside-binary': {
+      // ======================================================================
+      // OUTSIDE BINARY : paie si S(T) ∉ [K, barrier] à l'échéance
+      // = PV(R) - Range Binary
+      // ======================================================================
+      if (barrier === undefined || K === undefined) return 0;
+      
+      const rangeBinaryPrice = calculateDigitalOptionPriceClosedForm(
+        'range-binary', S, K, r_d, r_f, t, sigma, barrier, undefined, rebate, false
+      );
+      
+      return R * Math.exp(-r_d * t) - rangeBinaryPrice;
+    }
+    
+    case 'double-touch':
+    case 'double-no-touch': {
+      // Double barriers nécessitent des formules complexes (séries infinies)
+      return NaN;
+    }
+    
+    default:
+      return NaN;
+  }
+};
+
+// Helper: Digital Call (Cash-or-Nothing Call) - European style
+const calculateDigitalCallPrice = (
+  S: number,
+  K: number,
+  r_d: number,
+  r_f: number,
+  t: number,
+  sigma: number,
+  rebate: number
+): number => {
+  if (t <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0;
+  
+  const b = r_d - r_f;
+  const d2 = (Math.log(S / K) + (b - sigma * sigma / 2) * t) / (sigma * Math.sqrt(t));
+  return rebate * Math.exp(-r_d * t) * CND(d2);
+};
+
+// Helper: Digital Put (Cash-or-Nothing Put) - European style
+const calculateDigitalPutPrice = (
+  S: number,
+  K: number,
+  r_d: number,
+  r_f: number,
+  t: number,
+  sigma: number,
+  rebate: number
+): number => {
+  if (t <= 0 || sigma <= 0 || S <= 0 || K <= 0) return 0;
+  
+  const b = r_d - r_f;
+  const d2 = (Math.log(S / K) + (b - sigma * sigma / 2) * t) / (sigma * Math.sqrt(t));
+  return rebate * Math.exp(-r_d * t) * CND(-d2);
+};
+
+// Digital option Monte Carlo pricing (fallback for complex cases)
+// ✅ CORRIGÉ : Utilise Garman-Kohlhagen pour FX (r_d et r_f)
 export const calculateDigitalOptionPrice = (
   optionType: string,
   S: number,      // Current price
   K: number,      // Strike/Barrier level
-  r: number,      // Risk-free rate
+  r_d: number,    // ✅ Domestic risk-free rate (Garman-Kohlhagen)
+  r_f: number,    // ✅ Foreign risk-free rate (Garman-Kohlhagen)
   t: number,      // Time to maturity
   sigma: number,  // Volatility
   barrier?: number,
   secondBarrier?: number,
   numSimulations: number = 10000,
-  rebate: number = 1
+  rebate: number = 1,
+  useClosedForm: boolean = true,  // Nouveau paramètre pour choisir la méthode
+  payAtTouch: boolean = true      // ✅ Nouveau : rebate payé au touch (true) ou à l'échéance (false)
 ): number => {
-  // Conversion du rebate en pourcentage
+  // Essayer d'abord la formule fermée si demandée
+  if (useClosedForm) {
+    try {
+      const closedFormPrice = calculateDigitalOptionPriceClosedForm(
+        optionType, S, K, r_d, r_f, t, sigma, barrier, secondBarrier, rebate, payAtTouch
+      );
+      
+      // Si la formule fermée retourne un résultat valide (pas NaN), l'utiliser
+      if (!isNaN(closedFormPrice) && isFinite(closedFormPrice) && closedFormPrice >= 0) {
+        return closedFormPrice;
+      }
+    } catch (error) {
+      // En cas d'erreur, continuer avec Monte Carlo
+      console.warn('Closed-form pricing failed, falling back to Monte Carlo:', error);
+    }
+  }
+  
+  // Fallback sur Monte Carlo pour les cas complexes ou si formule fermée non disponible
+  // ✅ V5 : Monte Carlo cohérent avec closed-form Reiner & Rubinstein
+  const b = r_d - r_f; // Cost of carry (drift FX)
   const rebateDecimal = rebate / 100;
   
+  // Déterminer si barrière supérieure ou inférieure pour one-touch/no-touch
+  const isUpperBarrier = barrier !== undefined && barrier > S;
+  
   let payoutSum = 0;
-  // Amélioration de la précision de la simulation
+  // Nombre de pas par an (252 jours de trading, 4 pas par jour)
   const stepsPerDay = 4;
-  const totalSteps = Math.max(252 * t * stepsPerDay, 50);
+  const totalSteps = Math.max(Math.round(252 * t * stepsPerDay), 50);
   const dt = t / totalSteps;
+  const sqrtDt = Math.sqrt(dt);
+  
   for (let sim = 0; sim < numSimulations; sim++) {
     let price = S;
     let touched = false;
     let touchedSecond = false;
+    let touchTime = t;
+    
     for (let step = 0; step < totalSteps; step++) {
+      // Box-Muller pour générer un nombre aléatoire normal
       const z = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
-      price = price * Math.exp((r - 0.5 * sigma * sigma) * dt + sigma * Math.sqrt(dt) * z);
+      
+      // GBM avec drift FX (Garman-Kohlhagen)
+      price = price * Math.exp((b - 0.5 * sigma * sigma) * dt + sigma * sqrtDt * z);
+      
       switch (optionType) {
         case 'one-touch':
-          if (barrier !== undefined && price >= barrier) touched = true;
+          // ✅ CORRIGÉ V3 : Vérifier selon que la barrière est supérieure ou inférieure
+          if (barrier !== undefined && !touched) {
+            if (isUpperBarrier && price >= barrier) {
+              touched = true;
+              touchTime = (step + 1) * dt;
+            } else if (!isUpperBarrier && price <= barrier) {
+              touched = true;
+              touchTime = (step + 1) * dt;
+            }
+          }
           break;
         case 'no-touch':
-          if (barrier !== undefined && price >= barrier) touched = true;
+          // ✅ CORRIGÉ V3 : Même logique que one-touch
+          if (barrier !== undefined) {
+            if (isUpperBarrier && price >= barrier) touched = true;
+            else if (!isUpperBarrier && price <= barrier) touched = true;
+          }
           break;
         case 'double-touch':
-          if (barrier !== undefined && price >= barrier) touched = true;
-          if (secondBarrier !== undefined && price <= secondBarrier) touchedSecond = true;
+          // Double-Touch: touche si l'un des deux niveaux est atteint
+          if (barrier !== undefined && price >= barrier && !touched) {
+            touched = true;
+            touchTime = (step + 1) * dt;
+          }
+          if (secondBarrier !== undefined && price <= secondBarrier && !touchedSecond) {
+            touchedSecond = true;
+            if (!touched) touchTime = (step + 1) * dt;
+          }
           break;
         case 'double-no-touch':
-          if ((barrier !== undefined && price >= barrier) || (secondBarrier !== undefined && price <= secondBarrier)) touched = true;
+          // Double-No-Touch: touche si l'un des deux niveaux est atteint
+          if ((barrier !== undefined && price >= barrier) || 
+              (secondBarrier !== undefined && price <= secondBarrier)) {
+            touched = true;
+          }
           break;
         case 'range-binary':
-          if (barrier !== undefined && K !== undefined && price >= K && price <= barrier) touched = true;
+          // Range Binary: vérifie seulement à l'échéance si prix dans [K, barrier]
           break;
         case 'outside-binary':
-          if (barrier !== undefined && K !== undefined && (price <= K || price >= barrier)) touched = true;
+          // Outside Binary: vérifie seulement à l'échéance si prix hors de [K, barrier]
           break;
       }
     }
+    
+    // Calculer le payout selon le type d'option
     switch (optionType) {
       case 'one-touch':
-        if (touched) payoutSum += rebateDecimal;
+        if (touched) {
+          if (payAtTouch) {
+            // Paiement immédiat au touch - actualiser depuis le temps du touch
+            payoutSum += rebateDecimal * Math.exp(-r_d * touchTime);
+          } else {
+            // Paiement à l'échéance - on accumule le rebate (sera actualisé à la fin)
+            payoutSum += rebateDecimal;
+          }
+        }
         break;
       case 'no-touch':
+        // No-Touch paie toujours à l'échéance
         if (!touched) payoutSum += rebateDecimal;
         break;
       case 'double-touch':
-        if (touched || touchedSecond) payoutSum += rebateDecimal;
+        if (touched || touchedSecond) {
+          if (payAtTouch) {
+            payoutSum += rebateDecimal * Math.exp(-r_d * touchTime);
+          } else {
+            payoutSum += rebateDecimal;
+          }
+        }
         break;
       case 'double-no-touch':
         if (!touched) payoutSum += rebateDecimal;
         break;
-      case 'range-binary':
-        if (touched) payoutSum += rebateDecimal;
+      case 'range-binary': {
+        // Range Binary: paie si prix final dans [min(K,barrier), max(K,barrier)]
+        const lowerBound = Math.min(K, barrier || K);
+        const upperBound = Math.max(K, barrier || K);
+        if (price >= lowerBound && price <= upperBound) {
+          payoutSum += rebateDecimal;
+        }
         break;
-      case 'outside-binary':
-        if (touched) payoutSum += rebateDecimal;
+      }
+      case 'outside-binary': {
+        // Outside Binary: paie si prix final hors de [min(K,barrier), max(K,barrier)]
+        const lowerBound = Math.min(K, barrier || K);
+        const upperBound = Math.max(K, barrier || K);
+        if (price < lowerBound || price > upperBound) {
+          payoutSum += rebateDecimal;
+        }
         break;
+      }
     }
   }
-  // Retourner le prix sans facteur d'échelle arbitraire
-  return Math.exp(-r * t) * (payoutSum / numSimulations);
+  
+  // Calculer le prix moyen actualisé
+  const avgPayout = payoutSum / numSimulations;
+  
+  if (optionType === 'one-touch' || optionType === 'double-touch') {
+    if (payAtTouch) {
+      // L'actualisation est déjà faite dans la boucle
+      return avgPayout;
+    } else {
+      // Actualiser à l'échéance
+      return Math.exp(-r_d * t) * avgPayout;
+    }
+  } else {
+    // No-Touch, Double-No-Touch, Range Binary, Outside Binary paient à l'échéance
+    return Math.exp(-r_d * t) * avgPayout;
+  }
 };
 
 // Barrier option closed form pricing (complete VBA implementation)
@@ -652,14 +933,17 @@ export const calculateOptionPrice = (
   barrier?: number,
   secondBarrier?: number,
   rebate?: number,
-  numSimulations: number = 1000
+  numSimulations: number = 1000,
+  useClosedForm: boolean = true  // ✅ Nouveau paramètre pour choisir la méthode
 ): number => {
   if (type === 'call' || type === 'put') {
     return calculateGarmanKohlhagenPrice(type, S, K, r_d, r_f, t, sigma);
   } else if (type.includes('knockout') || type.includes('knockin')) {
     return calculateBarrierOptionClosedForm(type, S, K, r_d, t, sigma, barrier || 0, secondBarrier, r_f);
   } else {
-    return calculateDigitalOptionPrice(type, S, K, r_d, t, sigma, barrier, secondBarrier, numSimulations, rebate || 1);
+    // ✅ CORRIGÉ : Passer r_d et r_f pour Garman-Kohlhagen
+    // ✅ Utiliser useClosedForm pour choisir entre closed-form et monte-carlo
+    return calculateDigitalOptionPrice(type, S, K, r_d, r_f, t, sigma, barrier, secondBarrier, numSimulations, rebate || 1, useClosedForm);
   }
 };
 
@@ -1972,23 +2256,26 @@ const Index = () => {
                   strategyOption.secondBarrier) : 
                 undefined;
                 
-              const underlyingResult = PricingService.calculateUnderlyingPrice(
-                params.spotPrice,
-                params.domesticRate/100,
-                params.foreignRate/100,
-                result.timeToMaturity
-              );
+              // ✅ Pour les options digitales, utiliser TOUJOURS le prix SPOT
+              // Les formules de Haug utilisent le spot price, pas le forward
+              const spotPriceForDigital = params.spotPrice;
+              
+              // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
+              const useClosedForm = barrierPricingModel === 'closed-form';
+              // ✅ CORRIGÉ : Utiliser barrierOptionSimulations au lieu de valeur codée en dur
               option.price = calculateDigitalOptionPrice(
                 option.type,
-                underlyingResult.price,
+                spotPriceForDigital,  // ✅ Toujours spot pour les digitales
                 strike,
                 params.domesticRate / 100,
+                params.foreignRate / 100,
                 result.timeToMaturity,
                 volatilityToUse,
                 barrier,
                 secondBarrier,
-                10000,
-                strategyOption.rebate ?? 1
+                barrierOptionSimulations, // ✅ Utiliser la valeur du slider
+                strategyOption.rebate ?? 1,
+                useClosedForm
               );
             }
           }
@@ -2065,80 +2352,8 @@ const Index = () => {
     return Math.max(0, optionPrice);
   };
 
-  // Digital option Monte Carlo pricing
-  const calculateDigitalOptionPrice = (
-    optionType: string,
-    S: number,      // Current price
-    K: number,      // Strike/Barrier level
-    r: number,      // Risk-free rate
-    t: number,      // Time to maturity
-    sigma: number,  // Volatility
-    barrier?: number,
-    secondBarrier?: number,
-    numSimulations: number = 10000,
-    rebate: number = 1
-  ) => {
-    // Conversion du rebate en pourcentage
-    const rebateDecimal = rebate / 100;
-    
-    let payoutSum = 0;
-    // Amélioration de la précision de la simulation
-    const stepsPerDay = 4;
-    const totalSteps = Math.max(252 * t * stepsPerDay, 50);
-    const dt = t / totalSteps;
-    for (let sim = 0; sim < numSimulations; sim++) {
-      let price = S;
-      let touched = false;
-      let touchedSecond = false;
-      for (let step = 0; step < totalSteps; step++) {
-        const z = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
-        price = price * Math.exp((r - 0.5 * sigma * sigma) * dt + sigma * Math.sqrt(dt) * z);
-        switch (optionType) {
-          case 'one-touch':
-            if (barrier !== undefined && price >= barrier) touched = true;
-            break;
-          case 'no-touch':
-            if (barrier !== undefined && price >= barrier) touched = true;
-            break;
-          case 'double-touch':
-            if (barrier !== undefined && price >= barrier) touched = true;
-            if (secondBarrier !== undefined && price <= secondBarrier) touchedSecond = true;
-            break;
-          case 'double-no-touch':
-            if ((barrier !== undefined && price >= barrier) || (secondBarrier !== undefined && price <= secondBarrier)) touched = true;
-            break;
-          case 'range-binary':
-            if (barrier !== undefined && K !== undefined && price >= K && price <= barrier) touched = true;
-            break;
-          case 'outside-binary':
-            if (barrier !== undefined && K !== undefined && (price <= K || price >= barrier)) touched = true;
-            break;
-        }
-      }
-      switch (optionType) {
-        case 'one-touch':
-          if (touched) payoutSum += rebateDecimal;
-          break;
-        case 'no-touch':
-          if (!touched) payoutSum += rebateDecimal;
-          break;
-        case 'double-touch':
-          if (touched || touchedSecond) payoutSum += rebateDecimal;
-          break;
-        case 'double-no-touch':
-          if (!touched) payoutSum += rebateDecimal;
-          break;
-        case 'range-binary':
-          if (touched) payoutSum += rebateDecimal;
-          break;
-        case 'outside-binary':
-          if (touched) payoutSum += rebateDecimal;
-          break;
-      }
-    }
-    // Retourner le prix sans facteur d'échelle arbitraire
-    return Math.exp(-r * t) * (payoutSum / numSimulations);
-  };
+  // Note: calculateDigitalOptionPrice est maintenant exportée au niveau du module
+  // et utilise automatiquement les formules fermées quand disponibles
 
   // Modify the calculateOptionPrice function to handle barrier options
   // FX Forward Pricing Model
@@ -2278,17 +2493,27 @@ const Index = () => {
         undefined;
       const rebate = option.rebate !== undefined ? option.rebate : 1;
       const numSimulations = barrierOptionSimulations || 10000;
+      // ✅ CORRIGÉ : Utiliser r_d et r_f pour Garman-Kohlhagen
+      const r_d = params.domesticRate / 100;
+      const r_f = params.foreignRate / 100;
+      // ✅ Pour les options digitales, utiliser TOUJOURS le prix SPOT
+      // S pourrait être forward, donc on utilise params.spotPrice
+      const spotPriceForDigital = params.spotPrice;
+      // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
+      const useClosedForm = barrierPricingModel === 'closed-form';
       return calculateDigitalOptionPrice(
         type,
-        S,
+        spotPriceForDigital,  // ✅ Toujours spot pour les digitales
         K,
-        r,
+        r_d,
+        r_f,
         t,
         effectiveSigma,
         barrier,
         secondBarrier,
         numSimulations,
-        rebate
+        rebate,
+        useClosedForm
       );
     }
     
@@ -3528,23 +3753,26 @@ const Index = () => {
                 : option.secondBarrier)
             : undefined;
           // Calculer le prix digital
-          const underlyingResult = PricingService.calculateUnderlyingPrice(
-            params.spotPrice,
-            params.domesticRate/100,
-            params.foreignRate/100,
-            t
-          );
+          // ✅ Pour les options digitales, utiliser TOUJOURS le prix SPOT
+          // Les formules de Haug utilisent le spot price, pas le forward
+          const spotPriceForDigital = params.spotPrice;
+          
+          // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
+          const useClosedForm = barrierPricingModel === 'closed-form';
+          // ✅ CORRIGÉ : Utiliser barrierOptionSimulations au lieu de valeur codée en dur
           price = calculateDigitalOptionPrice(
             option.type,
-            underlyingResult.price,
+            spotPriceForDigital,  // ✅ Toujours spot pour les digitales
             strike,
             params.domesticRate / 100,
+            params.foreignRate / 100,
             t,
             option.volatility / 100,
             barrier,
             secondBarrier,
-            10000, // nombre de simulations
-            option.rebate ?? 1
+            barrierOptionSimulations, // ✅ Utiliser la valeur du slider
+            option.rebate ?? 1,
+            useClosedForm
           );
         }
         } // Fermer le bloc else
@@ -5721,12 +5949,9 @@ const Index = () => {
     }
   };
 
-  // Mise à jour du nombre de simulations pour les options à barrière
-  useEffect(() => {
-    if (results && strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin'))) {
-      recalculateMonteCarloSimulations();
-    }
-  }, [barrierOptionSimulations, recalculateMonteCarloSimulations, results, strategy]);
+  // ✅ SUPPRIMÉ : Le recalcul automatique a été retiré
+  // Les prix ne changent que quand l'utilisateur clique sur "Calculate Strategy Results"
+  // La valeur de barrierOptionSimulations sera utilisée lors du prochain calcul
 
   // Ajouter un effet useEffect pour recalculer les simulations Monte Carlo lorsque useSimulation change
   useEffect(() => {
@@ -6405,6 +6630,7 @@ const pricingFunctions = {
   calculateVanillaOptionMonteCarlo,
   calculateBarrierOptionPrice,
   calculateDigitalOptionPrice,
+  calculateDigitalOptionPriceClosedForm,
   calculateBarrierOptionClosedForm,
   calculateFXForwardPrice,
   calculateOptionPrice,
@@ -7274,7 +7500,7 @@ const pricingFunctions = {
                       onValueChange={(value: string) => setBarrierPricingModel(value as 'monte-carlo' | 'closed-form')}
                     >
                         <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Select barrier pricing method" />
+                        <SelectValue placeholder="Select pricing method" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="monte-carlo">Monte Carlo Simulation</SelectItem>
@@ -7282,7 +7508,9 @@ const pricingFunctions = {
                       </SelectContent>
                     </Select>
                       <p className="text-xs text-muted-foreground">
-                        Closed-form provides faster and more accurate pricing
+                        {barrierPricingModel === 'closed-form' 
+                          ? 'Closed-form provides faster and more accurate pricing for barrier and digital options'
+                          : 'Monte Carlo simulation for barrier and digital options'}
                     </p>
                     </div>
                   </div>

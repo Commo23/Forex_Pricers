@@ -171,9 +171,6 @@ const Pricers = () => {
   // ✅ AJOUT: Sélection du modèle de pricing pour les barrières
   const [barrierPricingModel, setBarrierPricingModel] = useState<'closed-form' | 'monte-carlo'>('closed-form');
   
-  // ✅ AJOUT: Sélection du prix sous-jacent pour TOUTES les options
-  const [underlyingPriceType, setUnderlyingPriceType] = useState<'forward' | 'spot'>('forward');
-  
   // Inputs de pricing (cohérents avec Strategy Builder)
   const [pricingInputs, setPricingInputs] = useState({
     startDate: new Date().toISOString().split('T')[0],
@@ -305,22 +302,8 @@ const Pricers = () => {
       let price = 0;
       let methodName = '';
       
-      // ✅ CALCUL DU PRIX SOUS-JACENT POUR TOUTES LES OPTIONS
-      let underlyingPrice: number;
-      let underlyingLabel: string;
-      
-      if (underlyingPriceType === 'forward') {
-        underlyingPrice = PricingService.calculateFXForwardPrice(
-          pricingInputs.spotPrice,
-          pricingInputs.domesticRate / 100,
-          pricingInputs.foreignRate / 100,
-          pricingInputs.timeToMaturity
-        );
-        underlyingLabel = 'Forward';
-      } else {
-        underlyingPrice = pricingInputs.spotPrice;
-        underlyingLabel = 'Spot';
-      }
+      // ✅ UTILISATION DU SPOT PRICE PAR DÉFAUT
+      const underlyingPrice = pricingInputs.spotPrice;
       
       if (strategyComponent.type === 'forward') {
         // Pour les forwards, utiliser directement la fonction forward
@@ -346,23 +329,23 @@ const Pricers = () => {
         );
         methodName = 'Swap Pricing';
       } else if (strategyComponent.type === 'call' || strategyComponent.type === 'put') {
-        // ✅ VANILLA OPTIONS - Garman-Kohlhagen (utilise prix sous-jacent choisi)
+        // ✅ VANILLA OPTIONS - Garman-Kohlhagen (utilise spot price)
         price = PricingService.calculateGarmanKohlhagenPrice(
           strategyComponent.type,
-          underlyingPrice, // ✅ Forward ou Spot selon le choix
+          underlyingPrice, // ✅ Spot price
           strike,
           pricingInputs.domesticRate / 100,
           pricingInputs.foreignRate / 100,
           pricingInputs.timeToMaturity,
           strategyComponent.volatility / 100
         );
-        methodName = `Garman-Kohlhagen (${underlyingLabel})`;
+        methodName = 'Garman-Kohlhagen (Spot)';
       } else if (strategyComponent.type.includes('knockout') || strategyComponent.type.includes('knockin')) {
-        // ✅ BARRIER OPTIONS - UTILISE LE PRIX SOUS-JACENT CALCULÉ
+        // ✅ BARRIER OPTIONS - UTILISE LE SPOT PRICE
         if (barrierPricingModel === 'closed-form') {
           price = PricingService.calculateBarrierOptionClosedForm(
             strategyComponent.type,
-            underlyingPrice, // ✅ Forward ou Spot selon le choix
+            underlyingPrice, // ✅ Spot price
             strike,
             pricingInputs.domesticRate / 100,
             pricingInputs.timeToMaturity,
@@ -371,11 +354,11 @@ const Pricers = () => {
             secondBarrier
             // Note: pas de r_f selon Index.tsx
           );
-          methodName = `Barrier Closed-Form (${underlyingLabel})`;
+          methodName = 'Barrier Closed-Form (Spot)';
         } else {
           price = PricingService.calculateBarrierOptionPrice(
             strategyComponent.type,
-            underlyingPrice, // ✅ Forward ou Spot selon le choix
+            underlyingPrice, // ✅ Spot price
             strike,
             pricingInputs.domesticRate / 100,
             pricingInputs.timeToMaturity,
@@ -384,23 +367,26 @@ const Pricers = () => {
             secondBarrier,
             1000 // ✅ 1000 simulations comme Strategy Builder
           );
-          methodName = `Barrier Monte Carlo (${underlyingLabel})`;
+          methodName = 'Barrier Monte Carlo (Spot)';
         }
       } else {
-        // ✅ DIGITAL OPTIONS - Monte Carlo (utilise prix sous-jacent choisi)
+        // ✅ DIGITAL OPTIONS - Utilise formules fermées ou Monte Carlo selon barrierPricingModel
+        const useClosedForm = barrierPricingModel === 'closed-form';
         price = PricingService.calculateDigitalOptionPrice(
           strategyComponent.type,
-          underlyingPrice, // ✅ Forward ou Spot selon le choix
+          underlyingPrice, // ✅ Spot price
           strike,
           pricingInputs.domesticRate / 100,
+          pricingInputs.foreignRate / 100,  // ✅ CORRIGÉ : Ajouter r_f
           pricingInputs.timeToMaturity,
           strategyComponent.volatility / 100,
           barrier,
           secondBarrier,
           pricingInputs.numSimulations,
-          strategyComponent.rebate || 1
+          strategyComponent.rebate || 1,
+          useClosedForm
         );
-        methodName = `Digital Monte Carlo (${underlyingLabel})`;
+        methodName = useClosedForm ? 'Digital Closed-Form (Garman-Kohlhagen)' : 'Digital Monte Carlo (Garman-Kohlhagen)';
       }
       
       // Calculer les grecques si demandé
@@ -507,7 +493,6 @@ const Pricers = () => {
     pricingInputs.foreignRate,
     pricingInputs.timeToMaturity,
     barrierPricingModel, // ✅ Recalculer quand le modèle change
-    underlyingPriceType, // ✅ Recalculer quand le type de sous-jacent change
     notionalBase,
     notionalQuote, // ✅ Recalculer quand les notionnels changent
     showGreeks // ✅ Recalculer quand l'affichage des grecques change
@@ -525,7 +510,6 @@ const Pricers = () => {
     strategyComponent,
     pricingInputs,
     barrierPricingModel,
-    underlyingPriceType,
     showGreeks,
     pricingResults // ✅ Recalculer quand les résultats de pricing changent
   ]);
@@ -646,19 +630,8 @@ const Pricers = () => {
             : strategyComponent.secondBarrier
         ) : undefined;
 
-        // ✅ CALCUL DU PRIX SOUS-JACENT POUR TOUTES LES OPTIONS
-        let underlyingPrice: number;
-        
-        if (underlyingPriceType === 'forward') {
-          underlyingPrice = PricingService.calculateFXForwardPrice(
-            spot, // Utiliser le spot variable pour le forward
-            pricingInputs.domesticRate / 100,
-            pricingInputs.foreignRate / 100,
-            pricingInputs.timeToMaturity
-          );
-        } else {
-          underlyingPrice = spot; // Utiliser le spot variable
-        }
+        // ✅ UTILISATION DU SPOT PRICE PAR DÉFAUT
+        const underlyingPrice = spot;
         
         let price = 0;
         let greeks: Greeks | undefined;
@@ -756,18 +729,21 @@ const Pricers = () => {
             }
           }
         } else {
-          // ✅ DIGITAL OPTIONS
+          // ✅ DIGITAL OPTIONS - Utilise formules fermées ou Monte Carlo selon barrierPricingModel
+          const useClosedForm = barrierPricingModel === 'closed-form';
           price = PricingService.calculateDigitalOptionPrice(
             strategyComponent.type,
             underlyingPrice,
             strike,
             pricingInputs.domesticRate / 100,
+            pricingInputs.foreignRate / 100,  // ✅ CORRIGÉ : Ajouter r_f
             pricingInputs.timeToMaturity,
             strategyComponent.volatility / 100,
             barrier,
             secondBarrier,
             pricingInputs.numSimulations,
-            strategyComponent.rebate || 1
+            strategyComponent.rebate || 1,
+            useClosedForm
           );
         }
         
@@ -867,10 +843,13 @@ const Pricers = () => {
                   </Select>
                 </div>
 
-                {/* ✅ AJOUT: Modèle de pricing pour les barrières */}
-                {(selectedInstrument.includes('knockout') || selectedInstrument.includes('knockin')) && (
+                {/* ✅ AJOUT: Modèle de pricing pour les barrières et options digitales */}
+                {((selectedInstrument.includes('knockout') || selectedInstrument.includes('knockin')) ||
+                  (selectedInstrument.includes('one-touch') || selectedInstrument.includes('no-touch') ||
+                   selectedInstrument.includes('double-touch') || selectedInstrument.includes('double-no-touch') ||
+                   selectedInstrument.includes('range-binary') || selectedInstrument.includes('outside-binary'))) && (
                   <div className="space-y-2">
-                    <Label>Barrier Pricing Model</Label>
+                    <Label>Pricing Method</Label>
                     <Select value={barrierPricingModel} onValueChange={(value: 'closed-form' | 'monte-carlo') => setBarrierPricingModel(value)}>
                       <SelectTrigger>
                         <SelectValue />
@@ -892,40 +871,8 @@ const Pricers = () => {
                     </Select>
                     <div className="text-xs text-muted-foreground">
                       {barrierPricingModel === 'closed-form' 
-                        ? 'Uses exact analytical formulas'
-                        : 'Uses 1000 Monte Carlo simulations'
-                      }
-                    </div>
-                  </div>
-                )}
-
-                {/* ✅ AJOUT: Type de prix sous-jacent pour TOUTES les options */}
-                {(selectedInstrument !== 'forward' && selectedInstrument !== 'swap') && (
-                  <div className="space-y-2">
-                    <Label>Underlying Price for Options</Label>
-                    <Select value={underlyingPriceType} onValueChange={(value: 'forward' | 'spot') => setUnderlyingPriceType(value)}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="forward">
-                          <div className="flex items-center gap-2">
-                            <TrendingUp className="w-4 h-4" />
-                            Forward Price (Recommended)
-                          </div>
-                        </SelectItem>
-                        <SelectItem value="spot">
-                          <div className="flex items-center gap-2">
-                            <Calculator className="w-4 h-4" />
-                            Spot Price
-                          </div>
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <div className="text-xs text-muted-foreground">
-                      {underlyingPriceType === 'forward' 
-                        ? `Forward = ${pricingInputs.spotPrice} × exp((${pricingInputs.domesticRate}% - ${pricingInputs.foreignRate}%) × ${pricingInputs.timeToMaturity.toFixed(2)}) ≈ ${(pricingInputs.spotPrice * Math.exp((pricingInputs.domesticRate - pricingInputs.foreignRate)/100 * pricingInputs.timeToMaturity)).toFixed(4)}`
-                        : `Spot = ${pricingInputs.spotPrice} (current market price)`
+                        ? 'Uses exact analytical formulas for barrier and digital options'
+                        : 'Uses Monte Carlo simulations for barrier and digital options'
                       }
                     </div>
                   </div>
@@ -1503,17 +1450,6 @@ const Pricers = () => {
                     <span className="font-semibold text-sm text-muted-foreground">Spot Price</span><br/>
                     <span className="text-lg font-semibold">{spot} {quote}/{base}</span>
                   </div>
-                  {(selectedInstrument !== 'forward' && selectedInstrument !== 'swap') && (
-                    <div className="p-4 bg-muted/30 rounded-lg">
-                      <span className="font-semibold text-sm text-muted-foreground">Underlying Price</span><br/>
-                      <span className="text-lg font-semibold">
-                        {underlyingPriceType === 'forward' 
-                          ? `${(spot * Math.exp((pricingInputs.domesticRate - pricingInputs.foreignRate)/100 * pricingInputs.timeToMaturity)).toFixed(4)} (Forward)`
-                          : `${spot} (Spot)`
-                        }
-                      </span>
-                    </div>
-                  )}
                   <div className="p-4 bg-muted/30 rounded-lg">
                     <span className="font-semibold text-sm text-muted-foreground">Absolute Strike</span><br/>
                     <span className="text-lg font-semibold">{strikeAbs.toFixed(4)} {quote}</span>

@@ -7,6 +7,7 @@ import {
   calculateVanillaOptionMonteCarlo as calculateVanillaOptionMonteCarloFromIndex,
   calculateBarrierOptionPrice as calculateBarrierOptionPriceFromIndex,
   calculateDigitalOptionPrice as calculateDigitalOptionPriceFromIndex,
+  calculateDigitalOptionPriceClosedForm as calculateDigitalOptionPriceClosedFormFromIndex,
   calculateBarrierOptionClosedForm as calculateBarrierOptionClosedFormFromIndex,
   calculateOptionPrice as calculateOptionPriceFromIndex,
   calculateImpliedVolatility as calculateImpliedVolatilityFromIndex,
@@ -60,15 +61,34 @@ export function calculateDigitalOptionPrice(
   optionType: string,
   S: number,
   K: number,
-  r: number,
+  r_d: number,  // ✅ Taux domestique (Garman-Kohlhagen)
+  r_f: number,  // ✅ Taux étranger (Garman-Kohlhagen)
   t: number,
   sigma: number,
   barrier?: number,
   secondBarrier?: number,
   numSimulations: number = 10000,
-  rebate: number = 1
+  rebate: number = 1,
+  useClosedForm: boolean = true,
+  payAtTouch: boolean = true
 ): number {
-  return calculateDigitalOptionPriceFromIndex(optionType, S, K, r, t, sigma, barrier, secondBarrier, numSimulations, rebate);
+  return calculateDigitalOptionPriceFromIndex(optionType, S, K, r_d, r_f, t, sigma, barrier, secondBarrier, numSimulations, rebate, useClosedForm, payAtTouch);
+}
+
+export function calculateDigitalOptionPriceClosedForm(
+  optionType: string,
+  S: number,
+  K: number,
+  r_d: number,  // ✅ Taux domestique (Garman-Kohlhagen)
+  r_f: number,  // ✅ Taux étranger (Garman-Kohlhagen)
+  t: number,
+  sigma: number,
+  barrier?: number,
+  secondBarrier?: number,
+  rebate: number = 1,
+  payAtTouch: boolean = true
+): number {
+  return calculateDigitalOptionPriceClosedFormFromIndex(optionType, S, K, r_d, r_f, t, sigma, barrier, secondBarrier, rebate, payAtTouch);
 }
 
 export function calculateBarrierOptionClosedForm(
@@ -543,6 +563,7 @@ export class PricingService {
   static calculateVanillaOptionMonteCarlo = calculateVanillaOptionMonteCarlo;
   static calculateBarrierOptionPrice = calculateBarrierOptionPrice;
   static calculateDigitalOptionPrice = calculateDigitalOptionPrice;
+  static calculateDigitalOptionPriceClosedForm = calculateDigitalOptionPriceClosedForm;
   static calculateBarrierOptionClosedForm = calculateBarrierOptionClosedForm;
   static calculateFXForwardPrice = calculateFXForwardPrice;
   static calculateOptionPrice = calculateOptionPrice;

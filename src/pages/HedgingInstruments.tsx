@@ -462,9 +462,17 @@ const HedgingInstruments = () => {
       const rebate = originalComponent.rebate !== undefined ? originalComponent.rebate : 1;
       const numSimulations = barrierOptionSimulations || 10000;
 
+      // ✅ CORRIGÉ : Utiliser r_d et r_f pour Garman-Kohlhagen
+      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency);
+      const r_d = marketData ? marketData.domesticRate / 100 : r;
+      const r_f = marketData ? marketData.foreignRate / 100 : 0;
+
+      // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
+      const useClosedForm = barrierPricingModel === 'closed-form';
+
       // ✅ Utiliser la MÊME FONCTION que Strategy Builder (exportée d'Index.tsx)
       return calculateDigitalOptionPrice(
-        type, S, K, r, t, effectiveSigma, barrier, secondBarrier, numSimulations, rebate
+        type, S, K, r_d, r_f, t, effectiveSigma, barrier, secondBarrier, numSimulations, rebate, useClosedForm
       );
     }
 
@@ -783,17 +791,22 @@ const HedgingInstruments = () => {
       
       console.log(`[DEBUG] ${instrument.id}: Digital option params - barrier=${barrier}, secondBarrier=${secondBarrier}, rebate=${rebate}%`);
       
+      // ✅ CORRIGÉ : Passer r_d et r_f pour Garman-Kohlhagen
+      // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
+      const useClosedForm = barrierPricingModel === 'closed-form';
       const digitalPrice = PricingService.calculateDigitalOptionPrice(
         instrument.type.toLowerCase(),
         S,
         K,
         r_d,
+        r_f,  // ✅ Ajouter r_f
         calculationTimeToMaturity,
         sigma,
         barrier,
         secondBarrier,
         10000, // Nombre de simulations pour les digitales
-        rebate
+        rebate,
+        useClosedForm
       );
       
       console.log(`[DEBUG] ${instrument.id}: DIGITAL FINAL COMPARISON - Calculated: ${digitalPrice.toFixed(6)}, Export: ${instrument.realOptionPrice || instrument.premium || 'N/A'}, Difference: ${digitalPrice - (instrument.realOptionPrice || instrument.premium || 0)}`);
