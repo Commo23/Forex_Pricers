@@ -15,7 +15,9 @@ import {
   Activity,
   Calculator,
   Zap,
-  Database
+  Database,
+  LineChart,
+  MessageSquare
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import {
@@ -102,6 +104,20 @@ const menuItems = [
     url: "/options-market-data",
     icon: Zap,
     description: "Real-time options market data and analytics"
+  },
+  {
+    title: "Rate Explorer",
+    url: "/rate-explorer",
+    icon: LineChart,
+    description: "Interest rate curves bootstrapping & analysis",
+    badge: "New"
+  },
+  {
+    title: "Forex Chat AI",
+    url: "/forex-chat",
+    icon: MessageSquare,
+    description: "AI assistant for forex hedging strategies",
+    badge: "New"
   },
 ];
 

@@ -1,6 +1,7 @@
 // Configuration de l'environnement
 export const config = {
-  // Supabase Configuration
+  // Supabase Configuration - Main App (Auth & User Data)
+  // Rate Explorer uses a separate client (see src/lib/rate-explorer/supabaseClient.ts)
   supabase: {
     url: import.meta.env.VITE_SUPABASE_URL || 'https://xxetyvwjawnhnowdunsw.supabase.co',
     anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh4ZXR5dndqYXduaG5vd2R1bnN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg5NzM5MDcsImV4cCI6MjA3NDU0OTkwN30.M7CkHVh812jNENMlZVoDkCt1vZlgar-3cmwF4xAmtOs'

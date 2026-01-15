@@ -355,33 +355,35 @@ export const calculateDigitalOptionPriceClosedForm = (
       if (H > S) {
         // ==========================================
         // BARRIÈRE SUPÉRIEURE (Up-and-In) : H > S
+        // Pour toucher une barrière UP, le prix doit MONTER
+        // On utilise la queue INFÉRIEURE de la distribution (N(-z))
         // ==========================================
         if (payAtTouch) {
-          // Pay-at-hit: utilise lambda
-          // B = R * [(H/S)^(mu+lambda) * N(z) + (H/S)^(mu-lambda) * N(z - 2*lambda*v*sqrtT)]
-          const term1 = Math.pow(H / S, mu + lambda) * CND(z);
-          const term2 = Math.pow(H / S, mu - lambda) * CND(z - 2 * lambda * v * sqrtT);
+          // Pay-at-hit: B = R * [(H/S)^(mu+lambda) * N(-z) + (H/S)^(mu-lambda) * N(-z + 2*lambda*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + lambda) * CND(-z);
+          const term2 = Math.pow(H / S, mu - lambda) * CND(-z + 2 * lambda * v * sqrtT);
           return R * (term1 + term2);
         } else {
-          // Pay-at-expiry: utilise mu+1 au lieu de lambda
-          // B = R * e^(-r*T) * [(H/S)^(mu+1) * N(y1) + (H/S)^(mu-1) * N(y1 - 2*v*sqrtT)]
-          const term1 = Math.pow(H / S, mu + 1) * CND(y1);
-          const term2 = Math.pow(H / S, mu - 1) * CND(y1 - 2 * v * sqrtT);
+          // Pay-at-expiry: B = R * e^(-r*T) * [(H/S)^(mu+1) * N(-y1) + (H/S)^(mu-1) * N(-y1 + 2*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + 1) * CND(-y1);
+          const term2 = Math.pow(H / S, mu - 1) * CND(-y1 + 2 * v * sqrtT);
           return R * Math.exp(-r_d * t) * (term1 + term2);
         }
       } else {
         // ==========================================
         // BARRIÈRE INFÉRIEURE (Down-and-In) : H < S
+        // Pour toucher une barrière DOWN, le prix doit BAISSER
+        // On utilise la queue SUPÉRIEURE de la distribution (N(z))
         // ==========================================
         if (payAtTouch) {
-          // Pay-at-hit
-          const term1 = Math.pow(H / S, mu + lambda) * CND(-z);
-          const term2 = Math.pow(H / S, mu - lambda) * CND(-z + 2 * lambda * v * sqrtT);
+          // Pay-at-hit: B = R * [(H/S)^(mu+lambda) * N(z) + (H/S)^(mu-lambda) * N(z - 2*lambda*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + lambda) * CND(z);
+          const term2 = Math.pow(H / S, mu - lambda) * CND(z - 2 * lambda * v * sqrtT);
           return R * (term1 + term2);
         } else {
-          // Pay-at-expiry
-          const term1 = Math.pow(H / S, mu + 1) * CND(-y1);
-          const term2 = Math.pow(H / S, mu - 1) * CND(-y1 + 2 * v * sqrtT);
+          // Pay-at-expiry: B = R * e^(-r*T) * [(H/S)^(mu+1) * N(y1) + (H/S)^(mu-1) * N(y1 - 2*v*sqrtT)]
+          const term1 = Math.pow(H / S, mu + 1) * CND(y1);
+          const term2 = Math.pow(H / S, mu - 1) * CND(y1 - 2 * v * sqrtT);
           return R * Math.exp(-r_d * t) * (term1 + term2);
         }
       }
@@ -512,134 +514,114 @@ export const calculateDigitalOptionPrice = (
   }
   
   // Fallback sur Monte Carlo pour les cas complexes ou si formule fermée non disponible
-  // ✅ V5 : Monte Carlo cohérent avec closed-form Reiner & Rubinstein
-  const b = r_d - r_f; // Cost of carry (drift FX)
+  // ✅ V6 OPTIMISÉ : Monte Carlo avec protection anti-crash
+  
+  // Protection: limiter le nombre de simulations pour éviter les crashes
+  const maxSimulations = 5000; // Maximum raisonnable
+  const effectiveSimulations = Math.min(numSimulations, maxSimulations);
+  
+  // Pré-calculs pour optimisation
+  const b = r_d - r_f;
   const rebateDecimal = rebate / 100;
-  
-  // Déterminer si barrière supérieure ou inférieure pour one-touch/no-touch
   const isUpperBarrier = barrier !== undefined && barrier > S;
+  const drift = (b - 0.5 * sigma * sigma);
   
-  let payoutSum = 0;
-  // Nombre de pas par an (252 jours de trading, 4 pas par jour)
-  const stepsPerDay = 4;
-  const totalSteps = Math.max(Math.round(252 * t * stepsPerDay), 50);
+  // Nombre de pas optimisé (moins de pas = plus rapide, mais assez pour précision)
+  // Pour options digitales, 100 pas suffisent généralement
+  const totalSteps = Math.min(Math.max(Math.round(100 * t), 20), 200);
   const dt = t / totalSteps;
   const sqrtDt = Math.sqrt(dt);
+  const sigmaSqrtDt = sigma * sqrtDt;
+  const driftDt = drift * dt;
   
-  for (let sim = 0; sim < numSimulations; sim++) {
+  // Pré-calculer les bornes pour range/outside binary
+  const lowerBound = (optionType === 'range-binary' || optionType === 'outside-binary') 
+    ? Math.min(K, barrier || K) : 0;
+  const upperBound = (optionType === 'range-binary' || optionType === 'outside-binary') 
+    ? Math.max(K, barrier || K) : 0;
+  
+  let payoutSum = 0;
+  
+  // Optimisation: utiliser des variables locales pour éviter les lookups
+  const H = barrier || 0;
+  const H2 = secondBarrier || 0;
+  const isOneTouch = optionType === 'one-touch';
+  const isNoTouch = optionType === 'no-touch';
+  const isDoubleTouch = optionType === 'double-touch';
+  const isDoubleNoTouch = optionType === 'double-no-touch';
+  const isRangeBinary = optionType === 'range-binary';
+  const isOutsideBinary = optionType === 'outside-binary';
+  
+  for (let sim = 0; sim < effectiveSimulations; sim++) {
     let price = S;
     let touched = false;
     let touchedSecond = false;
     let touchTime = t;
     
     for (let step = 0; step < totalSteps; step++) {
-      // Box-Muller pour générer un nombre aléatoire normal
-      const z = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
+      // Box-Muller optimisé
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(6.283185307179586 * u2);
       
-      // GBM avec drift FX (Garman-Kohlhagen)
-      price = price * Math.exp((b - 0.5 * sigma * sigma) * dt + sigma * sqrtDt * z);
+      // GBM optimisé
+      price = price * Math.exp(driftDt + sigmaSqrtDt * z);
       
-      switch (optionType) {
-        case 'one-touch':
-          // ✅ CORRIGÉ V3 : Vérifier selon que la barrière est supérieure ou inférieure
-          if (barrier !== undefined && !touched) {
-            if (isUpperBarrier && price >= barrier) {
-              touched = true;
-              touchTime = (step + 1) * dt;
-            } else if (!isUpperBarrier && price <= barrier) {
-              touched = true;
-              touchTime = (step + 1) * dt;
-            }
-          }
-          break;
-        case 'no-touch':
-          // ✅ CORRIGÉ V3 : Même logique que one-touch
-          if (barrier !== undefined) {
-            if (isUpperBarrier && price >= barrier) touched = true;
-            else if (!isUpperBarrier && price <= barrier) touched = true;
-          }
-          break;
-        case 'double-touch':
-          // Double-Touch: touche si l'un des deux niveaux est atteint
-          if (barrier !== undefined && price >= barrier && !touched) {
-            touched = true;
-            touchTime = (step + 1) * dt;
-          }
-          if (secondBarrier !== undefined && price <= secondBarrier && !touchedSecond) {
-            touchedSecond = true;
-            if (!touched) touchTime = (step + 1) * dt;
-          }
-          break;
-        case 'double-no-touch':
-          // Double-No-Touch: touche si l'un des deux niveaux est atteint
-          if ((barrier !== undefined && price >= barrier) || 
-              (secondBarrier !== undefined && price <= secondBarrier)) {
-            touched = true;
-          }
-          break;
-        case 'range-binary':
-          // Range Binary: vérifie seulement à l'échéance si prix dans [K, barrier]
-          break;
-        case 'outside-binary':
-          // Outside Binary: vérifie seulement à l'échéance si prix hors de [K, barrier]
-          break;
+      // Vérification des barrières (optimisé avec early exit)
+      if (isOneTouch && !touched) {
+        if ((isUpperBarrier && price >= H) || (!isUpperBarrier && price <= H)) {
+          touched = true;
+          touchTime = (step + 1) * dt;
+          if (payAtTouch) break; // Early exit si payAtTouch
+        }
+      } else if (isNoTouch && !touched) {
+        if ((isUpperBarrier && price >= H) || (!isUpperBarrier && price <= H)) {
+          touched = true;
+          break; // Early exit - on sait déjà qu'on ne paiera pas
+        }
+      } else if (isDoubleTouch) {
+        if (H > 0 && price >= H && !touched) {
+          touched = true;
+          touchTime = (step + 1) * dt;
+        }
+        if (H2 > 0 && price <= H2 && !touchedSecond) {
+          touchedSecond = true;
+          if (!touched) touchTime = (step + 1) * dt;
+        }
+        if ((touched || touchedSecond) && payAtTouch) break;
+      } else if (isDoubleNoTouch && !touched) {
+        if ((H > 0 && price >= H) || (H2 > 0 && price <= H2)) {
+          touched = true;
+          break; // Early exit
+        }
       }
+      // range-binary et outside-binary ne vérifient qu'à l'échéance
     }
     
-    // Calculer le payout selon le type d'option
-    switch (optionType) {
-      case 'one-touch':
-        if (touched) {
-          if (payAtTouch) {
-            // Paiement immédiat au touch - actualiser depuis le temps du touch
-            payoutSum += rebateDecimal * Math.exp(-r_d * touchTime);
-          } else {
-            // Paiement à l'échéance - on accumule le rebate (sera actualisé à la fin)
-            payoutSum += rebateDecimal;
-          }
-        }
-        break;
-      case 'no-touch':
-        // No-Touch paie toujours à l'échéance
-        if (!touched) payoutSum += rebateDecimal;
-        break;
-      case 'double-touch':
-        if (touched || touchedSecond) {
-          if (payAtTouch) {
-            payoutSum += rebateDecimal * Math.exp(-r_d * touchTime);
-          } else {
-            payoutSum += rebateDecimal;
-          }
-        }
-        break;
-      case 'double-no-touch':
-        if (!touched) payoutSum += rebateDecimal;
-        break;
-      case 'range-binary': {
-        // Range Binary: paie si prix final dans [min(K,barrier), max(K,barrier)]
-        const lowerBound = Math.min(K, barrier || K);
-        const upperBound = Math.max(K, barrier || K);
-        if (price >= lowerBound && price <= upperBound) {
-          payoutSum += rebateDecimal;
-        }
-        break;
-      }
-      case 'outside-binary': {
-        // Outside Binary: paie si prix final hors de [min(K,barrier), max(K,barrier)]
-        const lowerBound = Math.min(K, barrier || K);
-        const upperBound = Math.max(K, barrier || K);
-        if (price < lowerBound || price > upperBound) {
-          payoutSum += rebateDecimal;
-        }
-        break;
-      }
+    // Calculer le payout
+    if (isOneTouch && touched) {
+      payoutSum += payAtTouch 
+        ? rebateDecimal * Math.exp(-r_d * touchTime)
+        : rebateDecimal;
+    } else if (isNoTouch && !touched) {
+      payoutSum += rebateDecimal;
+    } else if (isDoubleTouch && (touched || touchedSecond)) {
+      payoutSum += payAtTouch 
+        ? rebateDecimal * Math.exp(-r_d * touchTime)
+        : rebateDecimal;
+    } else if (isDoubleNoTouch && !touched) {
+      payoutSum += rebateDecimal;
+    } else if (isRangeBinary && price >= lowerBound && price <= upperBound) {
+      payoutSum += rebateDecimal;
+    } else if (isOutsideBinary && (price < lowerBound || price > upperBound)) {
+      payoutSum += rebateDecimal;
     }
   }
   
   // Calculer le prix moyen actualisé
-  const avgPayout = payoutSum / numSimulations;
+  const avgPayout = payoutSum / effectiveSimulations;
   
-  if (optionType === 'one-touch' || optionType === 'double-touch') {
+  if (isOneTouch || isDoubleTouch) {
     if (payAtTouch) {
       // L'actualisation est déjà faite dans la boucle
       return avgPayout;
@@ -3020,6 +3002,18 @@ const Index = () => {
   const updateOption = (index, field, value) => {
     const newStrategy = [...strategy];
     newStrategy[index][field] = value;
+    
+    // ✅ Si le type change vers une option digitale, initialiser les valeurs par défaut
+    if (field === 'type' && ['one-touch','double-touch','no-touch','double-no-touch','range-binary','outside-binary'].includes(value)) {
+      const spotPrice = params.spotPrice || 1.0850;
+      newStrategy[index].rebate = newStrategy[index].rebate ?? 100;
+      newStrategy[index].barrierType = newStrategy[index].barrierType || 'absolute';
+      newStrategy[index].barrier = newStrategy[index].barrier ?? spotPrice * 1.05;
+      if (['double-touch','double-no-touch','range-binary','outside-binary'].includes(value)) {
+        newStrategy[index].secondBarrier = newStrategy[index].secondBarrier ?? spotPrice * 0.95;
+      }
+    }
+    
     setStrategy(newStrategy);
     calculatePayoff();
   };
@@ -7671,6 +7665,9 @@ const pricingFunctions = {
                       </>
                     ) : (
                       <>
+                    {/* Strike - masqué pour les options digitales */}
+                    {!['one-touch','double-touch','no-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
+                      <>
                     <div>
                       <label className="block text-xs font-medium mb-0.51">Strike</label>
                       <Input
@@ -7690,6 +7687,8 @@ const pricingFunctions = {
                         <option value="absolute">Absolute</option>
                       </select>
                     </div>
+                      </>
+                    )}
                     
                     {/* Add barrier inputs for barrier option types */}
                     {component.type.includes('knockout') || component.type.includes('knockin') ? (
@@ -7752,7 +7751,7 @@ const pricingFunctions = {
                           <label className="block text-xs font-medium mb-0.51">Rebate (%)</label>
                           <Input
                             type="number"
-                            value={component.rebate ?? 5}
+                            value={component.rebate ?? 100}
                             onChange={e => updateOption(index, 'rebate', Number(e.target.value))}
                             min="0"
                             step="0.01"
@@ -7760,18 +7759,20 @@ const pricingFunctions = {
                           />
                         </div>
                         <div>
-                          <label className="block text-xs font-medium mb-0.51">Barrier</label>
+                          <label className="block text-xs font-medium mb-0.51">Barrier (trigger)</label>
                           <Input
                             type="number"
-                            value={component.barrier ?? 0}
+                            value={component.barrier ?? (params.spotPrice ? params.spotPrice * 1.05 : 0)}
                             onChange={e => updateOption(index, 'barrier', Number(e.target.value))}
+                            step="0.0001"
+                            placeholder={params.spotPrice ? `${(params.spotPrice * 1.05).toFixed(4)}` : "e.g., 1.1393"}
                           />
                         </div>
                         <div>
                           <label className="block text-xs font-medium mb-0.51">Barrier Type</label>
                           <select
                             className="w-full p-2 border rounded"
-                            value={component.barrierType || 'percent'}
+                            value={component.barrierType || 'absolute'}
                             onChange={e => updateOption(index, 'barrierType', e.target.value)}
                           >
                             <option value="percent">Percentage</option>
@@ -7780,11 +7781,13 @@ const pricingFunctions = {
                         </div>
                         {['double-touch','double-no-touch','range-binary','outside-binary'].includes(component.type) && (
                           <div>
-                            <label className="block text-xs font-medium mb-0.51">Second Barrier</label>
+                            <label className="block text-xs font-medium mb-0.51">Second Barrier (trigger)</label>
                             <Input
                               type="number"
-                              value={component.secondBarrier ?? 0}
+                              value={component.secondBarrier ?? (params.spotPrice ? params.spotPrice * 0.95 : 0)}
                               onChange={e => updateOption(index, 'secondBarrier', Number(e.target.value))}
+                              step="0.0001"
+                              placeholder={params.spotPrice ? `${(params.spotPrice * 0.95).toFixed(4)}` : "e.g., 1.0308"}
                             />
                           </div>
                         )}

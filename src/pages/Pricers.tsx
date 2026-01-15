@@ -210,9 +210,9 @@ const Pricers = () => {
     volatility: 15.0, // En pourcentage
     quantity: 100,
     barrier: undefined,
-    barrierType: 'percent',
+    barrierType: 'absolute', // ✅ Par défaut 'absolute' pour les options digitales
     secondBarrier: undefined,
-    rebate: 1.0,
+    rebate: 100.0, // ✅ Par défaut 100% pour les options digitales
     timeToPayoff: 1.0 // Temps jusqu'au payoff pour les options one-touch (en années)
   });
 
@@ -244,14 +244,11 @@ const Pricers = () => {
       // First set with default rate
       setPricingInputs(prev => ({ ...prev, spotPrice: pair.defaultSpotRate }));
       
-      // Then fetch real-time rate from Market Data
+      // Then fetch real-time rate from Market Data (silently, no notification)
       fetchRealTimeRate(pair).then(realTimeRate => {
         if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
           setPricingInputs(prev => ({ ...prev, spotPrice: realTimeRate }));
-          toast({
-            title: "Rate Updated",
-            description: `Real-time rate for ${pair.symbol}: ${realTimeRate.toFixed(4)}`,
-          });
+          // ✅ Pas de notification automatique - seulement lors d'un clic manuel
         }
       }).catch(error => {
         console.error('Error fetching rate:', error);
@@ -829,7 +826,23 @@ const Pricers = () => {
                 {/* Type d'instrument */}
                 <div className="space-y-2">
                   <Label>Instrument Type</Label>
-                  <Select value={selectedInstrument} onValueChange={setSelectedInstrument}>
+                  <Select value={selectedInstrument} onValueChange={(value) => {
+                    setSelectedInstrument(value as any);
+                    // ✅ Initialiser les valeurs par défaut pour les options digitales
+                    if (value.includes('touch') || value.includes('binary')) {
+                      const spot = pricingInputs.spotPrice;
+                      setStrategyComponent({
+                        ...strategyComponent,
+                        type: value as any,
+                        rebate: strategyComponent.rebate ?? 100.0,
+                        barrierType: strategyComponent.barrierType || 'absolute',
+                        barrier: strategyComponent.barrier ?? spot * 1.05,
+                        secondBarrier: (value.includes('double') || value.includes('range') || value.includes('outside')) 
+                          ? (strategyComponent.secondBarrier ?? spot * 0.95)
+                          : strategyComponent.secondBarrier
+                      });
+                    }
+                  }}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -1073,6 +1086,9 @@ const Pricers = () => {
 
                 {/* Prix d'exercice */}
                 <div className="space-y-2">
+                  {/* Strike - masqué pour les options digitales */}
+                  {!(selectedInstrument.includes('touch') || selectedInstrument.includes('binary')) && (
+                    <>
                   <Label>Strike Price</Label>
                   <div className="flex gap-2">
                     <Input
@@ -1108,6 +1124,8 @@ const Pricers = () => {
                       : `Percentage: ${((strategyComponent.strike / pricingInputs.spotPrice) * 100).toFixed(2)}%`
                     }
                   </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Quantité */}
@@ -1203,7 +1221,11 @@ const Pricers = () => {
                 {/* Barrière - visible par défaut pour les options avec barrières */}
                 {(selectedInstrument.includes('knockout') || selectedInstrument.includes('knockin') || selectedInstrument.includes('touch')) && (
                   <div className="space-y-2">
-                    <Label>Barrier</Label>
+                    <Label>
+                      {selectedInstrument.includes('touch') || selectedInstrument.includes('binary') 
+                        ? 'Barrier (trigger)' 
+                        : 'Barrier'}
+                    </Label>
                     <div className="flex gap-2">
                       <Input
                         type="number"
@@ -1212,7 +1234,7 @@ const Pricers = () => {
                         onChange={(e) => updateStrategyComponent('barrier', e.target.value === '' ? undefined : parseFloat(e.target.value))}
                         className="flex-1"
                       />
-                      <Select value={strategyComponent.barrierType || 'percent'} onValueChange={(value: 'percent' | 'absolute') => updateStrategyComponent('barrierType', value)}>
+                      <Select value={strategyComponent.barrierType || (selectedInstrument.includes('touch') || selectedInstrument.includes('binary') ? 'absolute' : 'percent')} onValueChange={(value: 'percent' | 'absolute') => updateStrategyComponent('barrierType', value)}>
                         <SelectTrigger className="w-20">
                           <SelectValue />
                         </SelectTrigger>
@@ -1246,7 +1268,11 @@ const Pricers = () => {
                 {/* Deuxième barrière - visible par défaut pour les options double */}
                 {selectedInstrument.includes('double') && (
                   <div className="space-y-2">
-                    <Label>Second Barrier</Label>
+                    <Label>
+                      {selectedInstrument.includes('touch') || selectedInstrument.includes('binary') 
+                        ? 'Second Barrier (trigger)' 
+                        : 'Second Barrier'}
+                    </Label>
                     <div className="flex gap-2">
                       <Input
                         type="number"
@@ -1255,7 +1281,7 @@ const Pricers = () => {
                         onChange={(e) => updateStrategyComponent('secondBarrier', e.target.value === '' ? undefined : parseFloat(e.target.value))}
                         className="flex-1"
                       />
-                      <Select value={strategyComponent.barrierType || 'percent'} onValueChange={(value: 'percent' | 'absolute') => updateStrategyComponent('barrierType', value)}>
+                      <Select value={strategyComponent.barrierType || (selectedInstrument.includes('touch') || selectedInstrument.includes('binary') ? 'absolute' : 'percent')} onValueChange={(value: 'percent' | 'absolute') => updateStrategyComponent('barrierType', value)}>
                         <SelectTrigger className="w-20">
                           <SelectValue />
                         </SelectTrigger>
@@ -1295,12 +1321,12 @@ const Pricers = () => {
                       <Input
                         type="number"
                         step="0.1"
-                        value={strategyComponent.rebate || 1.0}
+                        value={strategyComponent.rebate || 100.0}
                         onChange={(e) => updateStrategyComponent('rebate', parseFloat(e.target.value))}
-                        placeholder="1.0"
+                        placeholder="100.0"
                       />
                       <div className="text-xs text-muted-foreground">
-                        Rebate amount as percentage of notional (default: 1%)
+                        Rebate amount as percentage of notional (default: 100%)
                       </div>
                     </div>
 
