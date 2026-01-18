@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { Message, ChatSettings, DEFAULT_SETTINGS } from "@/types/forexChat";
 import { toast } from "sonner";
 import { config } from "@/config/environment";
+import { PricingActionService, PricingRequest } from "@/services/PricingActionService";
 
 // Helper functions for building system prompt (same as Edge Function)
 function getTodayDate(): string {
@@ -35,7 +36,58 @@ Tu peux effectuer des calculs et analyses:
 - Calcul des Greeks (Delta, Gamma, Vega, Theta)
 - Valorisation de positions de hedging
 - Analyse de scénarios et stress tests
-- Calcul de VaR et sensibilités`;
+- Calcul de VaR et sensibilités
+
+## PRICING D'OPTIONS - INSTRUCTIONS IMPORTANTES
+
+Quand l'utilisateur demande de pricer une option, tu dois:
+
+1. DÉTECTER l'intention de pricing avec des mots-clés comme:
+   - "pricer", "calculer le prix", "valoriser", "évaluer", "combien coûte"
+   - "option call", "option put", "call option", "put option"
+   - "barrier option", "knockout", "knockin", "digital option"
+
+2. EXTRAIRE les données nécessaires depuis le message de l'utilisateur:
+   - optionType: "call", "put", "call-knockout", "put-knockout", "call-knockin", "put-knockin", "one-touch", "double-touch", "no-touch", "double-no-touch", "range-binary", "outside-binary"
+   - currencyPair: format "EUR/USD" (base/quote)
+   - spotPrice: prix spot actuel (chercher dans les données de marché fournies)
+   - strike: prix d'exercice (en valeur absolue ou pourcentage)
+   - strikeType: "percent" ou "absolute"
+   - maturity: maturité en années décimales (ex: 0.5 pour 6 mois)
+   - volatility: volatilité en pourcentage (ex: 15 pour 15%)
+   - barrier: niveau de barrière (si option à barrière)
+   - secondBarrier: deuxième barrière (si option double)
+   - barrierType: "percent" ou "absolute"
+   - rebate: rebate pour options digitales (défaut: 100%)
+   - quantity: quantité en pourcentage (défaut: 100)
+   - notional: notionnel en devise de base
+
+3. SI DES DONNÉES MANQUENT:
+   - Tu DOIS demander à l'utilisateur de fournir les données manquantes
+   - Pose des questions CLAIRES et SPÉCIFIQUES
+   - Utilise la MÊME LANGUE que l'utilisateur
+   - Ne procède PAS au calcul tant que toutes les données ne sont pas disponibles
+
+4. QUAND TOUTES LES DONNÉES SONT DISPONIBLES:
+   - Utilise le format JSON suivant pour demander le calcul:
+   PRICING_REQUEST:{
+     "optionType": "call",
+     "currencyPair": "EUR/USD",
+     "spotPrice": 1.1000,
+     "strike": 110,
+     "strikeType": "percent",
+     "maturity": 0.5,
+     "volatility": 15,
+     "barrier": null,
+     "quantity": 100
+   }
+   - Ce JSON sera automatiquement traité par le système de pricing
+
+5. FORMAT DE RÉPONSE APRÈS CALCUL:
+   - Présente le résultat de manière claire
+   - Affiche le prix dans les deux devises (base et quote)
+   - Inclus les Greeks si disponibles
+   - Explique brièvement ce que signifie le résultat`;
 
 const FX_EXTRACTION_INSTRUCTIONS = `
 ## MODE EXTRACTION DE DONNÉES FX
@@ -530,6 +582,8 @@ export function useForexChat() {
         const chunks: any[] = JSON.parse(cleanedBuffer);
         console.log("[ForexChat] Parsed", chunks.length, "chunks");
         
+        let fullResponse = "";
+        
         // Process each chunk in the array
         for (const chunk of chunks) {
           const candidates = chunk.candidates;
@@ -539,6 +593,7 @@ export function useForexChat() {
             
             if (content) {
               console.log("[ForexChat] Extracted content:", content.substring(0, 100));
+              fullResponse += content;
               updateAssistant(content);
             }
             
@@ -546,6 +601,82 @@ export function useForexChat() {
             if (candidate.finishReason) {
               console.log("[ForexChat] Finish reason:", candidate.finishReason);
             }
+          }
+        }
+        
+        // ✅ Détecter et traiter les requêtes de pricing
+        const pricingRequestMatch = fullResponse.match(/PRICING_REQUEST:\s*(\{[\s\S]*?\})/);
+        if (pricingRequestMatch) {
+          try {
+            const pricingRequestJson = pricingRequestMatch[1];
+            const pricingRequest: Partial<PricingRequest> = JSON.parse(pricingRequestJson);
+            
+            console.log("[ForexChat] Detected pricing request:", pricingRequest);
+            
+            // Valider la requête
+            const validation = PricingActionService.validatePricingRequest(pricingRequest);
+            
+            if (!validation.valid) {
+              // Demander les données manquantes
+              const missingFieldsMessage = PricingActionService.generateMissingFieldsMessage(
+                validation.missingFields,
+                pricingRequest.optionType || 'option'
+              );
+              
+              // Ajouter le message de demande de données manquantes
+              setTimeout(() => {
+                updateAssistant(`\n\n⚠️ **Données manquantes**\n\n${missingFieldsMessage}`);
+              }, 100);
+            } else {
+              // Obtenir les bank rates depuis localStorage ou utiliser les valeurs par défaut
+              let bankRates: Record<string, number | null> = {};
+              try {
+                // Essayer de charger depuis useBankRates via un hook personnalisé
+                // Pour l'instant, on utilise des valeurs par défaut ou on demande à l'utilisateur
+                const savedRates = localStorage.getItem('bankRates');
+                if (savedRates) {
+                  bankRates = JSON.parse(savedRates);
+                }
+              } catch (e) {
+                console.warn("Could not load bank rates from localStorage");
+              }
+              
+              // Calculer le prix
+              const result = PricingActionService.calculateOptionPrice(
+                pricingRequest as PricingRequest,
+                bankRates
+              );
+              
+              // Formater le résultat
+              const [baseCurrency, quoteCurrency] = (pricingRequest.currencyPair || 'EUR/USD').split('/');
+              const resultMessage = `\n\n✅ **Résultat du Pricing**\n\n` +
+                `**Prix unitaire:**\n` +
+                `- ${result.priceInQuoteCurrency.toFixed(6)} ${quoteCurrency}\n` +
+                `- ${result.priceInBaseCurrency.toFixed(6)} ${baseCurrency}\n\n` +
+                `**Méthode:** ${result.method}\n\n`;
+              
+              let greeksMessage = '';
+              if (result.greeks) {
+                greeksMessage = `**Greeks:**\n` +
+                  `- Delta (Δ): ${result.greeks.delta.toFixed(4)}\n` +
+                  `- Gamma (Γ): ${result.greeks.gamma.toFixed(4)}\n` +
+                  `- Theta (Θ): ${result.greeks.theta.toFixed(4)}\n` +
+                  `- Vega: ${result.greeks.vega.toFixed(4)}\n` +
+                  `- Rho (ρ): ${result.greeks.rho.toFixed(4)}\n\n`;
+              }
+              
+              const finalMessage = resultMessage + greeksMessage;
+              
+              // Ajouter le résultat après un court délai
+              setTimeout(() => {
+                updateAssistant(finalMessage);
+              }, 100);
+            }
+          } catch (error) {
+            console.error("[ForexChat] Error processing pricing request:", error);
+            setTimeout(() => {
+              updateAssistant(`\n\n❌ **Erreur lors du calcul du prix**\n\n${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+            }, 100);
           }
         }
       } catch (e) {

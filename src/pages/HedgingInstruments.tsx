@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
+import { useBankRates } from "@/hooks/useBankRates";
 import { 
   Plus, 
   Shield, 
@@ -50,6 +51,7 @@ interface CurrencyMarketData {
 
 const HedgingInstruments = () => {
   const { toast } = useToast();
+  const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
   const [selectedTab, setSelectedTab] = useState("all");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showExportColumns, setShowExportColumns] = useState(false);
@@ -293,6 +295,75 @@ const HedgingInstruments = () => {
       console.log(`[🔄 VALUATION DATE CHANGE] New date: ${valuationDate} - No instruments to recalculate`);
     }
   }, [valuationDate, toast]);
+
+  // ✅ Synchronisation automatique des taux d'AllRates vers HedgingInstruments
+  useEffect(() => {
+    if (Object.keys(bankRates).length === 0) return; // Pas de taux disponibles encore
+    if (instruments.length === 0) return; // Pas d'instruments à synchroniser
+    
+    const uniqueCurrencies = getUniqueCurrencies(instruments);
+    if (uniqueCurrencies.length === 0) return;
+    
+    let hasUpdates = false;
+    const updatedPairs: string[] = [];
+    
+    setCurrencyMarketData(prevData => {
+      const newData = { ...prevData };
+      
+      uniqueCurrencies.forEach(currencyPair => {
+        // Parser la paire de devises (ex: "EUR/USD" -> base: "EUR", quote: "USD")
+        const parts = currencyPair.split('/');
+        if (parts.length !== 2) return; // Format invalide
+        
+        const baseCurrency = parts[0];
+        const quoteCurrency = parts[1];
+        
+        // Obtenir les taux depuis AllRates
+        const baseRate = bankRates[baseCurrency];
+        const quoteRate = bankRates[quoteCurrency];
+        
+        // Mettre à jour seulement si les taux sont disponibles
+        if (baseRate !== null && baseRate !== undefined && quoteRate !== null && quoteRate !== undefined) {
+          const currentData = newData[currencyPair] || getMarketDataFromInstruments(currencyPair) || {
+            spot: 1.0000,
+            volatility: 20,
+            domesticRate: 1.0,
+            foreignRate: 1.0
+          };
+          
+          // Mettre à jour seulement si les taux ont changé de manière significative (> 0.01%)
+          const rateChanged = 
+            Math.abs(currentData.domesticRate - quoteRate) > 0.01 || 
+            Math.abs(currentData.foreignRate - baseRate) > 0.01;
+          
+          if (rateChanged) {
+            newData[currencyPair] = {
+              ...currentData,
+              domesticRate: quoteRate, // Quote currency = domestic rate
+              foreignRate: baseRate    // Base currency = foreign rate
+            };
+            hasUpdates = true;
+            updatedPairs.push(currencyPair);
+            console.log(`[SYNC] Updated rates for ${currencyPair}: domesticRate=${quoteRate.toFixed(3)}%, foreignRate=${baseRate.toFixed(3)}%`);
+          }
+        }
+      });
+      
+      if (hasUpdates) {
+        localStorage.setItem('currencyMarketData', JSON.stringify(newData));
+      }
+      
+      return newData;
+    });
+    
+    // Afficher une notification seulement si des mises à jour significatives ont été faites
+    if (hasUpdates && updatedPairs.length > 0) {
+      toast({
+        title: "Rates Synchronized",
+        description: `Interest rates updated from All Rates for ${updatedPairs.length} currency pair(s)`,
+      });
+    }
+  }, [bankRates, instruments, toast]);
 
   // Force re-calculation when market parameters change (spot, volatility, rates)
   useEffect(() => {

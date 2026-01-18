@@ -1443,10 +1443,18 @@ const Pricers = () => {
                         </div>
                         
                         <div className="space-y-2">
+                          {/* Prix en devise de quote (prix unitaire) */}
                           <div className="flex justify-between">
-                            <span className="text-sm text-muted-foreground">Prix:</span>
+                            <span className="text-sm text-muted-foreground">Prix ({quote}):</span>
                             <span className="font-mono font-bold text-lg">
-                              {formatPrice(result.price)}
+                              {formatPrice(result.price)} {quote}
+                            </span>
+                          </div>
+                          {/* Prix en devise de base */}
+                          <div className="flex justify-between">
+                            <span className="text-sm text-muted-foreground">Prix ({base}):</span>
+                            <span className="font-mono font-bold text-lg">
+                              {formatPrice(result.price / spot)} {base}
                             </span>
                           </div>
 
