@@ -11,9 +11,9 @@ import { IRSDashboard } from "@/components/rate-explorer/IRSDashboard";
 import { BootstrappingDashboard } from "@/components/rate-explorer/BootstrappingDashboard";
 import { BondsDashboard } from "@/components/rate-explorer/BondsDashboard";
 import { GovBondsBootstrapping } from "@/components/rate-explorer/GovBondsBootstrapping";
-import { AllCurvesBootstrapping } from "@/components/rate-explorer/AllCurvesBootstrapping";
+import { AllRates } from "@/components/rate-explorer/AllRates";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, LineChart, Table, ArrowLeftRight, Calculator, Globe, Landmark, Layers } from "lucide-react";
+import { AlertCircle, LineChart, Table, ArrowLeftRight, Calculator, Globe, Landmark, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
@@ -24,7 +24,7 @@ export default function RateExplorer() {
   const [selectedIndex, setSelectedIndex] = useState(RATE_INDICES[0].id);
   const [localData, setLocalData] = useState<FuturesData[] | null>(null);
   const [activeTab, setActiveTab] = useState<"table" | "chart">("table");
-  const [mainView, setMainView] = useState<"futures" | "irs" | "bootstrap" | "bonds" | "bonds_bootstrap" | "all_curves">("futures");
+  const [mainView, setMainView] = useState<"futures" | "irs" | "bootstrap" | "bonds" | "bonds_bootstrap" | "all_rates">("futures");
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const queryClient = useQueryClient();
   
@@ -98,7 +98,7 @@ export default function RateExplorer() {
           {/* Main View Selector */}
           <div className="mb-6">
             <Tabs value={mainView} onValueChange={(v) => setMainView(v as typeof mainView)}>
-              <TabsList className="grid grid-cols-6 w-[900px]">
+              <TabsList className="grid grid-cols-6 w-full max-w-[900px]">
                 <TabsTrigger value="futures" className="flex items-center gap-2">
                   <LineChart className="w-4 h-4" />
                   Rate Futures
@@ -119,9 +119,9 @@ export default function RateExplorer() {
                   <Landmark className="w-4 h-4" />
                   Bonds Curve
                 </TabsTrigger>
-                <TabsTrigger value="all_curves" className="flex items-center gap-2">
-                  <Layers className="w-4 h-4" />
-                  All Curves
+                <TabsTrigger value="all_rates" className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4" />
+                  All Rates
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -212,8 +212,8 @@ export default function RateExplorer() {
             <BondsDashboard />
           ) : mainView === "bonds_bootstrap" ? (
             <GovBondsBootstrapping />
-          ) : mainView === "all_curves" ? (
-            <AllCurvesBootstrapping />
+          ) : mainView === "all_rates" ? (
+            <AllRates />
           ) : null}
 
           {/* Footer */}

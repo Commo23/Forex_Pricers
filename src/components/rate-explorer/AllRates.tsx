@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect } from "react";
 import { useRateData } from "@/hooks/useRateData";
 import { useIRSData } from "@/hooks/useIRSData";
 import { useCountriesBonds, useCountryYields } from "@/hooks/useBondsData";
-import { CURRENCY_CONFIGS } from "@/lib/rate-explorer/currencyDefaults";
 import {
   bootstrap,
   bootstrapBonds,
@@ -17,7 +16,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -25,38 +23,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { DiscountFactorTable } from "./DiscountFactorTable";
 import { BootstrapCurveChart } from "./BootstrapCurveChart";
-import { Download, Calculator, RefreshCw, Layers, TrendingUp, Info, LayoutGrid, FileText } from "lucide-react";
+import { Download, Calculator, RefreshCw, TrendingUp, Info, LayoutGrid, FileText } from "lucide-react";
 import { toast } from "sonner";
 
-const BOOTSTRAP_METHODS: { id: BootstrapMethod; name: string; description: string }[] = [
-  { id: "linear", name: "Simple/Linéaire", description: "Interpolation linéaire" },
-  { id: "cubic_spline", name: "Cubic Spline", description: "Splines cubiques naturelles" },
-  { id: "nelson_siegel", name: "Nelson-Siegel", description: "Modèle paramétrique" },
-  { id: "bloomberg", name: "Bloomberg", description: "Log-DF interpolation" },
-  { id: "quantlib_log_linear", name: "QL Log-Linear", description: "Log(DF) linéaire" },
-  { id: "quantlib_log_cubic", name: "QL Log-Cubic", description: "Log(DF) cubique" },
+const BOOTSTRAP_METHODS: { id: BootstrapMethod; name: string }[] = [
+  { id: "cubic_spline", name: "Cubic Spline" },
+  { id: "linear", name: "Linear" },
+  { id: "nelson_siegel", name: "Nelson-Siegel" },
+  { id: "bloomberg", name: "Bloomberg" },
+  { id: "quantlib_log_linear", name: "QL Log-Linear" },
+  { id: "quantlib_log_cubic", name: "QL Log-Cubic" },
 ];
 
 // Currencies that have IRS/Futures data available
 const IRS_FUTURES_CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY"];
 
-interface CurrencyCurve {
+interface CurrencyRate {
   currency: string;
   source: "irs_futures" | "bonds";
   sourceName: string;
   result: BootstrapResult | null;
   isLoading: boolean;
   inputPointsCount: number;
+  bankRate: number | null;
 }
 
 type ViewMode = "dashboard" | "detail";
 
-export function AllCurvesBootstrapping() {
+export function AllRates() {
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [selectedCurrency, setSelectedCurrency] = useState<string>("");
   const [selectedMethod, setSelectedMethod] = useState<BootstrapMethod>("cubic_spline");
@@ -74,7 +71,7 @@ export function AllCurvesBootstrapping() {
   const chfIRS = useIRSData("chf");
   const jpyIRS = useIRSData("jpy");
   
-  // Fetch bonds data for non-major currencies
+  // Fetch bonds data
   const countriesQuery = useCountriesBonds();
   
   // Auto-fetch countries on mount
@@ -86,18 +83,17 @@ export function AllCurvesBootstrapping() {
   
   const countriesData = countriesQuery.data?.data || [];
   
-  // Get ALL bond currencies (including major ones, so we can show both IRS/Futures and Bonds curves)
-  const bondCurrencies = useMemo(() => {
+  // Get all bond currencies EXCEPT major ones (since they use IRS/Futures)
+  const bondOnlyCurrencies = useMemo(() => {
     const currencies = [...new Set(countriesData.map(c => c.currency))];
-    return currencies.sort();
+    return currencies.filter(c => !IRS_FUTURES_CURRENCIES.includes(c)).sort();
   }, [countriesData]);
   
   // Get best country per bond currency (highest rated or most liquid)
   const bestCountryByCurrency = useMemo(() => {
     const result: Record<string, string> = {};
-    bondCurrencies.forEach(currency => {
+    bondOnlyCurrencies.forEach(currency => {
       const countries = countriesData.filter(c => c.currency === currency);
-      // Pick by rating (AAA > AA+ > etc.) or by 10Y yield availability
       const best = countries.sort((a, b) => {
         if (a.rating && !b.rating) return -1;
         if (!a.rating && b.rating) return 1;
@@ -109,17 +105,10 @@ export function AllCurvesBootstrapping() {
       }
     });
     return result;
-  }, [countriesData, bondCurrencies]);
+  }, [countriesData, bondOnlyCurrencies]);
   
-  // Dynamic hooks for bond yields - fetch for ALL currencies (including major ones)
-  // Major currencies (also fetch bonds for comparison)
-  const usdBonds = useCountryYields(bestCountryByCurrency["USD"] || "");
-  const eurBonds = useCountryYields(bestCountryByCurrency["EUR"] || "");
-  const gbpBonds = useCountryYields(bestCountryByCurrency["GBP"] || "");
-  const chfBonds = useCountryYields(bestCountryByCurrency["CHF"] || "");
-  const jpyBonds = useCountryYields(bestCountryByCurrency["JPY"] || "");
-  
-  // Other currencies
+  // Hooks for bond yields (non-major currencies)
+  // Since React hooks must be called unconditionally, we create hooks for common currencies
   const audYields = useCountryYields(bestCountryByCurrency["AUD"] || "");
   const cadYields = useCountryYields(bestCountryByCurrency["CAD"] || "");
   const nzdYields = useCountryYields(bestCountryByCurrency["NZD"] || "");
@@ -138,45 +127,76 @@ export function AllCurvesBootstrapping() {
   const sgdYields = useCountryYields(bestCountryByCurrency["SGD"] || "");
   const hkdYields = useCountryYields(bestCountryByCurrency["HKD"] || "");
   const tryYields = useCountryYields(bestCountryByCurrency["TRY"] || "");
+  const zarBonds = useCountryYields(bestCountryByCurrency["ZAR"] || "");
+  const thbYields = useCountryYields(bestCountryByCurrency["THB"] || "");
+  const myrYields = useCountryYields(bestCountryByCurrency["MYR"] || "");
+  const phpYields = useCountryYields(bestCountryByCurrency["PHP"] || "");
+  const idrYields = useCountryYields(bestCountryByCurrency["IDR"] || "");
+  const copYields = useCountryYields(bestCountryByCurrency["COP"] || "");
+  const clpYields = useCountryYields(bestCountryByCurrency["CLP"] || "");
+  const penYields = useCountryYields(bestCountryByCurrency["PEN"] || "");
+  const ilsYields = useCountryYields(bestCountryByCurrency["ILS"] || "");
+  const ronYields = useCountryYields(bestCountryByCurrency["RON"] || "");
+  const madYields = useCountryYields(bestCountryByCurrency["MAD"] || "");
+  const egpYields = useCountryYields(bestCountryByCurrency["EGP"] || "");
+  const arsBonds = useCountryYields(bestCountryByCurrency["ARS"] || "");
   
-  // Build dynamic map for all currencies
-  const bondYieldsMap: Record<string, ReturnType<typeof useCountryYields>> = useMemo(() => {
-    const map: Record<string, ReturnType<typeof useCountryYields>> = {
-      // Major currencies
-      "USD": usdBonds, "EUR": eurBonds, "GBP": gbpBonds, "CHF": chfBonds, "JPY": jpyBonds,
-      // Other currencies
-      "AUD": audYields, "CAD": cadYields, "NZD": nzdYields, "NOK": nokYields,
-      "SEK": sekYields, "DKK": dkkYields, "PLN": plnYields, "CZK": czkYields,
-      "HUF": hufYields, "MXN": mxnYields, "BRL": brlYields, "ZAR": zarYields,
-      "CNY": cnyYields, "INR": inrYields, "KRW": krwYields, "SGD": sgdYields,
-      "HKD": hkdYields, "TRY": tryYields,
+  const bondYieldsMap: Record<string, ReturnType<typeof useCountryYields>> = {
+    "AUD": audYields, "CAD": cadYields, "NZD": nzdYields, "NOK": nokYields,
+    "SEK": sekYields, "DKK": dkkYields, "PLN": plnYields, "CZK": czkYields,
+    "HUF": hufYields, "MXN": mxnYields, "BRL": brlYields, "ZAR": zarYields,
+    "CNY": cnyYields, "INR": inrYields, "KRW": krwYields, "SGD": sgdYields,
+    "HKD": hkdYields, "TRY": tryYields, "THB": thbYields, "MYR": myrYields,
+    "PHP": phpYields, "IDR": idrYields, "COP": copYields, "CLP": clpYields,
+    "PEN": penYields, "ILS": ilsYields, "RON": ronYields, "MAD": madYields,
+    "EGP": egpYields, "ARS": arsBonds,
+  };
+  
+  // Build bonds curve
+  const buildBondsCurve = (
+    currency: string,
+    yieldsQuery: ReturnType<typeof useCountryYields>,
+    countrySlug: string
+  ): CurrencyRate => {
+    const yieldsData = yieldsQuery.data?.data || [];
+    const country = countriesData.find(c => c.countrySlug === countrySlug);
+    
+    const bondPoints: BootstrapPoint[] = yieldsData
+      .filter(y => y.yield !== null && y.maturityYears > 0)
+      .map(y => ({
+        tenor: y.maturityYears,
+        rate: (y.yield as number) / 100,
+        source: 'bond' as const,
+        priority: 1,
+      }));
+    
+    let result: BootstrapResult | null = null;
+    if (bondPoints.length >= 2) {
+      result = bootstrapBonds(bondPoints, selectedMethod, currency);
+    }
+    
+    // Get bank rate from country data
+    const bankRate = country?.bankRate ?? null;
+    
+    return {
+      currency,
+      source: "bonds",
+      sourceName: `Gov Bonds (${country?.country || countrySlug})`,
+      result,
+      isLoading: yieldsQuery.isLoading,
+      inputPointsCount: bondPoints.length,
+      bankRate,
     };
-    
-    // Add all other currencies dynamically from bondCurrencies
-    bondCurrencies.forEach(currency => {
-      if (!map[currency] && bestCountryByCurrency[currency]) {
-        // For currencies not in the static list, we'll need to fetch them
-        // For now, we'll skip them or add them manually if needed
-      }
-    });
-    
-    return map;
-  }, [
-    usdBonds, eurBonds, gbpBonds, chfBonds, jpyBonds,
-    audYields, cadYields, nzdYields, nokYields, sekYields,
-    dkkYields, plnYields, czkYields, hufYields, mxnYields,
-    brlYields, zarYields, cnyYields, inrYields, krwYields,
-    sgdYields, hkdYields, tryYields,
-    bondCurrencies, bestCountryByCurrency,
-  ]);
+  };
   
-  // Build IRS/Futures curves
+  // Build IRS/Futures curve
   const buildIRSFuturesCurve = (
     currency: string,
     futuresData: ReturnType<typeof useRateData>["data"],
     irsData: ReturnType<typeof useIRSData>["data"],
-    isLoading: boolean
-  ): CurrencyCurve => {
+    isLoading: boolean,
+    countriesData: any[]
+  ): CurrencyRate => {
     const swapPoints: BootstrapPoint[] = [];
     const futuresPoints: BootstrapPoint[] = [];
     
@@ -208,6 +228,21 @@ export function AllCurvesBootstrapping() {
       result = bootstrap(swapPoints, futuresPoints, selectedMethod, currency);
     }
     
+    // Get bank rate for major currencies (from countries data if available)
+    // For USD, specifically use United States
+    let countryData;
+    if (currency === "USD") {
+      countryData = countriesData.find(c => 
+        c.currency === currency && 
+        (c.country.toLowerCase().includes("united states") || 
+         c.country.toLowerCase().includes("usa") ||
+         c.country.toLowerCase() === "united states")
+      );
+    } else {
+      countryData = countriesData.find(c => c.currency === currency);
+    }
+    const bankRate = countryData?.bankRate ?? null;
+    
     return {
       currency,
       source: "irs_futures",
@@ -215,83 +250,50 @@ export function AllCurvesBootstrapping() {
       result,
       isLoading,
       inputPointsCount: totalPoints,
+      bankRate,
     };
   };
   
-  // Build bonds curve
-  const buildBondsCurve = (
-    currency: string,
-    yieldsQuery: ReturnType<typeof useCountryYields>,
-    countrySlug: string
-  ): CurrencyCurve => {
-    const yieldsData = yieldsQuery.data?.data || [];
-    const country = countriesData.find(c => c.countrySlug === countrySlug);
+  // Build all rates (one per currency)
+  const allRates: CurrencyRate[] = useMemo(() => {
+    const rates: CurrencyRate[] = [];
     
-    const bondPoints: BootstrapPoint[] = yieldsData
-      .filter(y => y.yield !== null && y.maturityYears > 0)
-      .map(y => ({
-        tenor: y.maturityYears,
-        rate: (y.yield as number) / 100,
-        source: 'bond' as const,
-        priority: 1,
-      }));
+    // IRS/Futures curves for major currencies (5 curves)
+    rates.push(buildIRSFuturesCurve("USD", usdFutures.data, usdIRS.data, usdFutures.isLoading || usdIRS.isLoading, countriesData));
+    rates.push(buildIRSFuturesCurve("EUR", eurFutures.data, eurIRS.data, eurFutures.isLoading || eurIRS.isLoading, countriesData));
+    rates.push(buildIRSFuturesCurve("GBP", gbpFutures.data, gbpIRS.data, gbpFutures.isLoading || gbpIRS.isLoading, countriesData));
+    rates.push(buildIRSFuturesCurve("CHF", chfFutures.data, chfIRS.data, chfFutures.isLoading || chfIRS.isLoading, countriesData));
+    rates.push(buildIRSFuturesCurve("JPY", jpyFutures.data, jpyIRS.data, jpyFutures.isLoading || jpyIRS.isLoading, countriesData));
     
-    let result: BootstrapResult | null = null;
-    if (bondPoints.length >= 2) {
-      result = bootstrapBonds(bondPoints, selectedMethod, currency);
-    }
-    
-    return {
-      currency,
-      source: "bonds",
-      sourceName: `Gov Bonds (${country?.country || countrySlug})`,
-      result,
-      isLoading: yieldsQuery.isLoading,
-      inputPointsCount: bondPoints.length,
-    };
-  };
-  
-  // Build all curves
-  const allCurves: CurrencyCurve[] = useMemo(() => {
-    const curves: CurrencyCurve[] = [];
-    
-    // IRS/Futures curves for major currencies
-    curves.push(buildIRSFuturesCurve("USD", usdFutures.data, usdIRS.data, usdFutures.isLoading || usdIRS.isLoading));
-    curves.push(buildIRSFuturesCurve("EUR", eurFutures.data, eurIRS.data, eurFutures.isLoading || eurIRS.isLoading));
-    curves.push(buildIRSFuturesCurve("GBP", gbpFutures.data, gbpIRS.data, gbpFutures.isLoading || gbpIRS.isLoading));
-    curves.push(buildIRSFuturesCurve("CHF", chfFutures.data, chfIRS.data, chfFutures.isLoading || chfIRS.isLoading));
-    curves.push(buildIRSFuturesCurve("JPY", jpyFutures.data, jpyIRS.data, jpyFutures.isLoading || jpyIRS.isLoading));
-    
-    // Bond curves for ALL currencies (including major ones, so we have both IRS/Futures and Bonds)
-    // We'll build bonds curves for all currencies that have data available
-    bondCurrencies.forEach(currency => {
+    // Bond curves for non-major currencies (one per currency)
+    bondOnlyCurrencies.forEach(currency => {
       const countrySlug = bestCountryByCurrency[currency];
       const yieldsQuery = bondYieldsMap[currency];
-      // Only add if we have a country slug and yields query (even if data is still loading)
       if (countrySlug && yieldsQuery) {
-        curves.push(buildBondsCurve(currency, yieldsQuery, countrySlug));
+        rates.push(buildBondsCurve(currency, yieldsQuery, countrySlug));
       }
     });
     
-    return curves;
+    return rates;
   }, [
     selectedMethod,
     usdFutures.data, eurFutures.data, gbpFutures.data, chfFutures.data, jpyFutures.data,
     usdIRS.data, eurIRS.data, gbpIRS.data, chfIRS.data, jpyIRS.data,
-    bondCurrencies, bestCountryByCurrency, bondYieldsMap,
-    usdBonds.data, eurBonds.data, gbpBonds.data, chfBonds.data, jpyBonds.data,
+    countriesData, bondOnlyCurrencies, bestCountryByCurrency,
     audYields.data, cadYields.data, nzdYields.data, nokYields.data, sekYields.data,
     dkkYields.data, plnYields.data, czkYields.data, hufYields.data, mxnYields.data,
     brlYields.data, zarYields.data, cnyYields.data, inrYields.data, krwYields.data,
-    sgdYields.data, hkdYields.data, tryYields.data,
+    sgdYields.data, hkdYields.data, tryYields.data, thbYields.data, myrYields.data,
+    phpYields.data, idrYields.data, copYields.data, clpYields.data, penYields.data,
+    ilsYields.data, ronYields.data, madYields.data, egpYields.data, arsBonds.data,
   ]);
   
-  // Filter curves with data
-  const curvesWithData = allCurves.filter(c => c.result !== null);
+  // Filter rates with data
+  const ratesWithData = allRates.filter(r => r.result !== null);
   
-  // Get selected curve for detail view
-  const selectedCurve = selectedCurrency 
-    ? allCurves.find(c => c.currency === selectedCurrency)
+  // Get selected rate for detail view
+  const selectedRate = selectedCurrency 
+    ? allRates.find(r => r.currency === selectedCurrency)
     : null;
   
   const handleRefresh = () => {
@@ -319,10 +321,10 @@ export function AllCurvesBootstrapping() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `all_curves_${result.currency}_${result.method}.csv`;
+    a.download = `rate_curve_${result.currency}_${result.method}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success("Discount factors exportés");
+    toast.success("Courbe exportée en CSV");
   };
   
   // Dashboard View
@@ -332,8 +334,8 @@ export function AllCurvesBootstrapping() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
-              <Layers className="w-5 h-5" />
-              All Curves - Vue Dashboard
+              <TrendingUp className="w-5 h-5" />
+              All Rates - Une courbe par devise
             </CardTitle>
             <div className="flex items-center gap-2">
               <Select value={selectedMethod} onValueChange={(v) => setSelectedMethod(v as BootstrapMethod)}>
@@ -360,71 +362,72 @@ export function AllCurvesBootstrapping() {
             <Alert className="mb-4 bg-primary/5 border-primary/20">
               <Info className="h-4 w-4" />
               <AlertDescription>
-                Cette vue affiche toutes les courbes bootstrappées : <strong>IRS + Futures</strong> pour les devises majeures (USD, EUR, GBP, CHF, JPY) 
-                et <strong>Gov Bonds</strong> pour toutes les devises disponibles (y compris les devises majeures pour comparaison).
-                Total: {allCurves.length} courbes ({curvesWithData.length} avec données).
+                <strong>Une courbe par devise</strong> : IRS + Futures pour les devises majeures (USD, EUR, GBP, CHF, JPY) 
+                et Gov Bonds pour toutes les autres devises.
+                Total: {allRates.length} devises ({ratesWithData.length} avec données).
               </AlertDescription>
             </Alert>
           </CardContent>
         </Card>
         
-        {/* Curves Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {allCurves.map((curve) => (
+        {/* Rates Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          {allRates.map((rate) => (
             <Card 
-              key={curve.currency} 
+              key={rate.currency} 
               className={`hover:border-primary/50 transition-colors cursor-pointer ${
-                curve.source === "irs_futures" ? "border-l-4 border-l-primary" : "border-l-4 border-l-amber-500"
+                rate.source === "irs_futures" ? "border-l-4 border-l-blue-500" : "border-l-4 border-l-green-500"
               }`}
               onClick={() => {
-                setSelectedCurrency(curve.currency);
+                setSelectedCurrency(rate.currency);
                 setViewMode("detail");
               }}
             >
-              <CardHeader className="pb-2">
+              <CardHeader className="pb-3">
                 <CardTitle className="flex items-center justify-between">
-                  <Badge variant="default" className="text-lg px-3">{curve.currency}</Badge>
-                  <Badge 
-                    variant="outline" 
-                    className={curve.source === "irs_futures" 
-                      ? "bg-primary/10 text-primary border-primary/30" 
-                      : "bg-amber-500/10 text-amber-600 border-amber-500/30"
-                    }
-                  >
-                    {curve.source === "irs_futures" ? "IRS/Futures" : "Gov Bonds"}
-                  </Badge>
+                  <Badge variant="default" className="text-xl px-4 py-1">{rate.currency}</Badge>
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {curve.isLoading ? (
-                  <div className="h-20 flex items-center justify-center">
-                    <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
+                {rate.isLoading ? (
+                  <div className="h-16 flex items-center justify-center">
+                    <RefreshCw className="w-5 h-5 animate-spin text-muted-foreground" />
                   </div>
-                ) : curve.result ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">Points:</span>
-                      <span className="font-mono">{curve.inputPointsCount}</span>
+                ) : rate.result ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Source:</span>
+                      <Badge 
+                        variant="outline" 
+                        className={rate.source === "irs_futures" 
+                          ? "bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs" 
+                          : "bg-green-500/10 text-green-600 border-green-500/30 text-xs"
+                        }
+                      >
+                        {rate.source === "irs_futures" ? "IRS/Fut" : "Bonds"}
+                      </Badge>
                     </div>
-                    <div className="flex items-center justify-between text-sm">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Points:</span>
+                      <span className="font-mono font-semibold">{rate.inputPointsCount}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">Max tenor:</span>
-                      <span className="font-mono">
-                        {Math.max(...curve.result.discountFactors.map(d => d.tenor))}Y
+                      <span className="font-mono font-semibold">
+                        {Math.max(...rate.result.discountFactors.map(d => d.tenor))}Y
                       </span>
                     </div>
-                    {curve.result.discountFactors.length > 0 && (
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">10Y Zero:</span>
-                        <span className="font-mono text-primary">
-                          {(curve.result.discountFactors.find(d => d.tenor === 10)?.zeroRate ?? 
-                            curve.result.discountFactors[Math.floor(curve.result.discountFactors.length / 2)]?.zeroRate ?? 0
-                          ).toFixed(2)}%
+                    {rate.bankRate !== null && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Bank Rate:</span>
+                        <span className="font-mono font-bold text-primary">
+                          {rate.bankRate.toFixed(3)}%
                         </span>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="h-20 flex items-center justify-center text-muted-foreground text-sm">
+                  <div className="h-16 flex items-center justify-center text-muted-foreground text-xs">
                     Données insuffisantes
                   </div>
                 )}
@@ -434,17 +437,17 @@ export function AllCurvesBootstrapping() {
         </div>
         
         {/* Combined Chart */}
-        {curvesWithData.length > 0 && (
+        {ratesWithData.length > 0 && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <TrendingUp className="w-5 h-5" />
-                Comparaison des Courbes ({selectedMethod})
+                Comparaison des Courbes de Taux ({selectedMethod})
               </CardTitle>
             </CardHeader>
             <CardContent>
               <BootstrapCurveChart
-                results={curvesWithData.map(c => c.result!)}
+                results={ratesWithData.map(r => r.result!)}
                 inputPoints={[]}
                 showInputPoints={false}
               />
@@ -462,7 +465,7 @@ export function AllCurvesBootstrapping() {
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2">
             <Calculator className="w-5 h-5" />
-            All Curves - Vue Détail
+            All Rates - Vue Détail
           </CardTitle>
           <div className="flex items-center gap-2">
             <Select value={selectedCurrency || "_select"} onValueChange={(v) => setSelectedCurrency(v === "_select" ? "" : v)}>
@@ -471,14 +474,9 @@ export function AllCurvesBootstrapping() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="_select">Choisir...</SelectItem>
-                {allCurves.map((c) => (
-                  <SelectItem key={c.currency} value={c.currency}>
-                    <div className="flex items-center gap-2">
-                      <span>{c.currency}</span>
-                      <Badge variant="outline" className="text-xs">
-                        {c.source === "irs_futures" ? "IRS" : "Bonds"}
-                      </Badge>
-                    </div>
+                {allRates.map((r) => (
+                  <SelectItem key={r.currency} value={r.currency}>
+                    {r.currency}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -504,32 +502,22 @@ export function AllCurvesBootstrapping() {
           </div>
         </CardHeader>
         <CardContent>
-          {selectedCurve ? (
+          {selectedRate ? (
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
-                <Badge variant="default" className="text-lg px-3">{selectedCurve.currency}</Badge>
+                <Badge variant="default" className="text-lg px-3">{selectedRate.currency}</Badge>
                 <Badge 
                   variant="outline" 
-                  className={selectedCurve.source === "irs_futures" 
-                    ? "bg-primary/10 text-primary border-primary/30" 
-                    : "bg-amber-500/10 text-amber-600 border-amber-500/30"
+                  className={selectedRate.source === "irs_futures" 
+                    ? "bg-blue-500/10 text-blue-600 border-blue-500/30" 
+                    : "bg-green-500/10 text-green-600 border-green-500/30"
                   }
                 >
-                  Source: {selectedCurve.sourceName}
+                  Source: {selectedRate.sourceName}
                 </Badge>
-                <Badge variant="secondary">{selectedCurve.inputPointsCount} points</Badge>
-                <Badge variant="outline">Convention: {getBasisConvention(selectedCurve.currency).dayCount}</Badge>
+                <Badge variant="secondary">{selectedRate.inputPointsCount} points</Badge>
+                <Badge variant="outline">Convention: {getBasisConvention(selectedRate.currency).dayCount}</Badge>
               </div>
-              
-              {selectedCurve.source === "bonds" && (
-                <Alert className="bg-amber-500/10 border-amber-500/30">
-                  <Info className="h-4 w-4 text-amber-600" />
-                  <AlertDescription className="text-amber-700 dark:text-amber-400">
-                    Courbe construite à partir des <strong>obligations gouvernementales</strong>. 
-                    Pour une meilleure précision sur les devises majeures, utilisez l'onglet "Bootstrapping".
-                  </AlertDescription>
-                </Alert>
-              )}
             </div>
           ) : (
             <div className="text-center text-muted-foreground py-8">
@@ -539,20 +527,20 @@ export function AllCurvesBootstrapping() {
         </CardContent>
       </Card>
       
-      {selectedCurve?.result && (
+      {selectedRate?.result && (
         <>
           {/* Chart */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Courbe de Taux - {selectedCurve.currency}</CardTitle>
-              <Button variant="outline" size="sm" onClick={() => handleExportCSV(selectedCurve.result!)}>
+              <CardTitle>Courbe de Taux - {selectedRate.currency}</CardTitle>
+              <Button variant="outline" size="sm" onClick={() => handleExportCSV(selectedRate.result!)}>
                 <Download className="w-4 h-4 mr-2" />
                 Export CSV
               </Button>
             </CardHeader>
             <CardContent>
               <BootstrapCurveChart
-                results={[selectedCurve.result]}
+                results={[selectedRate.result]}
                 inputPoints={[]}
                 showInputPoints={false}
               />
@@ -562,10 +550,10 @@ export function AllCurvesBootstrapping() {
           {/* Table */}
           <Card>
             <CardHeader>
-              <CardTitle>Discount Factors - {selectedCurve.currency}</CardTitle>
+              <CardTitle>Discount Factors - {selectedRate.currency}</CardTitle>
             </CardHeader>
             <CardContent>
-              <DiscountFactorTable discountFactors={selectedCurve.result.discountFactors} />
+              <DiscountFactorTable discountFactors={selectedRate.result.discountFactors} />
             </CardContent>
           </Card>
         </>

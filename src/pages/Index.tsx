@@ -1123,6 +1123,7 @@ export const calculateStrategyPayoffAtPrice = (components: any[], price: number,
 };
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useBankRates } from '@/hooks/useBankRates';
 import StrategyImportService from '../services/StrategyImportService';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -1390,6 +1391,9 @@ export const CURRENCY_PAIRS: CurrencyPair[] = [
 // State pour les paires de devises personnalisées
 const Index = () => {
   const { toast } = useToast();
+  
+  // Get Bank Rates from AllRates
+  const bankRates = useBankRates();
   
   // Get ExchangeRateService instance for real-time rate fetching
   const exchangeRateService = React.useMemo(() => {
@@ -6845,6 +6849,10 @@ const pricingFunctions = {
                         const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
                         const selectedPair = allPairs.find(pair => pair.symbol === value);
                       if (selectedPair) {
+                        // Get Bank Rates for base and quote currencies
+                        const baseRate = bankRates[selectedPair.base] ?? null;
+                        const quoteRate = bankRates[selectedPair.quote] ?? null;
+                        
                         // Get current base volume to recalculate quote volume
                         const currentBaseVolume = params.baseVolume || 10000000;
                         
@@ -6853,7 +6861,10 @@ const pricingFunctions = {
                           ...prev, 
                           currencyPair: selectedPair,
                           spotPrice: selectedPair.defaultSpotRate,
-                          quoteVolume: currentBaseVolume * selectedPair.defaultSpotRate
+                          quoteVolume: currentBaseVolume * selectedPair.defaultSpotRate,
+                          // Auto-fill Bank Rates if available
+                          foreignRate: baseRate !== null ? baseRate : prev.foreignRate,
+                          domesticRate: quoteRate !== null ? quoteRate : prev.domesticRate,
                         }));
                         setInitialSpotPrice(selectedPair.defaultSpotRate);
                         
@@ -6901,6 +6912,14 @@ const pricingFunctions = {
                             title: "Rate Fetch Error",
                             description: `Could not fetch rate. Using default value.`,
                             variant: "destructive"
+                          });
+                        }
+                        
+                        // Show notification if Bank Rates were updated
+                        if (baseRate !== null || quoteRate !== null) {
+                          toast({
+                            title: "Bank Rates Updated",
+                            description: `${selectedPair.base}: ${baseRate !== null ? baseRate.toFixed(3) + '%' : 'N/A'}, ${selectedPair.quote}: ${quoteRate !== null ? quoteRate.toFixed(3) + '%' : 'N/A'}`,
                           });
                         }
                       }

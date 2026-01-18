@@ -14,3 +14,4 @@ export const rateExplorerSupabase = createClient(
   RATE_EXPLORER_SUPABASE_ANON_KEY
 );
 
+

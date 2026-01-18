@@ -25,6 +25,7 @@ import { CURRENCY_PAIRS } from '@/pages/Index';
 import PayoffChart from '@/components/PayoffChart';
 import { PricingService, Greeks } from '@/services/PricingService';
 import ExchangeRateService from '@/services/ExchangeRateService';
+import { useBankRates } from '@/hooks/useBankRates';
 
 // Réutiliser les types du Strategy Builder
 interface CurrencyPair {
@@ -89,6 +90,7 @@ const INSTRUMENT_TYPES = [
 
 const Pricers = () => {
   const { toast } = useToast();
+  const bankRates = useBankRates();
   
   // Get ExchangeRateService instance for real-time rate fetching
   const exchangeRateService = React.useMemo(() => {
@@ -568,8 +570,10 @@ const Pricers = () => {
   const spot = pricingInputs.spotPrice;
   const base = selectedPair?.base || 'EUR';
   const quote = selectedPair?.quote || 'USD';
-  const premiumBase = pricingResults.length > 0 ? pricingResults[0].price * notional : 0;
-  const premiumQuote = premiumBase * spot;
+  // Le prix retourné par Garman-Kohlhagen est en QUOTE par unité de BASE
+  // Donc: premiumQuote = price * notionalBase, puis premiumBase = premiumQuote / spot
+  const premiumQuote = pricingResults.length > 0 ? pricingResults[0].price * notional : 0;
+  const premiumBase = premiumQuote / spot;
   const strikeAbs = strategyComponent.strikeType === 'percent' ? spot * (strategyComponent.strike / 100) : strategyComponent.strike;
   const barrierAbs = strategyComponent.barrierType === 'percent' && strategyComponent.barrier ? spot * strategyComponent.barrier / 100 : (strategyComponent.barrier || undefined);
   const secondBarrierAbs = strategyComponent.barrierType === 'percent' && strategyComponent.secondBarrier ? spot * strategyComponent.secondBarrier / 100 : (strategyComponent.secondBarrier || undefined);
@@ -926,8 +930,22 @@ const Pricers = () => {
                       const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
                       const selectedPair = allPairs.find(p => p.symbol === value);
                       if (selectedPair) {
+                        // Get Bank Rates for base and quote currencies
+                        const domesticCurrency = selectedPair.quote;
+                        const foreignCurrency = selectedPair.base;
+                        
+                        const newDomesticRate = bankRates[domesticCurrency];
+                        const newForeignRate = bankRates[foreignCurrency];
+                        
                         // First set with default rate
                         setPricingInputs(prev => ({ ...prev, spotPrice: selectedPair.defaultSpotRate }));
+                        
+                        // Update domestic and foreign rates from bankRates
+                        setPricingInputs(prev => ({
+                          ...prev,
+                          domesticRate: newDomesticRate !== null && newDomesticRate !== undefined ? newDomesticRate : prev.domesticRate,
+                          foreignRate: newForeignRate !== null && newForeignRate !== undefined ? newForeignRate : prev.foreignRate,
+                        }));
                         
                         // Show loading toast
                         toast({
@@ -957,6 +975,24 @@ const Pricers = () => {
                             title: "Rate Fetch Error",
                             description: `Could not fetch rate. Using default value.`,
                             variant: "destructive"
+                          });
+                        }
+                        
+                        // Show notification if Bank Rates were updated
+                        if (newDomesticRate !== null && newDomesticRate !== undefined && newForeignRate !== null && newForeignRate !== undefined) {
+                          toast({
+                            title: "Bank Rates Updated",
+                            description: `Domestic Rate (${domesticCurrency}): ${newDomesticRate.toFixed(2)}%, Foreign Rate (${foreignCurrency}): ${newForeignRate.toFixed(2)}%`,
+                          });
+                        } else if (newDomesticRate !== null && newDomesticRate !== undefined) {
+                          toast({
+                            title: "Domestic Bank Rate Updated",
+                            description: `Domestic Rate (${domesticCurrency}): ${newDomesticRate.toFixed(2)}%`,
+                          });
+                        } else if (newForeignRate !== null && newForeignRate !== undefined) {
+                          toast({
+                            title: "Foreign Bank Rate Updated",
+                            description: `Foreign Rate (${foreignCurrency}): ${newForeignRate.toFixed(2)}%`,
                           });
                         }
                       }
