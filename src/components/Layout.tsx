@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { useCompanySettings, getCompanyNameSync, companySettingsEmitter } from "@/hooks/useCompanySettings";
 import { ScrollArea } from "@/components/ui/ScrollArea";
-import ChatWidget from "./chat/ChatWidget";
+import ForexChatWidget from "./forex-chat/ForexChatWidget";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -96,7 +96,7 @@ export function Layout({ children, title, breadcrumbs }: LayoutProps) {
           </div>
         </ScrollArea>
       </SidebarInset>
-      <ChatWidget />
+      <ForexChatWidget />
     </SidebarProvider>
   );
 } 

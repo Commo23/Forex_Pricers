@@ -63,6 +63,25 @@ const PositionMonitor = () => {
   
   const exchangeService = ExchangeRateService.getInstance();
 
+  // Synchronize market prices on initial load (after positions are loaded)
+  const hasSyncedOnMount = React.useRef(false);
+  React.useEffect(() => {
+    // Only sync once when positions are first loaded
+    if (hasSyncedOnMount.current) return;
+    if (positions.length === 0) return; // Wait for positions to be loaded
+    
+    const syncMarketPrices = async () => {
+      // Wait a bit for everything to be ready
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Update market prices
+      await updateMarketPrices();
+      hasSyncedOnMount.current = true;
+    };
+    
+    syncMarketPrices();
+  }, [positions.length]); // Run when positions are loaded
+
   // Load positions from hedging instruments (exported from Strategy Builder)
   useEffect(() => {
     loadPositionsFromInstruments();
@@ -360,19 +379,175 @@ const PositionMonitor = () => {
     return Array.from(new Set(positions.map(p => p.maturity))).sort();
   }, [positions]);
 
-  // Calculate summary metrics
-  const totalUnrealizedPnL = filteredPositions.reduce((sum, pos) => sum + pos.unrealizedPnL, 0);
-  const totalDailyPnL = filteredPositions.reduce((sum, pos) => sum + pos.dailyPnL, 0);
+  // Get base currency from currency pair
+  const getBaseCurrency = (currencyPair: string): string => {
+    if (currencyPair.includes('/')) {
+      return currencyPair.split('/')[0];
+    }
+    return currencyPair;
+  };
+
+  // State for reference currency for P&L total conversion
+  const [referenceCurrency, setReferenceCurrency] = useState<string>('USD');
+  
+  // Get unique currencies for reference currency selector
+  const uniqueCurrenciesForRef = useMemo(() => {
+    const currencies = Array.from(new Set(positions.map(p => getBaseCurrency(p.currencyPair))));
+    // Add common currencies if not present
+    const commonCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD'];
+    const allCurrencies = new Set([...currencies, ...commonCurrencies]);
+    return Array.from(allCurrencies).sort();
+  }, [positions]);
+
+  // Calculate P&L by currency
+  const pnlByCurrency = useMemo(() => {
+    const unrealizedMap: { [currency: string]: number } = {};
+    const dailyMap: { [currency: string]: number } = {};
+    
+    filteredPositions.forEach(pos => {
+      const baseCurrency = getBaseCurrency(pos.currencyPair);
+      
+      if (!unrealizedMap[baseCurrency]) {
+        unrealizedMap[baseCurrency] = 0;
+      }
+      if (!dailyMap[baseCurrency]) {
+        dailyMap[baseCurrency] = 0;
+      }
+      
+      unrealizedMap[baseCurrency] += pos.unrealizedPnL;
+      dailyMap[baseCurrency] += pos.dailyPnL;
+    });
+    
+    return { unrealized: unrealizedMap, daily: dailyMap };
+  }, [filteredPositions]);
+
+  // Convert P&L total to reference currency
+  const [convertedUnrealizedPnL, setConvertedUnrealizedPnL] = useState<number>(0);
+  const [convertedDailyPnL, setConvertedDailyPnL] = useState<number>(0);
+  
+  useEffect(() => {
+    const convertPnL = async () => {
+      if (Object.keys(pnlByCurrency.unrealized).length === 0) {
+        setConvertedUnrealizedPnL(0);
+        setConvertedDailyPnL(0);
+        return;
+      }
+      
+      try {
+        let totalUnrealized = 0;
+        let totalDaily = 0;
+        
+        if (referenceCurrency === 'USD') {
+          // If reference is USD, convert all P&L to USD
+          for (const [currency, pnl] of Object.entries(pnlByCurrency.unrealized)) {
+            if (currency === 'USD') {
+              totalUnrealized += pnl;
+            } else {
+              try {
+                const rates = await exchangeService.getExchangeRates('USD');
+                const rateToUSD = rates.rates[currency] ? 1 / rates.rates[currency] : 1;
+                totalUnrealized += pnl * rateToUSD;
+              } catch (error) {
+                console.error(`Error converting ${currency} to USD:`, error);
+                totalUnrealized += pnl; // Fallback: assume 1:1
+              }
+            }
+          }
+          
+          for (const [currency, pnl] of Object.entries(pnlByCurrency.daily)) {
+            if (currency === 'USD') {
+              totalDaily += pnl;
+            } else {
+              try {
+                const rates = await exchangeService.getExchangeRates('USD');
+                const rateToUSD = rates.rates[currency] ? 1 / rates.rates[currency] : 1;
+                totalDaily += pnl * rateToUSD;
+              } catch (error) {
+                console.error(`Error converting ${currency} to USD:`, error);
+                totalDaily += pnl; // Fallback: assume 1:1
+              }
+            }
+          }
+        } else {
+          // Convert all to reference currency via USD
+          for (const [currency, pnl] of Object.entries(pnlByCurrency.unrealized)) {
+            try {
+              const rates = await exchangeService.getExchangeRates('USD');
+              
+              // Convert currency to USD first
+              let rateToUSD = 1;
+              if (currency === 'USD') {
+                rateToUSD = 1;
+              } else if (rates.rates[currency]) {
+                rateToUSD = 1 / rates.rates[currency];
+              }
+              
+              // Convert USD to reference currency
+              let rateFromUSD = 1;
+              if (referenceCurrency === 'USD') {
+                rateFromUSD = 1;
+              } else if (rates.rates[referenceCurrency]) {
+                rateFromUSD = rates.rates[referenceCurrency]; // USD/ref
+              }
+              
+              totalUnrealized += pnl * rateToUSD * rateFromUSD;
+            } catch (error) {
+              console.error(`Error converting ${currency} to ${referenceCurrency}:`, error);
+            }
+          }
+          
+          for (const [currency, pnl] of Object.entries(pnlByCurrency.daily)) {
+            try {
+              const rates = await exchangeService.getExchangeRates('USD');
+              
+              // Convert currency to USD first
+              let rateToUSD = 1;
+              if (currency === 'USD') {
+                rateToUSD = 1;
+              } else if (rates.rates[currency]) {
+                rateToUSD = 1 / rates.rates[currency];
+              }
+              
+              // Convert USD to reference currency
+              let rateFromUSD = 1;
+              if (referenceCurrency === 'USD') {
+                rateFromUSD = 1;
+              } else if (rates.rates[referenceCurrency]) {
+                rateFromUSD = rates.rates[referenceCurrency]; // USD/ref
+              }
+              
+              totalDaily += pnl * rateToUSD * rateFromUSD;
+            } catch (error) {
+              console.error(`Error converting ${currency} to ${referenceCurrency}:`, error);
+            }
+          }
+        }
+        
+        setConvertedUnrealizedPnL(totalUnrealized);
+        setConvertedDailyPnL(totalDaily);
+      } catch (error) {
+        console.error('Error converting P&L total:', error);
+        setConvertedUnrealizedPnL(0);
+        setConvertedDailyPnL(0);
+      }
+    };
+    
+    convertPnL();
+  }, [pnlByCurrency, referenceCurrency]);
+
   const activePositions = filteredPositions.length;
   const fullyHedgedCount = filteredPositions.filter(pos => pos.hedgeStatus === "Full").length;
 
   // Format functions
-  const formatCurrency = (amount: number) => {
+  const formatCurrency = (amount: number, currency: string = 'USD') => {
+    // Extract base currency from currency pair (e.g., "EUR/USD" -> "EUR")
+    const baseCurrency = currency.includes('/') ? currency.split('/')[0] : currency;
+    
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
-      currency: 'USD',
+      currency: baseCurrency,
       minimumFractionDigits: 0,
-      maximumFractionDigits: 0
+      maximumFractionDigits: 2
     }).format(amount);
   };
 
@@ -383,8 +558,12 @@ const PositionMonitor = () => {
     return rate.toFixed(4);
   };
 
-  const formatPosition = (position: number) => {
+  const formatPosition = (position: number, currency: string = 'USD') => {
+    const baseCurrency = currency.includes('/') ? currency.split('/')[0] : currency;
+    
     return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: baseCurrency,
       minimumFractionDigits: 0,
       maximumFractionDigits: 0
     }).format(Math.abs(position));
@@ -492,12 +671,35 @@ const PositionMonitor = () => {
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${getPnLColor(totalUnrealizedPnL)}`}>
-              {formatCurrency(totalUnrealizedPnL)}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Select value={referenceCurrency} onValueChange={setReferenceCurrency}>
+                  <SelectTrigger className="h-7 text-xs w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {uniqueCurrenciesForRef.map(currency => (
+                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className={`text-2xl font-bold ${getPnLColor(convertedUnrealizedPnL)}`}>
+                  {formatCurrency(convertedUnrealizedPnL, referenceCurrency)}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Total Unrealized P&L
+              </p>
+              {/* P&L by currency breakdown */}
+              <div className="space-y-1 pt-2 border-t">
+                {Object.entries(pnlByCurrency.unrealized).map(([currency, pnl]) => (
+                  <div key={currency} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{currency}:</span>
+                    <span className={getPnLColor(pnl)}>{formatCurrency(pnl, currency)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Across all positions
-            </p>
           </CardContent>
         </Card>
 
@@ -507,12 +709,35 @@ const PositionMonitor = () => {
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${getPnLColor(totalDailyPnL)}`}>
-              {formatCurrency(totalDailyPnL)}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Select value={referenceCurrency} onValueChange={setReferenceCurrency}>
+                  <SelectTrigger className="h-7 text-xs w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {uniqueCurrenciesForRef.map(currency => (
+                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className={`text-2xl font-bold ${getPnLColor(convertedDailyPnL)}`}>
+                  {formatCurrency(convertedDailyPnL, referenceCurrency)}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Today's performance
+              </p>
+              {/* Daily P&L by currency breakdown */}
+              <div className="space-y-1 pt-2 border-t">
+                {Object.entries(pnlByCurrency.daily).map(([currency, pnl]) => (
+                  <div key={currency} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{currency}:</span>
+                    <span className={getPnLColor(pnl)}>{formatCurrency(pnl, currency)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Today's performance
-            </p>
           </CardContent>
         </Card>
 
@@ -645,7 +870,7 @@ const PositionMonitor = () => {
                         <div className="flex items-center gap-2">
                           {getExposureIcon(position.position)}
                           <span className="font-mono">
-                            {formatPosition(position.position)}
+                            {formatPosition(position.position, position.currencyPair)}
                           </span>
                         </div>
                       </TableCell>
@@ -669,12 +894,12 @@ const PositionMonitor = () => {
                       </TableCell>
                       <TableCell>
                         <span className={`font-mono font-medium ${getPnLColor(position.unrealizedPnL)}`}>
-                          {formatCurrency(position.unrealizedPnL)}
+                          {formatCurrency(position.unrealizedPnL, position.currencyPair)}
                         </span>
                       </TableCell>
                       <TableCell>
                         <span className={`font-mono font-medium ${getPnLColor(position.dailyPnL)}`}>
-                          {formatCurrency(position.dailyPnL)}
+                          {formatCurrency(position.dailyPnL, position.currencyPair)}
                         </span>
                       </TableCell>
                       <TableCell>

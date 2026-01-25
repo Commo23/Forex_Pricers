@@ -9,7 +9,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { useBankRates } from "@/hooks/useBankRates";
 import { 
@@ -31,6 +30,7 @@ import {
 } from "lucide-react";
 import StrategyImportService, { HedgingInstrument } from "@/services/StrategyImportService";
 import { PricingService } from "@/services/PricingService";
+import ExchangeRateService from "@/services/ExchangeRateService";
 // ✅ IMPORT EXACT DES FONCTIONS EXPORTÉES D'INDEX.TSX UTILISÉES PAR STRATEGY BUILDER
 import {
   calculateBarrierOptionPrice,
@@ -52,6 +52,12 @@ interface CurrencyMarketData {
 const HedgingInstruments = () => {
   const { toast } = useToast();
   const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
+  
+  // Get ExchangeRateService instance for real-time rate fetching
+  const exchangeRateService = React.useMemo(() => {
+    return ExchangeRateService.getInstance();
+  }, []);
+  
   const [selectedTab, setSelectedTab] = useState("all");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showExportColumns, setShowExportColumns] = useState(false);
@@ -295,6 +301,129 @@ const HedgingInstruments = () => {
       console.log(`[🔄 VALUATION DATE CHANGE] New date: ${valuationDate} - No instruments to recalculate`);
     }
   }, [valuationDate, toast]);
+
+  // Function to fetch real-time spot price from Market Data
+  const fetchRealTimeSpotPrice = async (currencyPair: string): Promise<number | null> => {
+    try {
+      // Parser la paire de devises (ex: "EUR/USD" -> base: "EUR", quote: "USD")
+      const parts = currencyPair.split('/');
+      if (parts.length !== 2) return null;
+      
+      const base = parts[0];
+      const quote = parts[1];
+      
+      // Get exchange rates from API
+      const exchangeData = await exchangeRateService.getExchangeRates('USD');
+      const rates = exchangeData.rates;
+      
+      // Calculate the cross rate for the selected pair
+      let rate: number;
+      
+      if (base === 'USD') {
+        // Direct rate: USD/XXX
+        rate = rates[quote] || null;
+      } else if (quote === 'USD') {
+        // Inverted rate: XXX/USD = 1 / (USD/XXX)
+        rate = rates[base] ? 1 / rates[base] : null;
+      } else {
+        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
+        const baseRate = rates[base] || 1;
+        const quoteRate = rates[quote] || 1;
+        rate = quoteRate / baseRate;
+      }
+      
+      return rate;
+    } catch (error) {
+      console.error('Error fetching real-time spot price:', error);
+      return null;
+    }
+  };
+
+  // Synchronize spot price and rates with market data on initial load
+  const hasSyncedOnMount = React.useRef(false);
+  React.useEffect(() => {
+    // Only sync once on initial mount
+    if (hasSyncedOnMount.current) return;
+    if (instruments.length === 0) return;
+    
+    const syncMarketData = async () => {
+      const uniqueCurrencies = getUniqueCurrencies(instruments);
+      if (uniqueCurrencies.length === 0) return;
+      
+      try {
+        const updates: { [currencyPair: string]: CurrencyMarketData } = {};
+        
+        // Process all currencies in parallel
+        await Promise.all(uniqueCurrencies.map(async (currencyPair) => {
+          // Parser la paire de devises
+          const parts = currencyPair.split('/');
+          if (parts.length !== 2) return;
+          
+          const baseCurrency = parts[0];
+          const quoteCurrency = parts[1];
+          
+          // Get Bank Rates for base and quote currencies
+          const baseRate = bankRates[baseCurrency] ?? null;
+          const quoteRate = bankRates[quoteCurrency] ?? null;
+          
+          // Fetch real-time spot price
+          const realTimeSpot = await fetchRealTimeSpotPrice(currencyPair);
+          
+          // Get current data from state or from instruments
+          const currentData = getMarketDataFromInstruments(currencyPair) || {
+            spot: 1.0000,
+            volatility: 20,
+            domesticRate: 1.0,
+            foreignRate: 1.0
+          };
+          
+          // Update with market data
+          const updatedData = { ...currentData };
+          let pairUpdated = false;
+          
+          if (realTimeSpot !== null && !isNaN(realTimeSpot) && realTimeSpot > 0) {
+            updatedData.spot = realTimeSpot;
+            pairUpdated = true;
+          }
+          
+          if (baseRate !== null && baseRate !== undefined) {
+            updatedData.foreignRate = baseRate;
+            pairUpdated = true;
+          }
+          
+          if (quoteRate !== null && quoteRate !== undefined) {
+            updatedData.domesticRate = quoteRate;
+            pairUpdated = true;
+          }
+          
+          if (pairUpdated) {
+            updates[currencyPair] = updatedData;
+          }
+        }));
+        
+        // Apply all updates at once
+        if (Object.keys(updates).length > 0) {
+          setCurrencyMarketData(prevData => {
+            const newData = { ...prevData, ...updates };
+            localStorage.setItem('currencyMarketData', JSON.stringify(newData));
+            return newData;
+          });
+        }
+        
+        hasSyncedOnMount.current = true;
+      } catch (error) {
+        console.error('Error syncing market data on load:', error);
+        hasSyncedOnMount.current = true; // Mark as synced even on error to avoid retries
+      }
+    };
+    
+    // Sync on mount - wait a bit for bankRates and exchangeRateService to be available
+    const timeoutId = setTimeout(() => {
+      syncMarketData();
+    }, 500);
+    
+    return () => clearTimeout(timeoutId);
+  }, []); // Only run once on mount
 
   // ✅ Synchronisation automatique des taux d'AllRates vers HedgingInstruments
   useEffect(() => {
@@ -1176,19 +1305,54 @@ const HedgingInstruments = () => {
     }
   };
 
-  const formatCurrency = (amount: number) => {
+  // Format currency amount in specific currency
+  const formatCurrency = (amount: number, currency: string = 'USD') => {
+    // Extract base currency from currency pair (e.g., "EUR/USD" -> "EUR")
+    const baseCurrency = currency.includes('/') ? currency.split('/')[0] : currency;
+    
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 0
+      currency: baseCurrency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2
     }).format(amount);
   };
 
+  // Get base currency from currency pair
+  const getBaseCurrency = (currencyPair: string): string => {
+    if (currencyPair.includes('/')) {
+      return currencyPair.split('/')[0];
+    }
+    return currencyPair;
+  };
+
+  // Calculate instrument status based on maturity date and valuation date
+  const calculateInstrumentStatus = (instrument: HedgingInstrument): string => {
+    // If manually set to cancelled, keep it
+    if (instrument.status && instrument.status.toLowerCase() === "cancelled") {
+      return instrument.status;
+    }
+    
+    // Check if instrument is expired based on maturity date
+    if (instrument.maturity) {
+      const valuationDateObj = new Date(valuationDate);
+      const maturityDateObj = new Date(instrument.maturity);
+      
+      if (valuationDateObj >= maturityDateObj) {
+        return "matured";
+      }
+    }
+    
+    // Default to active if not expired
+    return "active";
+  };
+
   const getStatusBadge = (status: string) => {
-    switch (status) {
+    switch (status.toLowerCase()) {
       case "active":
         return <Badge className="bg-green-100 text-green-800 border-green-200">Active</Badge>;
       case "matured":
+      case "expired":
         return <Badge variant="secondary">Matured</Badge>;
       case "cancelled":
         return <Badge variant="destructive">Cancelled</Badge>;
@@ -1297,49 +1461,171 @@ const HedgingInstruments = () => {
     return matchesTab;
   });
 
-  // Summary calculations
-  const totalNotional = instruments.reduce((sum, inst) => {
-    // Calculate the same way as displayed in the table
-    const quantityToHedge = inst.quantity || 0;
-    const unitPrice = inst.realOptionPrice || inst.premium || 0;
-    const volumeToHedge = inst.notional;
-    const calculatedNotional = unitPrice * volumeToHedge;
-    
-    // Use the same logic as in the table display
-    const displayedNotional = calculatedNotional > 0 ? calculatedNotional : inst.notional;
-    return sum + displayedNotional;
-  }, 0);
+  // State for reference currency for MTM total conversion
+  const [referenceCurrency, setReferenceCurrency] = useState<string>('USD');
   
-  // Calculate total MTM using our pricing functions with currency-specific data
-  const totalMTM = instruments.reduce((sum, inst) => {
-    const marketData = currencyMarketData[inst.currency];
-    if (!marketData) {
-      console.warn(`No market data for currency ${inst.currency}, skipping MTM calculation`);
-      return sum;
-    }
+  // Get unique currencies for reference currency selector
+  const uniqueCurrenciesForRef = React.useMemo(() => {
+    const currencies = getUniqueCurrencies(instruments);
+    // Add common currencies if not present
+    const commonCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD'];
+    const allCurrencies = new Set([...currencies.map(c => c.split('/')[0]), ...commonCurrencies]);
+    return Array.from(allCurrencies).sort();
+  }, [instruments]);
+
+  // Calculate MTM by currency
+  const mtmByCurrency = React.useMemo(() => {
+    const mtmMap: { [currency: string]: number } = {};
     
-    // Use the original premium paid/received for the instrument
-    const originalPrice = inst.realOptionPrice || inst.premium || 0;
+    instruments.forEach(inst => {
+      const marketData = currencyMarketData[inst.currency];
+      if (!marketData) {
+        console.warn(`No market data for currency ${inst.currency}, skipping MTM calculation`);
+        return;
+      }
+      
+      // Use the original premium paid/received for the instrument
+      const originalPrice = inst.realOptionPrice || inst.premium || 0;
+      
+      // Calculate today's theoretical price using the same logic as Strategy Builder
+      const todayPrice = calculateTodayPrice(inst);
+      
+      // MTM = (Today's Price - Original Price) * Notional
+      // For sold options (negative quantity), the MTM calculation is inverted
+      const quantity = inst.quantity || 1;
+      const isShort = quantity < 0;
+      
+      let mtmValue;
+      if (isShort) {
+        // For short positions: MTM = Original Price - Today's Price
+        mtmValue = originalPrice - todayPrice;
+      } else {
+        // For long positions: MTM = Today's Price - Original Price  
+        mtmValue = todayPrice - originalPrice;
+      }
+      
+      const baseCurrency = getBaseCurrency(inst.currency);
+      if (!mtmMap[baseCurrency]) {
+        mtmMap[baseCurrency] = 0;
+      }
+      // Take into account quantity (%) in MTM calculation
+      const quantityFactor = Math.abs(quantity) / 100;
+      mtmMap[baseCurrency] += mtmValue * Math.abs(inst.notional) * quantityFactor;
+    });
     
-    // Calculate today's theoretical price using the same logic as Strategy Builder
-    const todayPrice = calculateTodayPrice(inst);
+    return mtmMap;
+  }, [instruments, currencyMarketData]);
+
+  // Convert MTM total to reference currency
+  const [convertedTotalMTM, setConvertedTotalMTM] = React.useState<number>(0);
+  
+  React.useEffect(() => {
+    const convertTotal = async () => {
+      if (Object.keys(mtmByCurrency).length === 0) {
+        setConvertedTotalMTM(0);
+        return;
+      }
+      
+      try {
+        if (referenceCurrency === 'USD') {
+          // If reference is USD, convert all MTM to USD
+          let totalUSD = 0;
+          
+          for (const [currency, mtm] of Object.entries(mtmByCurrency)) {
+            if (currency === 'USD') {
+              totalUSD += mtm;
+            } else {
+              try {
+                // Get exchange rate from currency to USD
+                const exchangeData = await exchangeRateService.getExchangeRates('USD');
+                const rates = exchangeData.rates;
+                
+                // Convert: if currency is EUR, we need EUR/USD rate
+                // rates.EUR gives us USD/EUR, so EUR/USD = 1/rates.EUR
+                let rateToUSD = 1;
+                if (rates[currency]) {
+                  // If currency is in rates, it's USD/currency, so currency/USD = 1/rates[currency]
+                  rateToUSD = 1 / rates[currency];
+                } else {
+                  // Use spot price from market data as fallback
+                  const currencyPair = Object.keys(currencyMarketData).find(cp => cp.startsWith(currency + '/'));
+                  if (currencyPair && currencyMarketData[currencyPair]) {
+                    const spot = currencyMarketData[currencyPair].spot;
+                    rateToUSD = currencyPair.endsWith('/USD') ? spot : 1 / spot;
+                  } else {
+                    console.warn(`Rate not found for ${currency}, using 1`);
+                  }
+                }
+                
+                totalUSD += mtm * rateToUSD;
+              } catch (error) {
+                console.error(`Error converting ${currency} to USD:`, error);
+                // Use spot price from market data as fallback
+                const currencyPair = Object.keys(currencyMarketData).find(cp => cp.startsWith(currency + '/'));
+                if (currencyPair && currencyMarketData[currencyPair]) {
+                  const spot = currencyMarketData[currencyPair].spot;
+                  totalUSD += mtm * (currencyPair.endsWith('/USD') ? spot : 1 / spot);
+                }
+              }
+            }
+          }
+          
+          setConvertedTotalMTM(totalUSD);
+        } else {
+          // Convert all to reference currency via USD
+          let totalInRef = 0;
+          
+          for (const [currency, mtm] of Object.entries(mtmByCurrency)) {
+            try {
+              const exchangeData = await exchangeRateService.getExchangeRates('USD');
+              const rates = exchangeData.rates;
+              
+              // Convert currency to USD first
+              let rateToUSD = 1;
+              if (currency === 'USD') {
+                rateToUSD = 1;
+              } else if (rates[currency]) {
+                rateToUSD = 1 / rates[currency];
+              } else {
+                // Use spot price from market data as fallback
+                const currencyPair = Object.keys(currencyMarketData).find(cp => cp.startsWith(currency + '/'));
+                if (currencyPair && currencyMarketData[currencyPair]) {
+                  const spot = currencyMarketData[currencyPair].spot;
+                  rateToUSD = currencyPair.endsWith('/USD') ? spot : 1 / spot;
+                }
+              }
+              
+              // Convert USD to reference currency
+              let rateFromUSD = 1;
+              if (referenceCurrency === 'USD') {
+                rateFromUSD = 1;
+              } else if (rates[referenceCurrency]) {
+                rateFromUSD = rates[referenceCurrency]; // USD/ref
+              } else {
+                // Use spot price from market data as fallback
+                const currencyPair = Object.keys(currencyMarketData).find(cp => cp.endsWith('/' + referenceCurrency) || cp.startsWith(referenceCurrency + '/'));
+                if (currencyPair && currencyMarketData[currencyPair]) {
+                  const spot = currencyMarketData[currencyPair].spot;
+                  rateFromUSD = currencyPair.endsWith('/' + referenceCurrency) ? spot : 1 / spot;
+                }
+              }
+              
+              totalInRef += mtm * rateToUSD * rateFromUSD;
+            } catch (error) {
+              console.error(`Error converting ${currency} to ${referenceCurrency}:`, error);
+            }
+          }
+          
+          setConvertedTotalMTM(totalInRef);
+        }
+      } catch (error) {
+        console.error('Error converting MTM total:', error);
+        setConvertedTotalMTM(0);
+      }
+    };
     
-    // MTM = (Today's Price - Original Price) * Notional
-    // For sold options (negative quantity), the MTM calculation is inverted
-    const quantity = inst.quantity || 1;
-    const isShort = quantity < 0;
-    
-    let mtmValue;
-    if (isShort) {
-      // For short positions: MTM = Original Price - Today's Price
-      mtmValue = originalPrice - todayPrice;
-    } else {
-      // For long positions: MTM = Today's Price - Original Price  
-      mtmValue = todayPrice - originalPrice;
-    }
-    
-    return sum + (mtmValue * Math.abs(inst.notional));
-  }, 0);
+    convertTotal();
+  }, [mtmByCurrency, referenceCurrency, currencyMarketData]);
   
   const hedgeAccountingCount = instruments.filter(inst => inst.hedge_accounting).length;
 
@@ -1626,8 +1912,63 @@ const HedgingInstruments = () => {
             <Shield className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatCurrency(totalNotional)}</div>
-            <p className="text-xs text-muted-foreground">
+            <div className="space-y-2">
+              {(() => {
+                // Calculate notional by currency, separated by long/short
+                const notionalByCurrency: { [currency: string]: { long: number; short: number } } = {};
+                instruments.forEach(inst => {
+                  const quantityToHedge = inst.quantity || 0;
+                  const unitPrice = inst.realOptionPrice || inst.premium || 0;
+                  const volumeToHedge = inst.notional;
+                  
+                  // Calculate notional taking into account quantity (%)
+                  // quantity is in percentage, so we multiply by (quantity / 100)
+                  const quantityFactor = Math.abs(quantityToHedge) / 100;
+                  const calculatedNotional = unitPrice * volumeToHedge * quantityFactor;
+                  const displayedNotional = calculatedNotional > 0 ? calculatedNotional : inst.notional * quantityFactor;
+                  
+                  const baseCurrency = getBaseCurrency(inst.currency);
+                  if (!notionalByCurrency[baseCurrency]) {
+                    notionalByCurrency[baseCurrency] = { long: 0, short: 0 };
+                  }
+                  
+                  // Separate long and short positions based on quantity sign
+                  if (quantityToHedge > 0) {
+                    // Long position
+                    notionalByCurrency[baseCurrency].long += displayedNotional;
+                  } else if (quantityToHedge < 0) {
+                    // Short position
+                    notionalByCurrency[baseCurrency].short += displayedNotional;
+                  } else {
+                    // If quantity is 0, consider as long by default
+                    notionalByCurrency[baseCurrency].long += displayedNotional;
+                  }
+                });
+                
+                return Object.entries(notionalByCurrency).map(([currency, notional]) => (
+                  <div key={currency} className="space-y-1 border-b pb-2 last:border-b-0 last:pb-0">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-muted-foreground">{currency}:</span>
+                    </div>
+                    <div className="flex justify-between items-center pl-2">
+                      <span className="text-xs text-green-600">Long:</span>
+                      <span className="text-sm font-bold text-green-700">{formatCurrency(notional.long, currency)}</span>
+                    </div>
+                    {notional.short > 0 && (
+                      <div className="flex justify-between items-center pl-2">
+                        <span className="text-xs text-red-600">Short:</span>
+                        <span className="text-sm font-bold text-red-700">{formatCurrency(notional.short, currency)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center pl-2 pt-1 border-t">
+                      <span className="text-xs font-medium">Net:</span>
+                      <span className="text-base font-bold">{formatCurrency(notional.long - notional.short, currency)}</span>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
               Across {instruments.length} instruments
             </p>
           </CardContent>
@@ -1639,12 +1980,35 @@ const HedgingInstruments = () => {
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${getMTMColor(totalMTM)}`}>
-              {formatCurrency(totalMTM)}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Select value={referenceCurrency} onValueChange={setReferenceCurrency}>
+                  <SelectTrigger className="h-7 text-xs w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {uniqueCurrenciesForRef.map(currency => (
+                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className={`text-2xl font-bold ${getMTMColor(convertedTotalMTM)}`}>
+                  {formatCurrency(convertedTotalMTM, referenceCurrency)}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Total Unrealized P&L
+              </p>
+              {/* MTM by currency breakdown */}
+              <div className="space-y-1 pt-2 border-t">
+                {Object.entries(mtmByCurrency).map(([currency, mtm]) => (
+                  <div key={currency} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{currency}:</span>
+                    <span className={getMTMColor(mtm)}>{formatCurrency(mtm, currency)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Unrealized P&L
-            </p>
           </CardContent>
         </Card>
 
@@ -1667,7 +2031,24 @@ const HedgingInstruments = () => {
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">2</div>
+            <div className="text-2xl font-bold">
+              {(() => {
+                // Calculate instruments maturing in the next 30 days from valuation date
+                const valuationDateObj = new Date(valuationDate);
+                const thirtyDaysFromNow = new Date(valuationDateObj);
+                thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+                
+                const nearMaturityCount = instruments.filter(inst => {
+                  if (!inst.maturity) return false;
+                  
+                  const maturityDateObj = new Date(inst.maturity);
+                  // Instrument must be active (not expired) and maturing within 30 days
+                  return maturityDateObj >= valuationDateObj && maturityDateObj <= thirtyDaysFromNow;
+                }).length;
+                
+                return nearMaturityCount;
+              })()}
+            </div>
             <p className="text-xs text-muted-foreground">
               Next 30 days
             </p>
@@ -1859,6 +2240,7 @@ const HedgingInstruments = () => {
                          <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Quantity (%)</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Unit Price (Initial)</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Today Price</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">MTM (Unit)</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">MTM</TableHead>
                          
                          {/* Dynamic columns with conditional Export */}
@@ -1923,31 +2305,36 @@ const HedgingInstruments = () => {
                         // For long positions: MTM = Today's Price - Original Price  
                         mtmValue = todayPrice - unitPrice;
                       }
-                                              // Calculate time to maturity - Utiliser la Valuation Date
-                        let timeToMaturity = 0;
-                        if (instrument.maturity) {
-                          // ✅ Vérifier si l'option est expirée
-                          const valuationDateObj = new Date(valuationDate);
-                          const maturityDateObj = new Date(instrument.maturity);
-                          
-                          if (valuationDateObj >= maturityDateObj) {
-                            // Option expirée, Time to Maturity = 0
-                            timeToMaturity = 0;
-                            console.log(`[DEBUG] ${instrument.id}: EXPIRED - Valuation Date (${valuationDate}) >= Maturity Date (${instrument.maturity}) - TTM = 0`);
-                          } else {
-                            // ✅ Calculer depuis la Valuation Date pour l'affichage Current
-                            timeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, valuationDate);
-                            console.log(`[DEBUG] ${instrument.id}: Time to Maturity - Display from Valuation Date ${valuationDate}: ${timeToMaturity.toFixed(4)}y, Export: ${instrument.exportTimeToMaturity ? instrument.exportTimeToMaturity.toFixed(4) + 'y' : 'N/A'}`);
-                          }
-                        } else {
-                          console.warn(`No maturity date available for instrument ${instrument.id}`);
+                      // Calculate time to maturity - Utiliser la Valuation Date
+                      let timeToMaturity = 0;
+                      if (instrument.maturity) {
+                        // ✅ Vérifier si l'option est expirée
+                        const valuationDateObj = new Date(valuationDate);
+                        const maturityDateObj = new Date(instrument.maturity);
+                        
+                        if (valuationDateObj >= maturityDateObj) {
+                          // Option expirée, Time to Maturity = 0
                           timeToMaturity = 0;
+                          console.log(`[DEBUG] ${instrument.id}: EXPIRED - Valuation Date (${valuationDate}) >= Maturity Date (${instrument.maturity}) - TTM = 0`);
+                        } else {
+                          // ✅ Calculer depuis la Valuation Date pour l'affichage Current
+                          timeToMaturity = PricingService.calculateTimeToMaturity(instrument.maturity, valuationDate);
+                          console.log(`[DEBUG] ${instrument.id}: Time to Maturity - Display from Valuation Date ${valuationDate}: ${timeToMaturity.toFixed(4)}y, Export: ${instrument.exportTimeToMaturity ? instrument.exportTimeToMaturity.toFixed(4) + 'y' : 'N/A'}`);
                         }
+                      } else {
+                        console.warn(`No maturity date available for instrument ${instrument.id}`);
+                        timeToMaturity = 0;
+                      }
                       // Use implied volatility from Detailed Results if available, otherwise use component volatility
                       const volatility = instrument.impliedVolatility || instrument.volatility || 0;
-                      // FIX: Le notional contient déjà la quantité appliquée, donc volumeToHedge = notional
-                      const volumeToHedge = instrument.notional; // Plus de double multiplication
-                      const calculatedNotional = unitPrice * volumeToHedge;
+                      // Calculate notional taking into account quantity (%)
+                      // quantity is in percentage, so we multiply by (quantity / 100)
+                      // For short positions (negative quantity), we use absolute value for notional calculation
+                      const volumeToHedge = instrument.notional;
+                      const quantityFactor = Math.abs(quantityToHedge) / 100;
+                      const calculatedNotional = unitPrice * volumeToHedge * quantityFactor;
+                      // Take into account quantity (%) in MTM calculation
+                      const mtmWithQuantity = mtmValue * Math.abs(instrument.notional) * quantityFactor;
                       
                       return (
                          <TableRow key={instrument.id} className="hover:bg-slate-50/80 border-b border-slate-100 transition-all duration-200 group">
@@ -2043,13 +2430,30 @@ const HedgingInstruments = () => {
                             })()}
                             </div>
                           </TableCell>
+                          {/* MTM (Unit) - MTM per unit price without quantity and notional */}
                           <TableCell className="text-right">
-                            <div className={`inline-flex items-center justify-center px-3 py-1 rounded-lg font-mono font-semibold ${
+                            <div className={`inline-flex items-center justify-center px-3 py-1 rounded-lg font-mono font-semibold text-sm ${
                               mtmValue >= 0 
                                 ? 'bg-green-50 text-green-700 border border-green-200' 
                                 : 'bg-red-50 text-red-700 border border-red-200'
                             }`}>
                               {Math.abs(mtmValue) > 0.0001 ? (mtmValue >= 0 ? '+' : '') + mtmValue.toFixed(4) : '0.0000'}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1 text-center">
+                              per unit
+                            </div>
+                          </TableCell>
+                          {/* MTM (Total) - MTM with quantity and notional */}
+                          <TableCell className="text-right">
+                            <div className={`inline-flex items-center justify-center px-3 py-1 rounded-lg font-mono font-semibold ${
+                              mtmWithQuantity >= 0 
+                                ? 'bg-green-50 text-green-700 border border-green-200' 
+                                : 'bg-red-50 text-red-700 border border-red-200'
+                            }`}>
+                              {Math.abs(mtmWithQuantity) > 0.0001 ? (mtmWithQuantity >= 0 ? '+' : '') + formatCurrency(mtmWithQuantity, instrument.currency) : formatCurrency(0, instrument.currency)}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-1 text-center">
+                              total
                             </div>
                           </TableCell>
                                                      {/* Time to Maturity - Export (conditional) */}
@@ -2319,28 +2723,13 @@ const HedgingInstruments = () => {
                             {instrument.rebate ? instrument.rebate.toFixed(2) : 'N/A'}
                           </TableCell>
                           <TableCell className="font-mono text-right">
-                            {formatCurrency(volumeToHedge)}
+                            {formatCurrency(volumeToHedge, instrument.currency)}
                           </TableCell>
                           <TableCell className="font-mono text-right">
-                            {calculatedNotional > 0 ? formatCurrency(calculatedNotional) : formatCurrency(instrument.notional)}
+                            {calculatedNotional > 0 ? formatCurrency(calculatedNotional, instrument.currency) : formatCurrency(instrument.notional * quantityFactor, instrument.currency)}
                           </TableCell>
                           <TableCell>{instrument.maturity}</TableCell>
-                        <TableCell>
-                          {instrument.effectiveness_ratio ? (
-                            <div className="flex items-center gap-2">
-                              <Progress 
-                                value={instrument.effectiveness_ratio} 
-                                className="w-16 h-2" 
-                              />
-                              <span className="text-sm font-medium">
-                                {instrument.effectiveness_ratio}%
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">N/A</span>
-                          )}
-                        </TableCell>
-                        <TableCell>{getStatusBadge(instrument.status)}</TableCell>
+                        <TableCell>{getStatusBadge(calculateInstrumentStatus(instrument))}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <Button 
@@ -2378,45 +2767,6 @@ const HedgingInstruments = () => {
               )}
             </TabsContent>
           </Tabs>
-        </CardContent>
-      </Card>
-
-      {/* Hedge Effectiveness Summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Hedge Effectiveness Summary</CardTitle>
-          <CardDescription>
-            Overview of hedge accounting qualifying instruments
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {instruments.filter(inst => inst.hedge_accounting).map((instrument) => (
-              <div key={instrument.id} className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex items-center gap-4">
-                  {getInstrumentIcon(instrument.type)}
-                  <div>
-                    <div className="font-medium">{instrument.id} - {instrument.type}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {instrument.currency} • {formatCurrency(instrument.notional)}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <div className="text-sm font-medium">Effectiveness Ratio</div>
-                    <div className="text-lg font-bold">
-                      {instrument.effectiveness_ratio}%
-                    </div>
-                  </div>
-                  <Progress 
-                    value={instrument.effectiveness_ratio || 0} 
-                    className="w-24 h-3" 
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
         </CardContent>
       </Card>
 
@@ -2476,7 +2826,7 @@ const HedgingInstruments = () => {
                 )}
                 <div>
                   <Label className="text-sm font-medium">Notional</Label>
-                  <p className="text-sm text-muted-foreground">{formatCurrency(selectedInstrument.notional)}</p>
+                  <p className="text-sm text-muted-foreground">{formatCurrency(selectedInstrument.notional, selectedInstrument.currency)}</p>
                 </div>
                 <div>
                   <Label className="text-sm font-medium">Status</Label>

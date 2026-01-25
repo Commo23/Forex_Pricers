@@ -1171,10 +1171,7 @@ const ForexMarket: React.FC = () => {
                       key={widgetKey}
                       currencies={[
                         "EUR", "USD", "JPY", "GBP", "CHF", "AUD", "CAD", "NZD", "CNY",
-                        "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "BGN", "HRK",
-                        "RUB", "TRY", "BRL", "MXN", "ARS", "CLP", "COP", "PEN", "ZAR",
-                        "EGP", "MAD", "NGN", "KES", "INR", "PKR", "IDR", "THB", "MYR",
-                        "SGD", "PHP", "VND", "KRW", "HKD", "TWD"
+                        "SEK", "NOK", "DKK", "PLN", "CZK", "HUF"
                       ]}
                       width="100%"
                       height={600}

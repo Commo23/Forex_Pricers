@@ -238,13 +238,79 @@ const Pricers = () => {
     setPricingInputs(prev => ({ ...prev, timeToMaturity }));
   }, [pricingInputs.startDate, pricingInputs.maturityDate]);
 
+  // Synchronize spot price and rates with market data on initial load
+  const hasSyncedOnMount = React.useRef(false);
+  React.useEffect(() => {
+    // Only sync once on initial mount
+    if (hasSyncedOnMount.current) return;
+    
+    const syncMarketData = async () => {
+      const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+      const pair = allPairs.find(p => p.symbol === selectedCurrencyPair);
+      if (!pair) return;
+      
+      try {
+        // Get Bank Rates for base and quote currencies
+        const domesticCurrency = pair.quote;
+        const foreignCurrency = pair.base;
+        const newDomesticRate = bankRates[domesticCurrency] ?? null;
+        const newForeignRate = bankRates[foreignCurrency] ?? null;
+        
+        // Fetch real-time spot price
+        const realTimeRate = await fetchRealTimeRate(pair);
+        
+        // Update pricing inputs with market data
+        if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+          setPricingInputs(prev => ({
+            ...prev,
+            spotPrice: realTimeRate,
+            // Auto-fill Bank Rates if available
+            domesticRate: newDomesticRate !== null && newDomesticRate !== undefined ? newDomesticRate : prev.domesticRate,
+            foreignRate: newForeignRate !== null && newForeignRate !== undefined ? newForeignRate : prev.foreignRate,
+          }));
+        } else if (newDomesticRate !== null || newForeignRate !== null) {
+          // Even if spot price fetch fails, update bank rates if available
+          setPricingInputs(prev => ({
+            ...prev,
+            domesticRate: newDomesticRate !== null && newDomesticRate !== undefined ? newDomesticRate : prev.domesticRate,
+            foreignRate: newForeignRate !== null && newForeignRate !== undefined ? newForeignRate : prev.foreignRate,
+          }));
+        }
+        
+        hasSyncedOnMount.current = true;
+      } catch (error) {
+        console.error('Error syncing market data on load:', error);
+        hasSyncedOnMount.current = true; // Mark as synced even on error to avoid retries
+      }
+    };
+    
+    // Sync on mount - wait a bit for bankRates and exchangeRateService to be available
+    const timeoutId = setTimeout(() => {
+      syncMarketData();
+    }, 500);
+    
+    return () => clearTimeout(timeoutId);
+  }, []); // Only run once on mount
+
   // Mettre à jour le spot price quand la paire de devises change
   useEffect(() => {
     const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
     const pair = allPairs.find(p => p.symbol === selectedCurrencyPair);
     if (pair) {
+      // Get Bank Rates for base and quote currencies
+      const domesticCurrency = pair.quote;
+      const foreignCurrency = pair.base;
+      const newDomesticRate = bankRates[domesticCurrency];
+      const newForeignRate = bankRates[foreignCurrency];
+      
       // First set with default rate
-      setPricingInputs(prev => ({ ...prev, spotPrice: pair.defaultSpotRate }));
+      setPricingInputs(prev => ({ 
+        ...prev, 
+        spotPrice: pair.defaultSpotRate,
+        // Auto-fill Bank Rates if available
+        domesticRate: newDomesticRate !== null && newDomesticRate !== undefined ? newDomesticRate : prev.domesticRate,
+        foreignRate: newForeignRate !== null && newForeignRate !== undefined ? newForeignRate : prev.foreignRate,
+      }));
       
       // Then fetch real-time rate from Market Data (silently, no notification)
       fetchRealTimeRate(pair).then(realTimeRate => {
@@ -256,7 +322,7 @@ const Pricers = () => {
         console.error('Error fetching rate:', error);
       });
     }
-  }, [selectedCurrencyPair, customCurrencyPairs]);
+  }, [selectedCurrencyPair, customCurrencyPairs, bankRates]);
 
   // Mettre à jour le type d'instrument dans le composant stratégie
   useEffect(() => {

@@ -1,11 +1,10 @@
 import { useMarketData } from "@/hooks/useMarketData";
 import { MarketRateCard } from "./MarketRateCard";
-import { ForwardRatesTable } from "./ForwardRatesTable";
 import { Activity, Clock, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function MarketDataPanel() {
-  const { rates, forwards, lastUpdate, isLoading, error, refetch } = useMarketData();
+  const { rates, lastUpdate, isLoading, error, refetch } = useMarketData();
 
   return (
     <div className="h-full flex flex-col bg-background border-l border-border">
@@ -68,16 +67,6 @@ export function MarketDataPanel() {
                 <MarketRateCard key={rate.pair} rate={rate} />
               ))}
             </div>
-          </div>
-        )}
-
-        {/* Forward Rates */}
-        {rates.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-              Forward Rates (EUR/USD)
-            </h3>
-            <ForwardRatesTable forwards={forwards} />
           </div>
         )}
       </div>

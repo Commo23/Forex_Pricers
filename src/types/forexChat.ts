@@ -3,6 +3,15 @@ export interface Message {
   content: string;
 }
 
+export interface ChatHistory {
+  id: string;
+  title: string;
+  messages: Message[];
+  settings: ChatSettings;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface MarketRate {
   pair: string;
   spotRate: number;

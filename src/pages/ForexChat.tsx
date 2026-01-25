@@ -6,6 +6,7 @@ import { ChatInput } from "@/components/forex-chat/ChatInput";
 import { TypingIndicator } from "@/components/forex-chat/TypingIndicator";
 import { MarketDataPanel } from "@/components/forex-chat/MarketDataPanel";
 import { ChatSettingsPanel } from "@/components/forex-chat/ChatSettingsPanel";
+import { ChatHistoryPanel } from "@/components/forex-chat/ChatHistoryPanel";
 import { Bot, Trash2, TrendingUp, Shield, BarChart3, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -23,7 +24,20 @@ const STRATEGY_PROMPT = `Je souhaite initier une nouvelle stratégie de couvertu
 - Ma devise de référence`;
 
 const ForexChat = () => {
-  const { messages, isLoading, sendMessage, clearMessages, settings, setSettings } = useForexChat();
+  const { 
+    messages, 
+    isLoading, 
+    sendMessage, 
+    clearMessages, 
+    settings, 
+    setSettings,
+    currentChatId,
+    chatHistory,
+    createNewChat,
+    loadChat,
+    deleteChat,
+    updateChatTitle
+  } = useForexChat();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,6 +61,14 @@ const ForexChat = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <ChatHistoryPanel
+                chatHistory={chatHistory}
+                currentChatId={currentChatId}
+                onNewChat={createNewChat}
+                onLoadChat={loadChat}
+                onDeleteChat={deleteChat}
+                onUpdateTitle={updateChatTitle}
+              />
               <ChatSettingsPanel settings={settings} onSettingsChange={setSettings} />
               {messages.length > 0 && (
                 <Button

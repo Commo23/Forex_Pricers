@@ -1669,6 +1669,57 @@ const Index = () => {
   // Keep track of initial spot price
   const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
 
+  // Synchronize spot price and rates with market data on initial load
+  const hasSyncedOnMount = React.useRef(false);
+  React.useEffect(() => {
+    // Only sync once on initial mount
+    if (hasSyncedOnMount.current) return;
+    if (!params.currencyPair) return;
+    
+    const syncMarketData = async () => {
+      try {
+        // Get Bank Rates for base and quote currencies
+        const baseRate = bankRates[params.currencyPair.base] ?? null;
+        const quoteRate = bankRates[params.currencyPair.quote] ?? null;
+        
+        // Fetch real-time spot price
+        const realTimeRate = await fetchRealTimeRate(params.currencyPair);
+        
+        // Update params with market data
+        if (realTimeRate !== null && !isNaN(realTimeRate) && realTimeRate > 0) {
+          setParams(prev => ({
+            ...prev,
+            spotPrice: realTimeRate,
+            quoteVolume: prev.baseVolume * realTimeRate,
+            // Auto-fill Bank Rates if available
+            foreignRate: baseRate !== null ? baseRate : prev.foreignRate,
+            domesticRate: quoteRate !== null ? quoteRate : prev.domesticRate,
+          }));
+          setInitialSpotPrice(realTimeRate);
+        } else if (baseRate !== null || quoteRate !== null) {
+          // Even if spot price fetch fails, update bank rates if available
+          setParams(prev => ({
+            ...prev,
+            foreignRate: baseRate !== null ? baseRate : prev.foreignRate,
+            domesticRate: quoteRate !== null ? quoteRate : prev.domesticRate,
+          }));
+        }
+        
+        hasSyncedOnMount.current = true;
+      } catch (error) {
+        console.error('Error syncing market data on load:', error);
+        hasSyncedOnMount.current = true; // Mark as synced even on error to avoid retries
+      }
+    };
+    
+    // Sync on mount - wait a bit for bankRates and exchangeRateService to be available
+    const timeoutId = setTimeout(() => {
+      syncMarketData();
+    }, 500);
+    
+    return () => clearTimeout(timeoutId);
+  }, []); // Only run once on mount
+
   // Strategy components state
   const [strategy, setStrategy] = useState(() => {
     try {

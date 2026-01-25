@@ -141,7 +141,6 @@ class GeminiService {
       console.log('[GeminiService] Réponse API reçue:', response);
       
       // Si l'API retourne null (tous les modèles ont échoué), retourner le message original
-      // Le fallback local dans ChatService prendra le relais
       if (!response) {
         console.warn('[GeminiService] API a retourné null, utilisation du fallback local');
         return {

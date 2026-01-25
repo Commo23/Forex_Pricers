@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo } from 'react';
+import React, { useEffect, useRef, memo, useMemo } from 'react';
 import { useTheme } from '@/hooks/useTheme';
 
 interface TradingViewForexHeatmapProps {
@@ -8,63 +8,85 @@ interface TradingViewForexHeatmapProps {
   isTransparent?: boolean;
 }
 
+// Devises principales par défaut pour éviter la surcharge
+const DEFAULT_CURRENCIES = [
+  "EUR", "USD", "JPY", "GBP", "CHF", "AUD", "CAD", "NZD", "CNY",
+  "SEK", "NOK", "DKK", "PLN", "CZK", "HUF"
+];
+
 const TradingViewForexHeatmap: React.FC<TradingViewForexHeatmapProps> = ({
-  currencies = [
-    "EUR", "USD", "JPY", "GBP", "CHF", "AUD", "CAD", "NZD", "CNY",
-    "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "BGN", "HRK",
-    "RUB", "TRY", "BRL", "MXN", "ARS", "CLP", "COP", "PEN", "ZAR",
-    "EGP", "MAD", "NGN", "KES", "INR", "PKR", "IDR", "THB", "MYR",
-    "SGD", "PHP", "VND", "KRW", "HKD", "TWD"
-  ],
+  currencies = DEFAULT_CURRENCIES,
   width = "100%",
   height = 600,
   isTransparent = true
 }) => {
   const container = useRef<HTMLDivElement>(null);
+  const scriptRef = useRef<HTMLScriptElement | null>(null);
+  const widgetContainerRef = useRef<HTMLDivElement | null>(null);
   const { theme } = useTheme();
 
+  // Mémoriser la configuration pour éviter les re-renders inutiles
+  const widgetConfig = useMemo(() => ({
+    colorTheme: theme === 'dark' ? "dark" : "light",
+    isTransparent,
+    locale: "en",
+    currencies: currencies.length > 0 ? currencies : DEFAULT_CURRENCIES,
+    width: typeof width === 'number' ? width : "100%",
+    height: typeof height === 'number' ? height : 600
+  }), [currencies, width, height, isTransparent, theme]);
+
   useEffect(() => {
-    if (!container.current) return;
+    if (!container.current || !widgetContainerRef.current) return;
 
-    // Clean up existing script
-    const existingScript = container.current.querySelector('script[src*="forex-heat-map"]');
-    if (existingScript) {
-      existingScript.remove();
-    }
+    // Nettoyage complet avant de créer un nouveau script
+    const cleanup = () => {
+      // Supprimer tous les scripts existants
+      const existingScripts = container.current?.querySelectorAll('script[src*="forex-heat-map"]');
+      existingScripts?.forEach(script => {
+        script.remove();
+      });
 
-    // Clear widget container
-    const widgetContainer = container.current.querySelector('.tradingview-widget-container__widget');
-    if (widgetContainer) {
-      widgetContainer.innerHTML = '';
-    }
+      // Nettoyer le conteneur du widget
+      if (widgetContainerRef.current) {
+        widgetContainerRef.current.innerHTML = '';
+      }
 
+      // Nettoyer les iframes créées par TradingView
+      const iframes = container.current?.querySelectorAll('iframe');
+      iframes?.forEach(iframe => {
+        iframe.remove();
+      });
+    };
+
+    cleanup();
+
+    // Créer le nouveau script
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-forex-heat-map.js";
     script.type = "text/javascript";
     script.async = true;
-    script.innerHTML = JSON.stringify({
-      "colorTheme": theme === 'dark' ? "dark" : "light",
-      "isTransparent": isTransparent,
-      "locale": "en",
-      "currencies": currencies,
-      "width": typeof width === 'number' ? width : "100%",
-      "height": typeof height === 'number' ? height : 600
-    });
-
-    container.current.appendChild(script);
+    script.innerHTML = JSON.stringify(widgetConfig);
+    
+    scriptRef.current = script;
+    
+    // Attacher le script au conteneur
+    if (container.current) {
+      container.current.appendChild(script);
+    }
 
     return () => {
-      // Cleanup on unmount
-      if (container.current && script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
+      cleanup();
+      scriptRef.current = null;
     };
-  }, [currencies, width, height, isTransparent, theme]);
+  }, [widgetConfig]);
 
   return (
     <div className="w-full">
       <div className="tradingview-widget-container" ref={container}>
-        <div className="tradingview-widget-container__widget"></div>
+        <div 
+          className="tradingview-widget-container__widget" 
+          ref={widgetContainerRef}
+        ></div>
         <div className="tradingview-widget-copyright mt-2 text-xs text-muted-foreground text-center">
           <a 
             href="https://www.tradingview.com/markets/currencies/cross-rates-overview-heat-map/" 

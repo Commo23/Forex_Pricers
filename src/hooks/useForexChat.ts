@@ -1,8 +1,42 @@
-import { useState, useCallback } from "react";
-import { Message, ChatSettings, DEFAULT_SETTINGS } from "@/types/forexChat";
+import { useState, useCallback, useEffect } from "react";
+import { Message, ChatSettings, DEFAULT_SETTINGS, ChatHistory } from "@/types/forexChat";
 import { toast } from "sonner";
 import { config } from "@/config/environment";
 import { PricingActionService, PricingRequest } from "@/services/PricingActionService";
+
+const STORAGE_KEY = 'forexChatHistory';
+const MAX_CHAT_TITLE_LENGTH = 50;
+
+// Helper to generate chat title from first message
+function generateChatTitle(firstMessage: string): string {
+  const trimmed = firstMessage.trim();
+  if (trimmed.length <= MAX_CHAT_TITLE_LENGTH) {
+    return trimmed;
+  }
+  return trimmed.substring(0, MAX_CHAT_TITLE_LENGTH) + '...';
+}
+
+// Load chat history from localStorage
+function loadChatHistory(): ChatHistory[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.error("Error loading chat history:", error);
+  }
+  return [];
+}
+
+// Save chat history to localStorage
+function saveChatHistory(history: ChatHistory[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  } catch (error) {
+    console.error("Error saving chat history:", error);
+  }
+}
 
 // Helper functions for building system prompt (same as Edge Function)
 function getTodayDate(): string {
@@ -380,9 +414,111 @@ ${settings.customInstructions.trim()}`;
 }
 
 export function useForexChat() {
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [settings, setSettings] = useState<ChatSettings>(DEFAULT_SETTINGS);
+  const [chatHistory, setChatHistory] = useState<ChatHistory[]>(() => loadChatHistory());
+
+  // Auto-save chat when messages or settings change
+  useEffect(() => {
+    if (currentChatId && messages.length > 0) {
+      setChatHistory(prevHistory => {
+        const updatedHistory = prevHistory.map(chat => {
+          if (chat.id === currentChatId) {
+            return {
+              ...chat,
+              messages,
+              settings,
+              updatedAt: Date.now()
+            };
+          }
+          return chat;
+        });
+        
+        const existingChat = updatedHistory.find(c => c.id === currentChatId);
+        if (existingChat) {
+          saveChatHistory(updatedHistory);
+          return updatedHistory;
+        }
+        return prevHistory;
+      });
+    }
+  }, [messages, settings, currentChatId]);
+
+  // Create new chat
+  const createNewChat = useCallback(() => {
+    const newChatId = `chat-${Date.now()}`;
+    const newChat: ChatHistory = {
+      id: newChatId,
+      title: "Nouvelle conversation",
+      messages: [],
+      settings: DEFAULT_SETTINGS,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    
+    setChatHistory(prev => {
+      const updatedHistory = [newChat, ...prev];
+      saveChatHistory(updatedHistory);
+      return updatedHistory;
+    });
+    setCurrentChatId(newChatId);
+    setMessages([]);
+    setSettings(DEFAULT_SETTINGS);
+    
+    return newChatId;
+  }, []);
+
+  // Load chat by ID
+  const loadChat = useCallback((chatId: string) => {
+    setChatHistory(prev => {
+      const chat = prev.find(c => c.id === chatId);
+      if (chat) {
+        setCurrentChatId(chatId);
+        setMessages(chat.messages);
+        setSettings(chat.settings);
+      }
+      return prev;
+    });
+  }, []);
+
+  // Delete chat
+  const deleteChat = useCallback((chatId: string) => {
+    setChatHistory(prev => {
+      const updatedHistory = prev.filter(c => c.id !== chatId);
+      saveChatHistory(updatedHistory);
+      
+      if (currentChatId === chatId) {
+        if (updatedHistory.length > 0) {
+          const firstChat = updatedHistory[0];
+          setCurrentChatId(firstChat.id);
+          setMessages(firstChat.messages);
+          setSettings(firstChat.settings);
+        } else {
+          setCurrentChatId(null);
+          setMessages([]);
+          setSettings(DEFAULT_SETTINGS);
+        }
+      }
+      
+      return updatedHistory;
+    });
+  }, [currentChatId]);
+
+  // Update chat title
+  const updateChatTitle = useCallback((chatId: string, title: string) => {
+    setChatHistory(prev => {
+      const updatedHistory = prev.map(chat => {
+        if (chat.id === chatId) {
+          return { ...chat, title, updatedAt: Date.now() };
+        }
+        return chat;
+      });
+      saveChatHistory(updatedHistory);
+      return updatedHistory;
+    });
+  }, []);
 
   const sendMessage = useCallback(async (input: string) => {
     if (!input.trim() || isLoading) return;
@@ -414,8 +550,27 @@ export function useForexChat() {
       return;
     }
 
+    // Create new chat if none exists
+    let chatId = currentChatId;
+    const isFirstMessage = messages.length === 0;
+    
+    if (!chatId) {
+      chatId = createNewChat();
+    }
+
     const userMessage: Message = { role: "user", content: input.trim() };
-    setMessages((prev) => [...prev, userMessage]);
+    
+    setMessages((prev) => {
+      const newMessages = [...prev, userMessage];
+      
+      // Update title if this is the first message
+      if (isFirstMessage && chatId) {
+        const title = generateChatTitle(input.trim());
+        updateChatTitle(chatId, title);
+      }
+      
+      return newMessages;
+    });
     setIsLoading(true);
 
     let assistantContent = "";
@@ -699,11 +854,34 @@ export function useForexChat() {
     } finally {
       setIsLoading(false);
     }
-  }, [messages, isLoading, settings]);
+  }, [messages, isLoading, settings, currentChatId, createNewChat, updateChatTitle]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
-  }, []);
+    if (currentChatId) {
+      const updatedHistory = chatHistory.map(chat => {
+        if (chat.id === currentChatId) {
+          return { ...chat, messages: [], updatedAt: Date.now() };
+        }
+        return chat;
+      });
+      setChatHistory(updatedHistory);
+      saveChatHistory(updatedHistory);
+    }
+  }, [currentChatId, chatHistory]);
 
-  return { messages, isLoading, sendMessage, clearMessages, settings, setSettings };
+  return { 
+    messages, 
+    isLoading, 
+    sendMessage, 
+    clearMessages, 
+    settings, 
+    setSettings,
+    currentChatId,
+    chatHistory,
+    createNewChat,
+    loadChat,
+    deleteChat,
+    updateChatTitle
+  };
 }
