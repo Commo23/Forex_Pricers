@@ -23,6 +23,8 @@ import {
 } from "lucide-react";
 import ExchangeRateService from "@/services/ExchangeRateService";
 import { useToast } from "@/hooks/use-toast";
+import { useBaseCurrency } from "@/hooks/useBaseCurrency";
+import { getAvailableCurrencies } from "@/utils/currencyList";
 import { HedgingInstrument } from "@/services/StrategyImportService";
 
 interface Position {
@@ -33,10 +35,8 @@ interface Position {
   marketPrice: number; // Current market rate
   entryPrice: number; // Entry rate (spot price at entry, same for all maturities)
   unrealizedPnL: number;
-  dailyPnL: number;
   hedgeStatus: string; // "Full", "Partial", "None"
-  hedgeRatio: number; // 0-100
-  lastTrade: string; // Timestamp
+  hedgeRatio: number; // 0-100 (can be > 100 for over-hedging)
   manualPrice?: number; // User-edited price
 }
 
@@ -51,6 +51,7 @@ interface SavedScenario {
 
 const PositionMonitor = () => {
   const { toast } = useToast();
+  const baseCurrency = useBaseCurrency(); // Get base currency from settings
   const [isLiveMode, setIsLiveMode] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState("5");
   const [lastUpdate, setLastUpdate] = useState(new Date());
@@ -136,10 +137,13 @@ const PositionMonitor = () => {
         const key = `${currencyPair}-${maturity}`;
 
         // Calculate position from notional and quantity
-        // For Forex, position = notional * quantity (positive = Long, negative = Short)
-        const quantity = instrument.quantity || 1;
+        // For Forex, position = notional * (quantity / 100) because quantity is in percentage
+        // (positive = Long, negative = Short)
+        const quantity = instrument.quantity || 100; // Default to 100% if not specified
         const notional = instrument.notional || 0;
-        const position = notional * quantity;
+        // quantity is in percentage, so divide by 100 to get the factor
+        const quantityFactor = quantity / 100;
+        const position = notional * quantityFactor;
 
         // Entry price is the spot price at export time (same for all maturities)
         const entryPrice = instrument.exportSpotPrice || instrument.impliedSpotPrice || 1.0;
@@ -152,19 +156,43 @@ const PositionMonitor = () => {
         
         if (existing) {
           // Aggregate positions (netting)
+          // Calculate weighted average entry price when aggregating positions
+          const totalPositionSize = Math.abs(existing.position) + Math.abs(position);
+          if (totalPositionSize > 0) {
+            const weightedEntryPrice = (existing.entryPrice * Math.abs(existing.position) + 
+                                      entryPrice * Math.abs(position)) / totalPositionSize;
+            existing.entryPrice = weightedEntryPrice;
+          }
           existing.position += position;
-          // Entry price remains the spot price (same for all maturities, no weighted average needed)
-          // The spot price is the same for all positions of the same currency pair
         } else {
           // Calculate hedge status from instrument
-          const hedgeStatus = instrument.effectiveness_ratio !== undefined 
-            ? (instrument.effectiveness_ratio >= 95 ? "Full" : 
-               instrument.effectiveness_ratio > 0 ? "Partial" : "None")
-            : (instrument.status === "Active" ? "Partial" : "None");
+          // Hedge Status Logic:
+          // - Full: hedgeRatio >= 100% (full coverage or over-hedging)
+          // - Partial: 0% < hedgeRatio < 100% (partial coverage)
+          // - None: hedgeRatio = 0% or undefined (no coverage)
+          // 
+          // Priority: Use hedgeQuantity (real coverage quantity from component) 
+          // instead of effectiveness_ratio (which is just a default value of 95)
+          const hedgeRatio = instrument.hedgeQuantity !== undefined 
+            ? instrument.hedgeQuantity 
+            : (instrument.effectiveness_ratio !== undefined && instrument.effectiveness_ratio !== 95
+                ? instrument.effectiveness_ratio 
+                : 0); // Don't use the default 95 value
           
-          const hedgeRatio = instrument.effectiveness_ratio || 0;
+          let hedgeStatus: string;
+          if (hedgeRatio >= 100) {
+            hedgeStatus = "Full";
+          } else if (hedgeRatio > 0) {
+            hedgeStatus = "Partial";
+          } else {
+            // If no real hedge ratio, check if instrument is active
+            hedgeStatus = instrument.status === "Active" ? "Partial" : "None";
+          }
 
           const positionId = instrument.id;
+          
+          // Get current date for daily reset tracking
+          const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
           
           const newPosition: Position = {
             id: positionId,
@@ -174,12 +202,8 @@ const PositionMonitor = () => {
             marketPrice,
             entryPrice,
             unrealizedPnL: 0, // Will be calculated
-            dailyPnL: 0, // Will be calculated
             hedgeStatus,
             hedgeRatio,
-            lastTrade: instrument.importedAt 
-              ? new Date(instrument.importedAt).toLocaleTimeString()
-              : new Date().toLocaleTimeString(),
           };
           
           positionMap.set(key, newPosition);
@@ -218,24 +242,24 @@ const PositionMonitor = () => {
         // Parse currency pair (e.g., "EUR/USD")
         const [base, quote] = pair.split('/');
         
-        // Get rates from service
-        const rates = await exchangeService.getExchangeRates('USD');
+        // Get rates from service using base currency from settings
+        const rates = await exchangeService.getExchangeRates(baseCurrency);
         const formatted = exchangeService.formatCurrencyData(rates);
         
         // Find the rate for this pair
         let rate = 1.0;
-        if (base === 'USD') {
+        if (base === baseCurrency) {
           const quoteCurrency = formatted.find(c => c.code === quote);
           if (quoteCurrency) rate = quoteCurrency.rate;
-        } else if (quote === 'USD') {
-          const baseCurrency = formatted.find(c => c.code === base);
-          if (baseCurrency) rate = 1 / baseCurrency.rate;
+        } else if (quote === baseCurrency) {
+          const baseCurrencyData = formatted.find(c => c.code === base);
+          if (baseCurrencyData) rate = 1 / baseCurrencyData.rate;
         } else {
           // Cross rate calculation
-          const baseCurrency = formatted.find(c => c.code === base);
+          const baseCurrencyData = formatted.find(c => c.code === base);
           const quoteCurrency = formatted.find(c => c.code === quote);
-          if (baseCurrency && quoteCurrency) {
-            rate = quoteCurrency.rate / baseCurrency.rate;
+          if (baseCurrencyData && quoteCurrency) {
+            rate = quoteCurrency.rate / baseCurrencyData.rate;
           }
         }
 
@@ -256,13 +280,11 @@ const PositionMonitor = () => {
         
         // Calculate P&L
         const unrealizedPnL = calculateUnrealizedPnL(pos.position, marketPrice, pos.entryPrice);
-        const dailyPnL = calculateDailyPnL(pos, unrealizedPnL);
 
         return {
           ...pos,
           marketPrice,
-          unrealizedPnL,
-          dailyPnL
+          unrealizedPnL
         };
       })
     );
@@ -276,12 +298,6 @@ const PositionMonitor = () => {
     return position * (marketPrice - entryPrice);
   };
 
-  // Calculate daily P&L (simplified - based on unrealized P&L)
-  const calculateDailyPnL = (position: Position, currentUnrealizedPnL: number): number => {
-    // For simplicity, use a portion of unrealized P&L as daily P&L
-    // In a real system, this would track P&L from start of day
-    return currentUnrealizedPnL * 0.3; // Approximation
-  };
 
   // Handle manual price edit
   const handlePriceEdit = (positionId: string, newPrice: number) => {
@@ -295,12 +311,10 @@ const PositionMonitor = () => {
       prevPositions.map(pos => {
         if (pos.id === positionId) {
           const unrealizedPnL = calculateUnrealizedPnL(pos.position, newPrice, pos.entryPrice);
-          const dailyPnL = calculateDailyPnL(pos, unrealizedPnL);
           return {
             ...pos,
             marketPrice: newPrice,
-            unrealizedPnL,
-            dailyPnL
+            unrealizedPnL
           };
         }
         return pos;
@@ -348,16 +362,25 @@ const PositionMonitor = () => {
                                (Math.abs(existing.position) + Math.abs(pos.position));
           
           const unrealizedPnL = calculateUnrealizedPnL(netPosition, pos.marketPrice, avgEntryPrice);
-          const dailyPnL = calculateDailyPnL(pos, unrealizedPnL);
+          
+          // Calculate weighted average hedge ratio for better aggregation
+          const totalPositionSize = Math.abs(existing.position) + Math.abs(pos.position);
+          const weightedHedgeRatio = totalPositionSize > 0
+            ? (existing.hedgeRatio * Math.abs(existing.position) + pos.hedgeRatio * Math.abs(pos.position)) / totalPositionSize
+            : Math.max(existing.hedgeRatio, pos.hedgeRatio);
+          
+          // Determine hedge status based on weighted ratio (correct logic)
+          // Full: >= 100%, Partial: 0% < ratio < 100%, None: = 0%
+          const aggregatedHedgeStatus = weightedHedgeRatio >= 100 ? "Full" : 
+                                        weightedHedgeRatio > 0 ? "Partial" : "None";
           
           nettedMap.set(key, {
             ...existing,
             position: netPosition,
             entryPrice: avgEntryPrice,
             unrealizedPnL,
-            dailyPnL,
-            hedgeStatus: existing.hedgeRatio > pos.hedgeRatio ? existing.hedgeStatus : pos.hedgeStatus,
-            hedgeRatio: Math.max(existing.hedgeRatio, pos.hedgeRatio)
+            hedgeStatus: aggregatedHedgeStatus,
+            hedgeRatio: weightedHedgeRatio
           });
         } else {
           nettedMap.set(key, pos);
@@ -387,22 +410,36 @@ const PositionMonitor = () => {
     return currencyPair;
   };
 
-  // State for reference currency for P&L total conversion
-  const [referenceCurrency, setReferenceCurrency] = useState<string>('USD');
+  // Get base currency from settings
+  const baseCurrencyFromSettings = useBaseCurrency();
   
-  // Get unique currencies for reference currency selector
+  // State for reference currency for P&L total conversion (defaults to base currency)
+  const [referenceCurrency, setReferenceCurrency] = useState<string>(baseCurrencyFromSettings);
+  
+  // Update reference currency when base currency changes
+  useEffect(() => {
+    setReferenceCurrency(baseCurrencyFromSettings);
+  }, [baseCurrencyFromSettings]);
+  
+  // Get available currencies for reference currency selector (synchronized with Market Data)
   const uniqueCurrenciesForRef = useMemo(() => {
-    const currencies = Array.from(new Set(positions.map(p => getBaseCurrency(p.currencyPair))));
-    // Add common currencies if not present
-    const commonCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD'];
-    const allCurrencies = new Set([...currencies, ...commonCurrencies]);
-    return Array.from(allCurrencies).sort();
+    // Get all available currencies from the centralized list
+    const availableCurrencies = getAvailableCurrencies();
+    const availableCodes = new Set(availableCurrencies.map(c => c.code));
+    
+    // Also include currencies from positions (in case some are not in the main list)
+    const positionCurrencies = Array.from(new Set(positions.map(p => getBaseCurrency(p.currencyPair))));
+    positionCurrencies.forEach(currency => {
+      availableCodes.add(currency);
+    });
+    
+    // Return sorted list of currency codes
+    return Array.from(availableCodes).sort();
   }, [positions]);
 
   // Calculate P&L by currency
   const pnlByCurrency = useMemo(() => {
     const unrealizedMap: { [currency: string]: number } = {};
-    const dailyMap: { [currency: string]: number } = {};
     
     filteredPositions.forEach(pos => {
       const baseCurrency = getBaseCurrency(pos.currencyPair);
@@ -410,113 +447,66 @@ const PositionMonitor = () => {
       if (!unrealizedMap[baseCurrency]) {
         unrealizedMap[baseCurrency] = 0;
       }
-      if (!dailyMap[baseCurrency]) {
-        dailyMap[baseCurrency] = 0;
-      }
       
       unrealizedMap[baseCurrency] += pos.unrealizedPnL;
-      dailyMap[baseCurrency] += pos.dailyPnL;
     });
     
-    return { unrealized: unrealizedMap, daily: dailyMap };
+    return { unrealized: unrealizedMap };
   }, [filteredPositions]);
 
   // Convert P&L total to reference currency
   const [convertedUnrealizedPnL, setConvertedUnrealizedPnL] = useState<number>(0);
-  const [convertedDailyPnL, setConvertedDailyPnL] = useState<number>(0);
   
   useEffect(() => {
     const convertPnL = async () => {
       if (Object.keys(pnlByCurrency.unrealized).length === 0) {
         setConvertedUnrealizedPnL(0);
-        setConvertedDailyPnL(0);
         return;
       }
       
       try {
         let totalUnrealized = 0;
-        let totalDaily = 0;
         
-        if (referenceCurrency === 'USD') {
-          // If reference is USD, convert all P&L to USD
+        // Use baseCurrency for conversions instead of hardcoded USD
+        if (referenceCurrency === baseCurrency) {
+          // If reference is base currency, convert all P&L to base currency
           for (const [currency, pnl] of Object.entries(pnlByCurrency.unrealized)) {
-            if (currency === 'USD') {
+            if (currency === baseCurrency) {
               totalUnrealized += pnl;
             } else {
               try {
-                const rates = await exchangeService.getExchangeRates('USD');
-                const rateToUSD = rates.rates[currency] ? 1 / rates.rates[currency] : 1;
-                totalUnrealized += pnl * rateToUSD;
+                const rates = await exchangeService.getExchangeRates(baseCurrency);
+                const rateToBase = rates.rates[currency] ? 1 / rates.rates[currency] : 1;
+                totalUnrealized += pnl * rateToBase;
               } catch (error) {
-                console.error(`Error converting ${currency} to USD:`, error);
+                console.error(`Error converting ${currency} to ${baseCurrency}:`, error);
                 totalUnrealized += pnl; // Fallback: assume 1:1
               }
             }
           }
-          
-          for (const [currency, pnl] of Object.entries(pnlByCurrency.daily)) {
-            if (currency === 'USD') {
-              totalDaily += pnl;
-            } else {
-              try {
-                const rates = await exchangeService.getExchangeRates('USD');
-                const rateToUSD = rates.rates[currency] ? 1 / rates.rates[currency] : 1;
-                totalDaily += pnl * rateToUSD;
-              } catch (error) {
-                console.error(`Error converting ${currency} to USD:`, error);
-                totalDaily += pnl; // Fallback: assume 1:1
-              }
-            }
-          }
         } else {
-          // Convert all to reference currency via USD
+          // Convert all to reference currency via base currency
           for (const [currency, pnl] of Object.entries(pnlByCurrency.unrealized)) {
             try {
-              const rates = await exchangeService.getExchangeRates('USD');
+              // First convert to base currency
+              const baseRates = await exchangeService.getExchangeRates(baseCurrency);
               
-              // Convert currency to USD first
-              let rateToUSD = 1;
-              if (currency === 'USD') {
-                rateToUSD = 1;
-              } else if (rates.rates[currency]) {
-                rateToUSD = 1 / rates.rates[currency];
+              let rateToBase = 1;
+              if (currency === baseCurrency) {
+                rateToBase = 1;
+              } else if (baseRates.rates[currency]) {
+                rateToBase = 1 / baseRates.rates[currency];
               }
               
-              // Convert USD to reference currency
-              let rateFromUSD = 1;
-              if (referenceCurrency === 'USD') {
-                rateFromUSD = 1;
-              } else if (rates.rates[referenceCurrency]) {
-                rateFromUSD = rates.rates[referenceCurrency]; // USD/ref
+              // Then convert from base currency to reference currency
+              let rateFromBase = 1;
+              if (referenceCurrency === baseCurrency) {
+                rateFromBase = 1;
+              } else if (baseRates.rates[referenceCurrency]) {
+                rateFromBase = baseRates.rates[referenceCurrency]; // baseCurrency/ref
               }
               
-              totalUnrealized += pnl * rateToUSD * rateFromUSD;
-            } catch (error) {
-              console.error(`Error converting ${currency} to ${referenceCurrency}:`, error);
-            }
-          }
-          
-          for (const [currency, pnl] of Object.entries(pnlByCurrency.daily)) {
-            try {
-              const rates = await exchangeService.getExchangeRates('USD');
-              
-              // Convert currency to USD first
-              let rateToUSD = 1;
-              if (currency === 'USD') {
-                rateToUSD = 1;
-              } else if (rates.rates[currency]) {
-                rateToUSD = 1 / rates.rates[currency];
-              }
-              
-              // Convert USD to reference currency
-              let rateFromUSD = 1;
-              if (referenceCurrency === 'USD') {
-                rateFromUSD = 1;
-              } else if (rates.rates[referenceCurrency]) {
-                rateFromUSD = rates.rates[referenceCurrency]; // USD/ref
-              }
-              
-              totalDaily += pnl * rateToUSD * rateFromUSD;
+              totalUnrealized += pnl * rateToBase * rateFromBase;
             } catch (error) {
               console.error(`Error converting ${currency} to ${referenceCurrency}:`, error);
             }
@@ -524,16 +514,14 @@ const PositionMonitor = () => {
         }
         
         setConvertedUnrealizedPnL(totalUnrealized);
-        setConvertedDailyPnL(totalDaily);
       } catch (error) {
         console.error('Error converting P&L total:', error);
         setConvertedUnrealizedPnL(0);
-        setConvertedDailyPnL(0);
       }
     };
     
     convertPnL();
-  }, [pnlByCurrency, referenceCurrency]);
+  }, [pnlByCurrency, referenceCurrency, baseCurrency]);
 
   const activePositions = filteredPositions.length;
   const fullyHedgedCount = filteredPositions.filter(pos => pos.hedgeStatus === "Full").length;
@@ -664,7 +652,7 @@ const PositionMonitor = () => {
       </Card>
 
       {/* Summary Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Unrealized P&L</CardTitle>
@@ -677,9 +665,11 @@ const PositionMonitor = () => {
                   <SelectTrigger className="h-7 text-xs w-20">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-[300px]">
                     {uniqueCurrenciesForRef.map(currency => (
-                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                      <SelectItem key={currency} value={currency}>
+                        {currency}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -693,44 +683,6 @@ const PositionMonitor = () => {
               {/* P&L by currency breakdown */}
               <div className="space-y-1 pt-2 border-t">
                 {Object.entries(pnlByCurrency.unrealized).map(([currency, pnl]) => (
-                  <div key={currency} className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">{currency}:</span>
-                    <span className={getPnLColor(pnl)}>{formatCurrency(pnl, currency)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Daily P&L</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Select value={referenceCurrency} onValueChange={setReferenceCurrency}>
-                  <SelectTrigger className="h-7 text-xs w-20">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {uniqueCurrenciesForRef.map(currency => (
-                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className={`text-2xl font-bold ${getPnLColor(convertedDailyPnL)}`}>
-                  {formatCurrency(convertedDailyPnL, referenceCurrency)}
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Today's performance
-              </p>
-              {/* Daily P&L by currency breakdown */}
-              <div className="space-y-1 pt-2 border-t">
-                {Object.entries(pnlByCurrency.daily).map(([currency, pnl]) => (
                   <div key={currency} className="flex justify-between text-xs">
                     <span className="text-muted-foreground">{currency}:</span>
                     <span className={getPnLColor(pnl)}>{formatCurrency(pnl, currency)}</span>
@@ -843,15 +795,13 @@ const PositionMonitor = () => {
                   <TableHead>Market Price</TableHead>
                   <TableHead>Entry Price</TableHead>
                   <TableHead>Unrealized P&L</TableHead>
-                  <TableHead>Daily P&L</TableHead>
                   <TableHead>Hedge Status</TableHead>
-                  <TableHead>Last Trade</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredPositions.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                       No positions found. Please export a strategy from Strategy Builder first.
                     </TableCell>
                   </TableRow>
@@ -898,15 +848,7 @@ const PositionMonitor = () => {
                         </span>
                       </TableCell>
                       <TableCell>
-                        <span className={`font-mono font-medium ${getPnLColor(position.dailyPnL)}`}>
-                          {formatCurrency(position.dailyPnL, position.currencyPair)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
                         {getHedgeStatusBadge(position.hedgeStatus, position.hedgeRatio)}
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">
-                        {position.lastTrade}
                       </TableCell>
                     </TableRow>
                   ))

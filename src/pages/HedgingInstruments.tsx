@@ -11,6 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { useBankRates } from "@/hooks/useBankRates";
+import { useBaseCurrency } from "@/hooks/useBaseCurrency";
+import { getAvailableCurrencies } from "@/utils/currencyList";
 import { 
   Plus, 
   Shield, 
@@ -52,6 +54,7 @@ interface CurrencyMarketData {
 const HedgingInstruments = () => {
   const { toast } = useToast();
   const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
+  const baseCurrency = useBaseCurrency(); // Get base currency from settings
   
   // Get ExchangeRateService instance for real-time rate fetching
   const exchangeRateService = React.useMemo(() => {
@@ -312,21 +315,21 @@ const HedgingInstruments = () => {
       const base = parts[0];
       const quote = parts[1];
       
-      // Get exchange rates from API
-      const exchangeData = await exchangeRateService.getExchangeRates('USD');
+      // Get exchange rates from API using base currency from settings
+      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
       const rates = exchangeData.rates;
       
       // Calculate the cross rate for the selected pair
       let rate: number;
       
-      if (base === 'USD') {
-        // Direct rate: USD/XXX
+      if (base === baseCurrency) {
+        // Direct rate: BASE_CURRENCY/XXX
         rate = rates[quote] || null;
-      } else if (quote === 'USD') {
-        // Inverted rate: XXX/USD = 1 / (USD/XXX)
+      } else if (quote === baseCurrency) {
+        // Inverted rate: XXX/BASE_CURRENCY = 1 / (BASE_CURRENCY/XXX)
         rate = rates[base] ? 1 / rates[base] : null;
       } else {
-        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
+        // Cross rate: BASE/QUOTE = (BASE_CURRENCY/QUOTE) / (BASE_CURRENCY/BASE)
         const baseRate = rates[base] || 1;
         const quoteRate = rates[quote] || 1;
         rate = quoteRate / baseRate;
@@ -1461,16 +1464,32 @@ const HedgingInstruments = () => {
     return matchesTab;
   });
 
-  // State for reference currency for MTM total conversion
-  const [referenceCurrency, setReferenceCurrency] = useState<string>('USD');
+  // Get base currency from settings
+  const baseCurrencyFromSettings = useBaseCurrency();
   
-  // Get unique currencies for reference currency selector
+  // State for reference currency for MTM total conversion (defaults to base currency)
+  const [referenceCurrency, setReferenceCurrency] = useState<string>(baseCurrencyFromSettings);
+  
+  // Update reference currency when base currency changes
+  useEffect(() => {
+    setReferenceCurrency(baseCurrencyFromSettings);
+  }, [baseCurrencyFromSettings]);
+  
+  // Get available currencies for reference currency selector (synchronized with Market Data)
   const uniqueCurrenciesForRef = React.useMemo(() => {
-    const currencies = getUniqueCurrencies(instruments);
-    // Add common currencies if not present
-    const commonCurrencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD'];
-    const allCurrencies = new Set([...currencies.map(c => c.split('/')[0]), ...commonCurrencies]);
-    return Array.from(allCurrencies).sort();
+    // Get all available currencies from the centralized list
+    const availableCurrencies = getAvailableCurrencies();
+    const availableCodes = new Set(availableCurrencies.map(c => c.code));
+    
+    // Also include currencies from instruments (in case some are not in the main list)
+    const instrumentCurrencies = getUniqueCurrencies(instruments);
+    instrumentCurrencies.forEach(c => {
+      const baseCurrency = c.split('/')[0];
+      availableCodes.add(baseCurrency);
+    });
+    
+    // Return sorted list of currency codes
+    return Array.from(availableCodes).sort();
   }, [instruments]);
 
   // Calculate MTM by currency
@@ -1986,9 +2005,11 @@ const HedgingInstruments = () => {
                   <SelectTrigger className="h-7 text-xs w-20">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-[300px]">
                     {uniqueCurrenciesForRef.map(currency => (
-                      <SelectItem key={currency} value={currency}>{currency}</SelectItem>
+                      <SelectItem key={currency} value={currency}>
+                        {currency}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

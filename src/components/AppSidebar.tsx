@@ -8,7 +8,6 @@ import {
   TrendingUp,
   FileText,
   Shield,
-  AlertTriangle,
   Target,
   Users,
   Briefcase,
@@ -324,36 +323,6 @@ export function AppSidebar() {
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        {/* Risk Alerts */}
-        <SidebarGroup className="mt-6">
-          <SidebarGroupLabel className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-2 sidebar-group-label">
-            Risk Alerts
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <div className="space-y-2">
-              <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/30 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-amber-800 dark:text-amber-200">High Volatility</p>
-                    <p className="text-xs text-amber-600 dark:text-amber-400 truncate">EUR/USD above threshold</p>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800/30 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-red-800 dark:text-red-200">Exposure Limit</p>
-                    <p className="text-xs text-red-600 dark:text-red-400 truncate">GBP exposure at 95%</p>
-                  </div>
-                </div>
-              </div>
-            </div>
           </SidebarGroupContent>
         </SidebarGroup>
         </ScrollArea>

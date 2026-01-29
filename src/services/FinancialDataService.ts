@@ -616,8 +616,10 @@ class FinancialDataService {
       errors.push('Description is required');
     }
 
-    if (exposure.hedgeRatio < 0 || exposure.hedgeRatio > 100) {
-      errors.push('Hedge ratio must be between 0 and 100');
+    // ✅ CORRECTION : Permettre des hedge ratios > 100% (sur-couverture)
+    // Le hedge ratio peut être > 100% si on couvre plus que l'exposition (over-hedging)
+    if (exposure.hedgeRatio < 0) {
+      errors.push('Hedge ratio must be >= 0');
     }
 
     if (!exposure.maturity || exposure.maturity <= new Date()) {

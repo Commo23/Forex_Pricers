@@ -11,6 +11,7 @@ import { CURRENCY_PAIRS } from '@/pages/Index';
 import CurrencyTable from './CurrencyTable';
 import ExchangeRateService, { ExchangeRateData, CurrencyInfo } from '@/services/ExchangeRateService';
 import { toast } from '@/hooks/use-toast';
+import { useBaseCurrency } from '@/hooks/useBaseCurrency';
 
 interface ForexDashboardProps {
   onRateSelected?: (pair: string, rate: number) => void;
@@ -24,8 +25,14 @@ const ForexDashboard: React.FC<ForexDashboardProps> = ({ onRateSelected, current
   );
   const [autoSync, setAutoSync] = useState<boolean>(false);
   
-  // Nouveaux états pour l'API Exchange Rate
-  const [baseCurrency, setBaseCurrency] = useState<string>('USD');
+  // Get base currency from settings
+  const baseCurrencyFromSettings = useBaseCurrency();
+  const [baseCurrency, setBaseCurrency] = useState<string>(baseCurrencyFromSettings);
+  
+  // Update base currency when settings change
+  useEffect(() => {
+    setBaseCurrency(baseCurrencyFromSettings);
+  }, [baseCurrencyFromSettings]);
   const [currencies, setCurrencies] = useState<CurrencyInfo[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);

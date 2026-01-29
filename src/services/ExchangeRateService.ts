@@ -6,6 +6,8 @@ export interface ExchangeRateData {
   rates: { [key: string]: number };
 }
 
+import { CURRENCY_NAMES } from '@/utils/currencyList';
+
 export interface CurrencyInfo {
   code: string;
   name: string;
@@ -58,56 +60,12 @@ class ExchangeRateService {
 
   /**
    * Formatage des données pour l'affichage dans un tableau
+   * Uses centralized currency list from currencyList.ts
    */
   formatCurrencyData(exchangeData: ExchangeRateData): CurrencyInfo[] {
-    const currencyNames: { [key: string]: string } = {
-      'USD': 'US Dollar',
-      'EUR': 'Euro',
-      'GBP': 'British Pound',
-      'JPY': 'Japanese Yen',
-      'AUD': 'Australian Dollar',
-      'CAD': 'Canadian Dollar',
-      'CHF': 'Swiss Franc',
-      'CNY': 'Chinese Yuan',
-      'NZD': 'New Zealand Dollar',
-      'SEK': 'Swedish Krona',
-      'NOK': 'Norwegian Krone',
-      'DKK': 'Danish Krone',
-      'PLN': 'Polish Zloty',
-      'CZK': 'Czech Koruna',
-      'HUF': 'Hungarian Forint',
-      'RON': 'Romanian Leu',
-      'BGN': 'Bulgarian Lev',
-      'HRK': 'Croatian Kuna',
-      'RUB': 'Russian Ruble',
-      'TRY': 'Turkish Lira',
-      'BRL': 'Brazilian Real',
-      'MXN': 'Mexican Peso',
-      'ARS': 'Argentine Peso',
-      'CLP': 'Chilean Peso',
-      'COP': 'Colombian Peso',
-      'PEN': 'Peruvian Sol',
-      'ZAR': 'South African Rand',
-      'EGP': 'Egyptian Pound',
-      'MAD': 'Moroccan Dirham',
-      'NGN': 'Nigerian Naira',
-      'KES': 'Kenyan Shilling',
-      'INR': 'Indian Rupee',
-      'PKR': 'Pakistani Rupee',
-      'IDR': 'Indonesian Rupiah',
-      'THB': 'Thai Baht',
-      'MYR': 'Malaysian Ringgit',
-      'SGD': 'Singapore Dollar',
-      'PHP': 'Philippine Peso',
-      'VND': 'Vietnamese Dong',
-      'KRW': 'South Korean Won',
-      'HKD': 'Hong Kong Dollar',
-      'TWD': 'Taiwan New Dollar'
-    };
-
     return Object.entries(exchangeData.rates).map(([code, rate]) => ({
       code,
-      name: currencyNames[code] || code,
+      name: CURRENCY_NAMES[code] || code,
       rate
     }));
   }

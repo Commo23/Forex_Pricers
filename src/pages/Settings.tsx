@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { useCompanySettings, companySettingsEmitter } from "@/hooks/useCompanySettings";
 import { getLocalStorageStats, performEmergencyRecovery } from "@/utils/emergencyRecovery";
+import { getAvailableCurrencies, getCurrencyOptionLabel } from "@/utils/currencyList";
 import "@/styles/zoom-controls.css";
 
 interface AppSettings {
@@ -356,6 +357,11 @@ const Settings = () => {
       
       // Mettre à jour le state local
       setSettings(newSettings);
+      
+      // Emit custom event for base currency change (for same-tab updates)
+      if (newSettings.company.currency !== settings.company.currency) {
+        window.dispatchEvent(new CustomEvent('baseCurrencyChanged'));
+      }
       
       // Mettre à jour les paramètres de l'entreprise si le nom a changé
       if (nameChanged) {
@@ -920,15 +926,12 @@ const Settings = () => {
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="USD">USD - US Dollar</SelectItem>
-                      <SelectItem value="EUR">EUR - Euro</SelectItem>
-                      <SelectItem value="GBP">GBP - British Pound</SelectItem>
-                      <SelectItem value="JPY">JPY - Japanese Yen</SelectItem>
-                      <SelectItem value="CHF">CHF - Swiss Franc</SelectItem>
-                      <SelectItem value="CAD">CAD - Canadian Dollar</SelectItem>
-                      <SelectItem value="AUD">AUD - Australian Dollar</SelectItem>
-                      <SelectItem value="MAD">MAD - Moroccan Dirham</SelectItem>
+                    <SelectContent className="max-h-[300px]">
+                      {getAvailableCurrencies().map((currency) => (
+                        <SelectItem key={currency.code} value={currency.code}>
+                          {getCurrencyOptionLabel(currency.code)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -1902,11 +1905,12 @@ const Settings = () => {
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="USD">USD - US Dollar</SelectItem>
-                      <SelectItem value="EUR">EUR - Euro</SelectItem>
-                      <SelectItem value="GBP">GBP - British Pound</SelectItem>
-                      <SelectItem value="MAD">MAD - Moroccan Dirham</SelectItem>
+                    <SelectContent className="max-h-[300px]">
+                      {getAvailableCurrencies().map((currency) => (
+                        <SelectItem key={currency.code} value={currency.code}>
+                          {getCurrencyOptionLabel(currency.code)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

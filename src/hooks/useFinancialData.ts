@@ -247,12 +247,35 @@ export const useFinancialData = (): UseFinancialDataReturn => {
           }
           
           // Trouver l'instrument original correspondant
-          const originalInstrument = originalInstruments.find(orig => 
-            orig.currency === instrument.currencyPair && 
-            Math.abs(orig.notional - instrument.notional) < 0.01
-          );
+          // ✅ AMÉLIORATION : Meilleure correspondance en utilisant plusieurs critères
+          const originalInstrument = originalInstruments.find(orig => {
+            const origCurrency = orig.currency || '';
+            const instCurrencyPair = instrument.currencyPair || '';
+            const origMaturity = new Date(orig.maturity).toISOString().split('T')[0];
+            const instMaturity = maturityStr;
+            
+            // Match par currency/currencyPair ET maturity ET notional (avec tolérance)
+            const currencyMatch = origCurrency === instCurrencyPair || 
+                                 origCurrency.split('/')[0] === currency;
+            const maturityMatch = origMaturity === instMaturity;
+            const notionalMatch = Math.abs((orig.notional || 0) - instrument.notional) < 0.01;
+            
+            return currencyMatch && maturityMatch && notionalMatch;
+          });
+          
           if (originalInstrument) {
             currencyGroups[currency].originalInstruments.push(originalInstrument);
+          } else {
+            // ✅ FALLBACK : Si pas de correspondance exacte, chercher par currency et maturity seulement
+            const fallbackInstrument = originalInstruments.find(orig => {
+              const origCurrency = orig.currency || '';
+              const origMaturity = new Date(orig.maturity).toISOString().split('T')[0];
+              return (origCurrency === instrument.currencyPair || origCurrency.split('/')[0] === currency) &&
+                     origMaturity === maturityStr;
+            });
+            if (fallbackInstrument) {
+              currencyGroups[currency].originalInstruments.push(fallbackInstrument);
+            }
           }
         });
         
@@ -292,7 +315,7 @@ export const useFinancialData = (): UseFinancialDataReturn => {
             const maturityDate = new Date(maturityStr);
             
             // ✅ CORRECTION : Calculer le hedge ratio basé sur les vraies quantités des instruments originaux
-            let maxHedgeQuantity = 95; // Default fallback
+            let maxHedgeQuantity = 0; // Start with 0, will be calculated
             
             if (originalInstruments.length > 0) {
               // ✅ CORRECTION : Prendre le maximum des quantités absolues des instruments originaux SANS plafonnement
@@ -303,22 +326,52 @@ export const useFinancialData = (): UseFinancialDataReturn => {
               
               if (maturityOriginalInstruments.length > 0) {
                 // Utiliser les instruments de cette échéance spécifique
-                maxHedgeQuantity = Math.max(...maturityOriginalInstruments.map(inst => {
-                  const quantity = inst.hedgeQuantity !== undefined ? 
-                    inst.hedgeQuantity : 
-                    (inst.quantity !== undefined ? Math.abs(inst.quantity) : 95);
-                  return quantity; // ✅ SUPPRESSION du plafonnement Math.min(100, quantity)
-                }));
+                const quantities = maturityOriginalInstruments.map(inst => {
+                  // Priority: hedgeQuantity > quantity > effectiveness_ratio (if not 95)
+                  if (inst.hedgeQuantity !== undefined) {
+                    return inst.hedgeQuantity;
+                  } else if (inst.quantity !== undefined) {
+                    return Math.abs(inst.quantity);
+                  } else if (inst.effectiveness_ratio !== undefined && inst.effectiveness_ratio !== 95) {
+                    return inst.effectiveness_ratio;
+                  }
+                  return 0; // Don't use default 95
+                }).filter(q => q > 0); // Remove zeros
+                
+                if (quantities.length > 0) {
+                  maxHedgeQuantity = Math.max(...quantities);
+                }
               } else {
                 // Fallback: utiliser tous les instruments originaux
-                maxHedgeQuantity = Math.max(...originalInstruments.map(inst => {
-                  const quantity = inst.hedgeQuantity !== undefined ? 
-                    inst.hedgeQuantity : 
-                    (inst.quantity !== undefined ? Math.abs(inst.quantity) : 95);
-                  return quantity; // ✅ SUPPRESSION du plafonnement Math.min(100, quantity)
-                }));
+                const quantities = originalInstruments.map(inst => {
+                  if (inst.hedgeQuantity !== undefined) {
+                    return inst.hedgeQuantity;
+                  } else if (inst.quantity !== undefined) {
+                    return Math.abs(inst.quantity);
+                  } else if (inst.effectiveness_ratio !== undefined && inst.effectiveness_ratio !== 95) {
+                    return inst.effectiveness_ratio;
+                  }
+                  return 0;
+                }).filter(q => q > 0);
+                
+                if (quantities.length > 0) {
+                  maxHedgeQuantity = Math.max(...quantities);
+                }
               }
             }
+            
+            // ✅ FALLBACK : Si aucun instrument original trouvé, essayer de calculer depuis les instruments financiers
+            // en utilisant le rapport entre le notional total et le volume d'exposition sous-jacente
+            if (maxHedgeQuantity === 0 && underlyingExposureVolume > 0) {
+              const calculatedRatio = (totalHedgingNotional / underlyingExposureVolume) * 100;
+              if (calculatedRatio > 0) {
+                maxHedgeQuantity = calculatedRatio;
+                console.log(`[FX EXPOSURE] ${currency}-${maturityStr}: Calculated hedge ratio from notional/exposure: ${maxHedgeQuantity}%`);
+              }
+            }
+            
+            // ✅ FINAL FALLBACK : Si toujours 0, utiliser 0 (pas de couverture) au lieu de 95
+            // Cela indiquera clairement qu'il n'y a pas de données de couverture disponibles
             
             // ✅ CORRECTION : Calculer l'exposition sous-jacente réelle, pas la somme des instruments de couverture
             let underlyingExposureVolume = 0;

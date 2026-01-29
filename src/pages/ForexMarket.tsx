@@ -19,6 +19,7 @@ import ExchangeRateService from '@/services/ExchangeRateService';
 import FinancialDataService from '@/services/FinancialDataService';
 import { useTheme } from '@/hooks/useTheme';
 import { useToast } from '@/hooks/use-toast';
+import { useBaseCurrency } from '@/hooks/useBaseCurrency';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import TradingViewForexHeatmap from '@/components/TradingViewForexHeatmap';
 import '@/styles/forex-market.css';
@@ -54,7 +55,15 @@ const ForexMarket: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-  const [baseCurrency, setBaseCurrency] = useState('USD');
+  
+  // Get base currency from settings
+  const baseCurrencyFromSettings = useBaseCurrency();
+  const [baseCurrency, setBaseCurrency] = useState(baseCurrencyFromSettings);
+  
+  // Update base currency when settings change
+  useEffect(() => {
+    setBaseCurrency(baseCurrencyFromSettings);
+  }, [baseCurrencyFromSettings]);
   const [sortField, setSortField] = useState<'code' | 'name' | 'rate' | 'change'>('code');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [activeTab, setActiveTab] = useState('market-data');

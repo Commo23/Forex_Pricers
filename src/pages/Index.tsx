@@ -1124,6 +1124,7 @@ export const calculateStrategyPayoffAtPrice = (components: any[], price: number,
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useBankRates } from '@/hooks/useBankRates';
+import { useBaseCurrency } from '@/hooks/useBaseCurrency';
 import StrategyImportService from '../services/StrategyImportService';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -1558,26 +1559,29 @@ const Index = () => {
     };
   }, [toast]);
   
+  // Get base currency from settings
+  const baseCurrency = useBaseCurrency();
+  
   // Function to fetch real-time rate from Market Data
   const fetchRealTimeRate = async (currencyPair: CurrencyPair): Promise<number | null> => {
     try {
       const { base, quote } = currencyPair;
       
-      // Get exchange rates from API
-      const exchangeData = await exchangeRateService.getExchangeRates('USD');
+      // Get exchange rates from API using base currency from settings
+      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
       const rates = exchangeData.rates;
       
       // Calculate the cross rate for the selected pair
       let rate: number;
       
-      if (base === 'USD') {
-        // Direct rate: USD/XXX
+      if (base === baseCurrency) {
+        // Direct rate: BASE_CURRENCY/XXX
         rate = rates[quote] || currencyPair.defaultSpotRate;
-      } else if (quote === 'USD') {
-        // Inverted rate: XXX/USD = 1 / (USD/XXX)
+      } else if (quote === baseCurrency) {
+        // Inverted rate: XXX/BASE_CURRENCY = 1 / (BASE_CURRENCY/XXX)
         rate = rates[base] ? 1 / rates[base] : currencyPair.defaultSpotRate;
       } else {
-        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
+        // Cross rate: BASE/QUOTE = (BASE_CURRENCY/QUOTE) / (BASE_CURRENCY/BASE)
         const baseRate = rates[base] || 1;
         const quoteRate = rates[quote] || 1;
         rate = quoteRate / baseRate;

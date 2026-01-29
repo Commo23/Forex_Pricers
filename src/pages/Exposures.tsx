@@ -35,6 +35,7 @@ import {
   Loader2
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
+import { getAvailableCurrencies, getCurrencyOptionLabel } from "@/utils/currencyList";
 
 interface ExposureFormData {
   currency: string;
@@ -162,7 +163,13 @@ const Exposures = () => {
   const displayExposures = exposures.map(exp => {
     const isReceivable = exp.type === 'receivable';
     const displayAmount = isReceivable ? Math.abs(exp.amount) : -Math.abs(exp.amount);
-    const hedgeRatio = exp.amount !== 0 ? Math.abs(exp.hedgedAmount / exp.amount) * 100 : 0;
+    
+    // ✅ CORRECTION : Utiliser le hedgeRatio qui vient de l'exposition (calculé correctement dans useFinancialData)
+    // Ne pas le recalculer comme hedgedAmount/amount car cela donne toujours 100%
+    // Le vrai hedge ratio est basé sur la quantité de couverture des instruments (hedgeQuantity)
+    const hedgeRatio = exp.hedgeRatio !== undefined && exp.hedgeRatio !== null 
+      ? exp.hedgeRatio 
+      : (exp.amount !== 0 ? Math.abs(exp.hedgedAmount / exp.amount) * 100 : 0); // Fallback seulement si pas défini
     
     return {
     id: exp.id,
@@ -1221,17 +1228,12 @@ const Exposures = () => {
                     <SelectTrigger>
                       <SelectValue placeholder="Select currency" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="EUR">EUR</SelectItem>
-                      <SelectItem value="GBP">GBP</SelectItem>
-                      <SelectItem value="JPY">JPY</SelectItem>
-                      <SelectItem value="CHF">CHF</SelectItem>
-                      <SelectItem value="CAD">CAD</SelectItem>
-                      <SelectItem value="AUD">AUD</SelectItem>
-                      <SelectItem value="NZD">NZD</SelectItem>
-                      <SelectItem value="SEK">SEK</SelectItem>
-                      <SelectItem value="NOK">NOK</SelectItem>
-                      <SelectItem value="DKK">DKK</SelectItem>
+                    <SelectContent className="max-h-[300px]">
+                      {getAvailableCurrencies().map((currency) => (
+                        <SelectItem key={currency.code} value={currency.code}>
+                          {currency.code}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

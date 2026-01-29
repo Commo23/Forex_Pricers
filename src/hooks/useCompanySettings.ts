@@ -148,6 +148,11 @@ export function useCompanySettings() {
     }
     localStorage.setItem('fxRiskManagerSettings', JSON.stringify(newSettings));
     companySettingsEmitter.emit();
+    
+    // Emit custom event for base currency change (for same-tab updates)
+    if (updates.currency !== undefined) {
+      window.dispatchEvent(new CustomEvent('baseCurrencyChanged'));
+    }
   };
 
   // Logo logic
