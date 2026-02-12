@@ -6,7 +6,7 @@ Le chatbot utilise **UNIQUEMENT Google Gemini AI** avec **function calling** pou
 
 ## 🔧 Configuration
 
-### Google Gemini AI ⭐
+### Google Gemini AI 
 
 #### 1. Obtenir une clé API Gemini
 
