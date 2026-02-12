@@ -118,6 +118,13 @@ const menuItems = [
     description: "AI assistant for forex hedging strategies",
     badge: "New"
   },
+  {
+    title: "Futures Insights",
+    url: "/futures-insights",
+    icon: TrendingUp,
+    description: "FX futures terminal with options & volatility data",
+    badge: "New"
+  },
 ];
 
 const reportingItems = [

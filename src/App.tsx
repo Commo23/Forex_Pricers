@@ -33,6 +33,7 @@ import RegressionAnalysis from "./pages/RegressionAnalysis";
 import OptionsMarketData from "./pages/OptionsMarketData";
 import RateExplorer from "./pages/RateExplorer";
 import ForexChat from "./pages/ForexChat";
+import FuturesInsights from "./pages/FuturesInsights";
 import LandingPage from "./pages/LandingPage";
 import SupabaseLogin from "./pages/SupabaseLogin";
 import AuthCallback from "./pages/AuthCallback";
@@ -92,6 +93,7 @@ const App = () => {
             <Route path="/options-market-data" element={<ProtectedRoute><OptionsMarketData /></ProtectedRoute>} />
             <Route path="/rate-explorer" element={<ProtectedRoute><RateExplorer /></ProtectedRoute>} />
             <Route path="/forex-chat" element={<ProtectedRoute><ForexChat /></ProtectedRoute>} />
+            <Route path="/futures-insights" element={<ProtectedRoute><FuturesInsights /></ProtectedRoute>} />
             <Route path="/users" element={<ProtectedRoute><UserManagement /></ProtectedRoute>} />
             <Route path="/database-sync" element={<ProtectedRoute><DatabaseSync /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
