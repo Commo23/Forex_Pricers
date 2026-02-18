@@ -1,6 +1,6 @@
 import { Activity, TrendingUp } from "lucide-react";
 
-export type ViewMode = "home" | "futures" | "options" | "volatility";
+export type ViewMode = "home" | "futures" | "options" | "volatility" | "volsurface";
 
 export interface Breadcrumb {
   label: string;

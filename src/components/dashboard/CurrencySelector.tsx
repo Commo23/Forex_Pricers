@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, ChevronDown, BarChart3, Activity } from "lucide-react";
+import { RefreshCw, BarChart3, Activity, Boxes } from "lucide-react";
 import { fetchCurrencies, type CurrencyData } from "@/lib/api/barchart";
 import { LoadingState } from "./DataStates";
 
@@ -8,9 +8,10 @@ interface CurrencySelectorProps {
   onSelect: (currency: CurrencyData) => void;
   onLoadFutures: () => void;
   onLoadVolatility: () => void;
+  onLoadVolSurface?: () => void;
 }
 
-export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, onLoadVolatility }: CurrencySelectorProps) {
+export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, onLoadVolatility, onLoadVolSurface }: CurrencySelectorProps) {
   const [currencies, setCurrencies] = useState<CurrencyData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +99,15 @@ export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, on
             <Activity className="w-3.5 h-3.5" />
             Vol & Greeks
           </button>
+          {onLoadVolSurface && (
+            <button
+              onClick={onLoadVolSurface}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-info/10 text-info hover:bg-info/20 text-sm font-medium transition-colors border border-info/20"
+            >
+              <Boxes className="w-3.5 h-3.5" />
+              Vol Surface 3D
+            </button>
+          )}
         </>
       )}
 

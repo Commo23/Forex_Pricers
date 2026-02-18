@@ -4,6 +4,7 @@ import { DashboardHeader, type Breadcrumb, type ViewMode } from "@/components/da
 import { FuturesPanel } from "@/components/dashboard/FuturesPanel";
 import { OptionsPanel } from "@/components/dashboard/OptionsPanel";
 import { VolatilityPanel } from "@/components/dashboard/VolatilityPanel";
+import { VolSurfacePanel } from "@/components/dashboard/VolSurfacePanel";
 import { CurrencySelector } from "@/components/dashboard/CurrencySelector";
 import type { CurrencyData, FuturesContract } from "@/lib/api/barchart";
 
@@ -79,6 +80,31 @@ const FuturesInsights = () => {
     ]);
   };
 
+  const handleLoadVolSurface = () => {
+    if (!selectedCurrency) return;
+    setOptionSymbol(selectedCurrency.symbol);
+    if (!selectedFuture) {
+      setSelectedFuture({
+        contract: selectedCurrency.symbol,
+        month: "",
+        last: selectedCurrency.last,
+        change: selectedCurrency.change,
+        percentChange: selectedCurrency.percentChange,
+        open: "",
+        high: selectedCurrency.high,
+        low: selectedCurrency.low,
+        volume: selectedCurrency.volume,
+        openInterest: "",
+        time: selectedCurrency.time,
+      });
+    }
+    setView("volsurface");
+    setBreadcrumbs([
+      { label: "Home", view: "home" },
+      { label: `${selectedCurrency.symbol} Vol Surface 3D`, view: "volsurface" },
+    ]);
+  };
+
   const handleBreadcrumbClick = (crumb: Breadcrumb) => {
     setView(crumb.view);
     if (crumb.view === "home") {
@@ -89,20 +115,23 @@ const FuturesInsights = () => {
       setBreadcrumbs(breadcrumbs.slice(0, 2));
     } else if (crumb.view === "options") {
       setBreadcrumbs(breadcrumbs.slice(0, 3));
+    } else if (crumb.view === "volsurface") {
+      setBreadcrumbs(breadcrumbs.slice(0, 2));
     }
   };
 
   return (
     <Layout>
       <div className="min-h-screen bg-background">
+        <DashboardHeader breadcrumbs={breadcrumbs} onBreadcrumbClick={handleBreadcrumbClick} />
         <div className="container mx-auto px-4 py-6 max-w-[1600px]">
-          {/* Currency selector + action buttons - always visible */}
           <div className="mb-6">
             <CurrencySelector
               selectedCurrency={selectedCurrency}
               onSelect={handleCurrencySelected}
               onLoadFutures={handleLoadFutures}
               onLoadVolatility={handleLoadVolatility}
+              onLoadVolSurface={handleLoadVolSurface}
             />
           </div>
 
@@ -114,6 +143,9 @@ const FuturesInsights = () => {
           )}
           {view === "volatility" && selectedFuture && optionSymbol && (
             <VolatilityPanel contract={selectedFuture} optionSymbol={optionSymbol} />
+          )}
+          {view === "volsurface" && selectedFuture && optionSymbol && (
+            <VolSurfacePanel futureSymbol={selectedFuture.contract} optionSymbol={optionSymbol} />
           )}
         </div>
       </div>

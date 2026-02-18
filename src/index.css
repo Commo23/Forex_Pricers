@@ -39,6 +39,11 @@
 
     --radius: 0.75rem;
 
+    --positive: 142 76% 36%;
+    --negative: 0 72% 51%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
+
     --sidebar-background: 224 71% 4%;
     --sidebar-foreground: 210 40% 98%;
     --sidebar-primary: 221 83% 53%;
@@ -80,6 +85,11 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 221 83% 53%;
+
+    --positive: 142 76% 36%;
+    --negative: 0 72% 51%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
     
     --sidebar-background: 224 71% 4%;
     --sidebar-foreground: 213 31% 91%;
