@@ -81,6 +81,22 @@ Si l'application ne se charge toujours pas :
    - Assurez-vous que votre fichier `.env` local contient toutes les variables
    - Testez avec `npm run dev` pour vérifier que tout fonctionne localement
 
+## Vol Surface 3D (scrape-vol-surface) et CORS
+
+Si la vue **Vol Surface 3D** affiche « Failed to send a request to the Edge Function » ou une erreur CORS dans la console :
+
+1. **Même projet Supabase**  
+   L’URL utilisée par l’app (`VITE_FUTURES_SUPABASE_URL`) doit être celle du projet où la fonction **scrape-vol-surface** est déployée (ex. `https://merzfmfodlmskuygkwnw.supabase.co` ou le projet que vous utilisez).
+
+2. **Déployer la fonction**  
+   La fonction se trouve dans ce repo : `supabase/functions/scrape-vol-surface/`. Déployez-la sur le projet Futures (Dashboard Supabase > Edge Functions > Deploy, ou CLI `supabase functions deploy scrape-vol-surface --project-ref <ref>`).
+
+3. **CORS et JWT**  
+   Pour les appels depuis le navigateur (ex. `forex-pricers-advanced.vercel.app`), la fonction doit répondre **200 OK** à la requête OPTIONS (preflight). Le code inclut déjà les en-têtes CORS. Il faut aussi que la fonction soit configurée avec **Verify JWT: false** (Dashboard > Edge Functions > scrape-vol-surface > Settings), sinon la preflight OPTIONS peut recevoir 401 et le navigateur bloque la requête.
+
+4. **Secret Firecrawl**  
+   Dans le projet Supabase (Futures), définir le secret **FIRECRAWL_API_KEY** (Dashboard > Project Settings > Edge Functions > Secrets) pour que la fonction puisse appeler l’API Firecrawl.
+
 ## Note Importante
 
 - Les variables d'environnement avec le préfixe `VITE_` sont exposées au client (navigateur)
