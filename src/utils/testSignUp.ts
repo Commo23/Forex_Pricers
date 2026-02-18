@@ -189,12 +189,12 @@ export const testAuthSettings = async () => {
   }
 }
 
-// Exporter les fonctions globalement pour la console
-if (typeof window !== 'undefined') {
+// Exporter les fonctions globalement pour la console (dev only — évite signup test en prod)
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
   (window as any).testSignUpFunction = testSignUpFunction
   (window as any).testSupabaseConfig = testSupabaseConfig
   (window as any).testAuthSettings = testAuthSettings
-  
+
   console.log('🧪 Fonctions de test sign up disponibles:')
   console.log('   - testSignUpFunction()')
   console.log('   - testSupabaseConfig()')

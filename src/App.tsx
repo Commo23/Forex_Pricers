@@ -8,10 +8,13 @@ import { useSmoothScroll, useMomentumScroll } from "./hooks/useSmoothScroll";
 import { useZoom } from "./hooks/useZoom";
 import { useAutoSync } from "./hooks/useAutoSync";
 import LocalStorageWatcher from "./services/LocalStorageWatcher";
-import "./utils/testSupabaseIntegration";
+// Test utilities: only load in development to avoid signup/API noise in production
+if (import.meta.env.DEV) {
+  import("./utils/testSupabaseIntegration");
+  import("./utils/testSupabaseFinal");
+  import("./utils/testSignUp");
+}
 import "./utils/initSupabaseTables";
-import "./utils/testSupabaseFinal";
-import "./utils/testSignUp";
 import "./utils/cleanupLocalStorage";
 
 // Import pages
