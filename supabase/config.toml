@@ -1,0 +1,3 @@
+# Supabase project used for Futures Insights (same as ticker-peek-pro)
+# Used by: supabase link, supabase functions deploy, etc.
+project_id = "merzfmfodlmskuygkwnw"

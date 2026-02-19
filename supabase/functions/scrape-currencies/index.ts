@@ -3,12 +3,24 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+const VALID_CATEGORIES = ['currencies', 'energies', 'grains', 'indices', 'livestock', 'metals'];
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    let category = 'currencies';
+    try {
+      const body = await req.json();
+      if (body?.category && VALID_CATEGORIES.includes(body.category)) {
+        category = body.category;
+      }
+    } catch {
+      // no body = default to currencies
+    }
+
     const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
     if (!apiKey) {
       return new Response(
@@ -17,7 +29,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log('Scraping currencies from Barchart via Firecrawl...');
+    // Barchart uses "meats" for the livestock category URL
+    const urlCategory = category === 'livestock' ? 'meats' : category;
+    const url = `https://www.barchart.com/futures/${urlCategory}`;
+    console.log(`Scraping ${category} from: ${url}`);
 
     const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
@@ -26,7 +41,7 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        url: 'https://www.barchart.com/futures/currencies',
+        url,
         formats: ['markdown'],
         onlyMainContent: true,
         waitFor: 12000,
@@ -101,20 +116,22 @@ function parseCurrenciesMarkdown(markdown: string): any[] {
       const line = lines[nextIdx];
       // Stop at next symbol link
       if (line.startsWith('[') && line.includes('/overview)')) break;
-      // Accept: numbers, signed numbers, N/A, time patterns
-      if (/^[-+]?[\d,]+\.?\d*$/.test(line) || /^N\/A$/i.test(line) || /^\d+:\d+\s*CT/.test(line) || /^[-+]\d/.test(line) || /^unch$/i.test(line)) {
+      // Accept: numbers, signed numbers, N/A, time patterns, dates
+      if (/^[-+]?[\d,]+\.?\d*s?$/.test(line) || /^N\/A$/i.test(line) || /^\d+:\d+\s*CT/.test(line) || /^[-+]\d/.test(line) || /^unch$/i.test(line) || /^\d{2}\/\d{2}\/\d{2}$/.test(line)) {
         values.push(line);
       }
       nextIdx++;
     }
     
     if (values.length >= 2) {
+      // Page columns: Latest, Change, Open, High, Low, Volume, Time
       currencies.push({
         symbol,
         name,
-        last: values[0] || 'N/A',
+        last: (values[0] || 'N/A').replace(/s$/, ''),
         change: values[1] || 'N/A',
-        percentChange: '', // Not in the page in this view
+        percentChange: '',
+        open: values[2] || 'N/A',
         high: values[3] || 'N/A',
         low: values[4] || 'N/A',
         volume: values[5] || 'N/A',
