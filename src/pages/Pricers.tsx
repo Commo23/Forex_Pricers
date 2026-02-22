@@ -26,6 +26,10 @@ import PayoffChart from '@/components/PayoffChart';
 import { PricingService, Greeks } from '@/services/PricingService';
 import ExchangeRateService from '@/services/ExchangeRateService';
 import { useBankRates } from '@/hooks/useBankRates';
+import { fetchCurrencies, fetchVolSurface } from '@/lib/api/barchart';
+import type { SurfacePoint } from '@/lib/api/barchart';
+import { getFuturesContractForPair, isPairMappableToFuturesInsights } from '@/lib/pricersFuturesMapping';
+import { interpolateSurface, interpolateIVAtPoint } from '@/lib/volSurfaceInterpolation';
 
 // Réutiliser les types du Strategy Builder
 interface CurrencyPair {
@@ -172,6 +176,14 @@ const Pricers = () => {
   
   // ✅ AJOUT: Sélection du modèle de pricing pour les barrières
   const [barrierPricingModel, setBarrierPricingModel] = useState<'closed-form' | 'monte-carlo'>('closed-form');
+
+  // Optional: use IV from Futures Insights for mappable pairs (e.g. EUR/USD -> E6)
+  const [useFuturesInsightsIv, setUseFuturesInsightsIv] = useState(() => {
+    try {
+      return localStorage.getItem('pricersUseFuturesInsightsIv') === 'true';
+    } catch { return false; }
+  });
+  const [fetchingIvFromFi, setFetchingIvFromFi] = useState(false);
   
   // Inputs de pricing (cohérents avec Strategy Builder)
   const [pricingInputs, setPricingInputs] = useState({
@@ -328,6 +340,87 @@ const Pricers = () => {
   useEffect(() => {
     setStrategyComponent(prev => ({ ...prev, type: selectedInstrument as any }));
   }, [selectedInstrument]);
+
+  // Persist "Use IV from Futures Insights" preference
+  useEffect(() => {
+    try {
+      localStorage.setItem('pricersUseFuturesInsightsIv', useFuturesInsightsIv ? 'true' : 'false');
+    } catch (_) {}
+  }, [useFuturesInsightsIv]);
+
+  // Apply IV from Futures Insights using strict IV interpolation (strike × DTE surface).
+  const applyIvFromFuturesInsights = async () => {
+    if (!isPairMappableToFuturesInsights(selectedCurrencyPair)) return;
+    setFetchingIvFromFi(true);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) {
+        toast({ title: "Futures Insights", description: "Could not load futures list.", variant: "destructive" });
+        return;
+      }
+      const contract = getFuturesContractForPair(selectedCurrencyPair, currenciesRes.data);
+      if (!contract) {
+        toast({ title: "No mapping", description: `No Futures Insights contract found for ${selectedCurrencyPair}.`, variant: "destructive" });
+        return;
+      }
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) {
+        toast({ title: "Surface fetch failed", description: surfaceRes.error || "Could not load vol surface.", variant: "destructive" });
+        return;
+      }
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+      const optionTypeForSurface: "call" | "put" =
+        selectedInstrument === "put" || selectedInstrument.startsWith("put-") ? "put" : "call";
+      const filtered = points.filter((p) => p.type === optionTypeForSurface);
+      if (filtered.length === 0) {
+        toast({
+          title: "No IV data",
+          description: `No ${optionTypeForSurface} surface points.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+      const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+      const key = (dte: number, strike: number) => `${dte}-${strike}`;
+      const pointMap = new Map<string, SurfacePoint>();
+      for (const p of filtered) pointMap.set(key(p.dte, p.strike), p);
+      let z: (number | null)[][] = dtes.map((dte) =>
+        strikes.map((strike) => {
+          const point = pointMap.get(key(dte, strike));
+          const iv = point?.iv ?? null;
+          return iv !== null && iv > 0 ? iv : null;
+        })
+      );
+      z = interpolateSurface(z, strikes, dtes);
+
+      const strikeAbs =
+        strategyComponent.strikeType === "percent"
+          ? pricingInputs.spotPrice * (strategyComponent.strike / 100)
+          : strategyComponent.strike;
+      const dteDays = Math.round(
+        (new Date(pricingInputs.maturityDate).getTime() - new Date(pricingInputs.startDate).getTime()) / (24 * 60 * 60 * 1000)
+      );
+      const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
+      if (iv == null || iv <= 0) {
+        toast({
+          title: "IV interpolation",
+          description: "No interpolated IV for this strike & DTE. Check surface range.",
+          variant: "destructive",
+        });
+        return;
+      }
+      updateStrategyComponent("volatility", iv);
+      toast({
+        title: "IV applied (interpolation)",
+        description: `Volatility ${iv.toFixed(2)}% from ${optionTypeForSurface} surface at strike ${strikeAbs.toFixed(4)}, DTE ${dteDays} (${contract}).`,
+      });
+    } catch (e) {
+      toast({ title: "Error", description: e instanceof Error ? e.message : "Failed to fetch IV.", variant: "destructive" });
+    } finally {
+      setFetchingIvFromFi(false);
+    }
+  };
 
   // Calcul du prix - UTILISE UNIQUEMENT PricingService.calculateOptionPrice
   const calculatePrice = async (showToast: boolean = true) => {
@@ -1123,6 +1216,23 @@ const Pricers = () => {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Optional: use IV from Futures Insights for mappable pairs only */}
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="use-fi-iv"
+                      checked={useFuturesInsightsIv}
+                      onCheckedChange={setUseFuturesInsightsIv}
+                    />
+                    <Label htmlFor="use-fi-iv" className="text-sm">
+                      Use IV from Futures Insights
+                    </Label>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    When enabled, you can apply implied volatility from Futures Insights for: EUR/USD, GBP/USD, AUD/USD, USD/JPY, USD/CHF, USD/CAD, USD/MXN. Other pairs are unchanged.
+                  </div>
+                </div>
               </CardContent>
             </Card>
 
@@ -1284,12 +1394,27 @@ const Pricers = () => {
                 {/* Volatilité */}
                 <div className="space-y-2">
                   <Label>Volatility (%)</Label>
-                  <Input
-                    type="number"
-                    step="0.1"
-                    value={strategyComponent.volatility}
-                    onChange={(e) => updateStrategyComponent('volatility', parseFloat(e.target.value))}
-                  />
+                  <div className="flex gap-2 items-center flex-wrap">
+                    <Input
+                      type="number"
+                      step="0.1"
+                      value={strategyComponent.volatility}
+                      onChange={(e) => updateStrategyComponent('volatility', parseFloat(e.target.value))}
+                      className="flex-1 min-w-[100px]"
+                    />
+                    {useFuturesInsightsIv && isPairMappableToFuturesInsights(selectedCurrencyPair) && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={fetchingIvFromFi}
+                        onClick={applyIvFromFuturesInsights}
+                        className="shrink-0"
+                      >
+                        {fetchingIvFromFi ? "Loading…" : "Apply IV from Futures Insights"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Taux domestique */}

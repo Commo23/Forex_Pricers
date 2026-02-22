@@ -983,6 +983,18 @@ class FinancialDataService {
   }
 
   /**
+   * Replace all exposures (e.g. when loading from localStorage).
+   * Preserves existing ids and normalizes maturity to Date.
+   */
+  setExposures(data: (ExposureData | { maturity: string | Date; [key: string]: unknown })[]): void {
+    this.exposures = data.map((exp) => ({
+      ...exp,
+      id: (exp as ExposureData).id ?? `EXP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      maturity: exp.maturity instanceof Date ? exp.maturity : new Date(exp.maturity as string)
+    })) as ExposureData[];
+  }
+
+  /**
    * Get all exposures
    */
   getExposures(): ExposureData[] {

@@ -11,9 +11,11 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { useFinancialData } from "@/hooks/useFinancialData";
-import { toast } from "@/hooks/use-toast";
+import { useToast } from "@/hooks/use-toast";
 import { 
   Settings as SettingsIcon, 
   Database, 
@@ -39,8 +41,14 @@ import {
   ZoomIn,
   ZoomOut,
   Monitor,
-  MessageSquare
+  MessageSquare,
+  Folder,
+  FolderPlus,
+  Building2,
+  UserPlus,
+  Edit
 } from "lucide-react";
+import StrategyImportService, { HedgingPortfolio, HedgingCounterparty } from "@/services/StrategyImportService";
 import { useCompanySettings, companySettingsEmitter } from "@/hooks/useCompanySettings";
 import { getLocalStorageStats, performEmergencyRecovery } from "@/utils/emergencyRecovery";
 import { getAvailableCurrencies, getCurrencyOptionLabel } from "@/utils/currencyList";
@@ -145,6 +153,16 @@ interface AppSettings {
 const Settings = () => {
   const { marketData, updateMarketData, isLiveMode, setLiveMode, exposures, deleteExposure, addExposure } = useFinancialData();
   const { companySettings, updateCompanySettings, getCompanyNameParts, getCompanyLogo, setCompanyLogo, resetCompanyLogo, isLoaded, getCompanyLogo: getLogo, getCompanyNameParts: getNameParts } = useCompanySettings();
+  const { toast } = useToast();
+  const importService = StrategyImportService.getInstance();
+  const [portfolios, setPortfolios] = useState<HedgingPortfolio[]>(() => importService.getPortfolios());
+  const [counterparties, setCounterparties] = useState<HedgingCounterparty[]>(() => importService.getCounterparties());
+  const [isPortfolioDialogOpen, setIsPortfolioDialogOpen] = useState(false);
+  const [editingPortfolio, setEditingPortfolio] = useState<HedgingPortfolio | null>(null);
+  const [portfolioForm, setPortfolioForm] = useState({ name: "", currency: "", counterparty: "", activity: "", region: "" });
+  const [isCounterpartyDialogOpen, setIsCounterpartyDialogOpen] = useState(false);
+  const [editingCounterparty, setEditingCounterparty] = useState<HedgingCounterparty | null>(null);
+  const [counterpartyFormName, setCounterpartyFormName] = useState("");
   
   // Function to apply zoom to the entire application
   const applyZoom = (zoomLevel: number) => {
@@ -2148,6 +2166,202 @@ const Settings = () => {
         </TabsContent>
 
         <TabsContent value="hedging">
+          {/* Portfolios: create by currency, counterparty, activity, region — then assign in Hedging Instruments */}
+          <Card className="mb-6">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Folder className="h-5 w-5" />
+                    Portfolios
+                  </CardTitle>
+                  <CardDescription>
+                    Create portfolios (by currency, counterparty, activity, region) then assign them to instruments on the Hedging Instruments page.
+                  </CardDescription>
+                </div>
+                <Dialog open={isPortfolioDialogOpen} onOpenChange={(open) => { setIsPortfolioDialogOpen(open); if (!open) setEditingPortfolio(null); }}>
+                  <DialogTrigger asChild>
+                    <Button variant="outline" size="sm" onClick={() => { setEditingPortfolio(null); setPortfolioForm({ name: "", currency: "", counterparty: "", activity: "", region: "" }); }}>
+                      <FolderPlus className="h-4 w-4 mr-2" />
+                      Add Portfolio
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[420px]">
+                    <DialogHeader>
+                      <DialogTitle>{editingPortfolio ? "Edit Portfolio" : "New Portfolio"}</DialogTitle>
+                      <DialogDescription>Name is required. Other fields are optional labels (currency, counterparty, activity, region).</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="portfolio-name" className="text-right">Name</Label>
+                        <Input id="portfolio-name" className="col-span-3" value={portfolioForm.name} onChange={(e) => setPortfolioForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. EUR Sales" />
+                      </div>
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="portfolio-currency" className="text-right">Currency</Label>
+                        <Input id="portfolio-currency" className="col-span-3" value={portfolioForm.currency} onChange={(e) => setPortfolioForm((f) => ({ ...f, currency: e.target.value }))} placeholder="Optional" />
+                      </div>
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="portfolio-cpty" className="text-right">Counterparty</Label>
+                        <Input id="portfolio-cpty" className="col-span-3" value={portfolioForm.counterparty} onChange={(e) => setPortfolioForm((f) => ({ ...f, counterparty: e.target.value }))} placeholder="Optional" />
+                      </div>
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="portfolio-activity" className="text-right">Activity</Label>
+                        <Input id="portfolio-activity" className="col-span-3" value={portfolioForm.activity} onChange={(e) => setPortfolioForm((f) => ({ ...f, activity: e.target.value }))} placeholder="Optional" />
+                      </div>
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="portfolio-region" className="text-right">Region</Label>
+                        <Input id="portfolio-region" className="col-span-3" value={portfolioForm.region} onChange={(e) => setPortfolioForm((f) => ({ ...f, region: e.target.value }))} placeholder="Optional" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setIsPortfolioDialogOpen(false)}>Cancel</Button>
+                      <Button onClick={() => {
+                        const name = portfolioForm.name.trim();
+                        if (!name) { toast({ title: "Name required", variant: "destructive" }); return; }
+                        if (editingPortfolio) {
+                          importService.updatePortfolio(editingPortfolio.id, { name, currency: portfolioForm.currency || undefined, counterparty: portfolioForm.counterparty || undefined, activity: portfolioForm.activity || undefined, region: portfolioForm.region || undefined });
+                          toast({ title: "Portfolio updated" });
+                        } else {
+                          importService.addPortfolio({ name, currency: portfolioForm.currency || undefined, counterparty: portfolioForm.counterparty || undefined, activity: portfolioForm.activity || undefined, region: portfolioForm.region || undefined });
+                          toast({ title: "Portfolio created" });
+                        }
+                        setPortfolios(importService.getPortfolios());
+                        setIsPortfolioDialogOpen(false);
+                        setEditingPortfolio(null);
+                        setPortfolioForm({ name: "", currency: "", counterparty: "", activity: "", region: "" });
+                      }}>{editingPortfolio ? "Save" : "Create"}</Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {portfolios.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No portfolios yet. Create one to group your hedging instruments.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Currency</TableHead>
+                      <TableHead>Counterparty</TableHead>
+                      <TableHead>Activity</TableHead>
+                      <TableHead>Region</TableHead>
+                      <TableHead className="w-[100px]">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {portfolios.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="font-medium">{p.name}</TableCell>
+                        <TableCell>{p.currency || "—"}</TableCell>
+                        <TableCell>{p.counterparty || "—"}</TableCell>
+                        <TableCell>{p.activity || "—"}</TableCell>
+                        <TableCell>{p.region || "—"}</TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="sm" onClick={() => { setEditingPortfolio(p); setPortfolioForm({ name: p.name, currency: p.currency ?? "", counterparty: p.counterparty ?? "", activity: p.activity ?? "", region: p.region ?? "" }); setIsPortfolioDialogOpen(true); }}>
+                              <Edit className="h-3 w-3" />
+                            </Button>
+                            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => { importService.deletePortfolio(p.id); setPortfolios(importService.getPortfolios()); toast({ title: "Portfolio deleted" }); }}>
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Counterparties: assign when adding instruments on Hedging Instruments page */}
+          <Card className="mb-6">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Building2 className="h-5 w-5" />
+                    Counterparties
+                  </CardTitle>
+                  <CardDescription>
+                    Create counterparties then assign them when adding hedging instruments.
+                  </CardDescription>
+                </div>
+                <Dialog open={isCounterpartyDialogOpen} onOpenChange={(open) => { setIsCounterpartyDialogOpen(open); if (!open) setEditingCounterparty(null); }}>
+                  <DialogTrigger asChild>
+                    <Button variant="outline" size="sm" onClick={() => { setEditingCounterparty(null); setCounterpartyFormName(""); }}>
+                      <UserPlus className="h-4 w-4 mr-2" />
+                      Add Counterparty
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[380px]">
+                    <DialogHeader>
+                      <DialogTitle>{editingCounterparty ? "Edit Counterparty" : "New Counterparty"}</DialogTitle>
+                      <DialogDescription>Name of the counterparty (e.g. bank or broker).</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid grid-cols-4 items-center gap-2">
+                        <Label htmlFor="counterparty-name" className="text-right">Name</Label>
+                        <Input id="counterparty-name" className="col-span-3" value={counterpartyFormName} onChange={(e) => setCounterpartyFormName(e.target.value)} placeholder="e.g. Deutsche Bank" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setIsCounterpartyDialogOpen(false)}>Cancel</Button>
+                      <Button onClick={() => {
+                        const name = counterpartyFormName.trim();
+                        if (!name) { toast({ title: "Name required", variant: "destructive" }); return; }
+                        if (editingCounterparty) {
+                          importService.updateCounterparty(editingCounterparty.id, { name });
+                          toast({ title: "Counterparty updated" });
+                        } else {
+                          importService.addCounterparty({ name });
+                          toast({ title: "Counterparty created" });
+                        }
+                        setCounterparties(importService.getCounterparties());
+                        setIsCounterpartyDialogOpen(false);
+                        setEditingCounterparty(null);
+                        setCounterpartyFormName("");
+                      }}>{editingCounterparty ? "Save" : "Create"}</Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {counterparties.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No counterparties yet. Add one to use when creating instruments.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead className="w-[100px]">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {counterparties.map((c) => (
+                      <TableRow key={c.id}>
+                        <TableCell className="font-medium">{c.name}</TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="sm" onClick={() => { setEditingCounterparty(c); setCounterpartyFormName(c.name); setIsCounterpartyDialogOpen(true); }}>
+                              <Edit className="h-3 w-3" />
+                            </Button>
+                            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => { importService.deleteCounterparty(c.id); setCounterparties(importService.getCounterparties()); toast({ title: "Counterparty deleted" }); }}>
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

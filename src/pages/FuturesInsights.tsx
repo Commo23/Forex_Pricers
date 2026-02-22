@@ -105,6 +105,31 @@ const FuturesInsights = () => {
     ]);
   };
 
+  const handleLoadIvMatrix = () => {
+    if (!selectedCurrency) return;
+    setOptionSymbol(selectedCurrency.symbol);
+    if (!selectedFuture) {
+      setSelectedFuture({
+        contract: selectedCurrency.symbol,
+        month: "",
+        last: selectedCurrency.last,
+        change: selectedCurrency.change,
+        percentChange: selectedCurrency.percentChange,
+        open: "",
+        high: selectedCurrency.high,
+        low: selectedCurrency.low,
+        volume: selectedCurrency.volume,
+        openInterest: "",
+        time: selectedCurrency.time,
+      });
+    }
+    setView("ivmatrix");
+    setBreadcrumbs([
+      { label: "Home", view: "home" },
+      { label: `${selectedCurrency.symbol} IV Matrix`, view: "ivmatrix" },
+    ]);
+  };
+
   const handleBreadcrumbClick = (crumb: Breadcrumb) => {
     setView(crumb.view);
     if (crumb.view === "home") {
@@ -115,7 +140,7 @@ const FuturesInsights = () => {
       setBreadcrumbs(breadcrumbs.slice(0, 2));
     } else if (crumb.view === "options") {
       setBreadcrumbs(breadcrumbs.slice(0, 3));
-    } else if (crumb.view === "volsurface") {
+    } else if (crumb.view === "volsurface" || crumb.view === "ivmatrix") {
       setBreadcrumbs(breadcrumbs.slice(0, 2));
     }
   };
@@ -132,6 +157,7 @@ const FuturesInsights = () => {
               onLoadFutures={handleLoadFutures}
               onLoadVolatility={handleLoadVolatility}
               onLoadVolSurface={handleLoadVolSurface}
+              onLoadIvMatrix={handleLoadIvMatrix}
             />
           </div>
 
@@ -146,6 +172,9 @@ const FuturesInsights = () => {
           )}
           {view === "volsurface" && selectedFuture && optionSymbol && (
             <VolSurfacePanel futureSymbol={selectedFuture.contract} optionSymbol={optionSymbol} />
+          )}
+          {view === "ivmatrix" && selectedFuture && optionSymbol && (
+            <VolSurfacePanel futureSymbol={selectedFuture.contract} optionSymbol={optionSymbol} matrixOnly />
           )}
         </div>
       </div>

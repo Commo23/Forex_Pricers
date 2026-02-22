@@ -193,6 +193,19 @@ export async function fetchVolSurfaceStrikes(
   return data;
 }
 
+/** Build cache key for vol surface (normalized strikes to avoid float key mismatch). */
+export function getVolSurfaceCacheKey(
+  futureSymbol: string,
+  optionSymbol: string,
+  moneyness = 50,
+  strikeMin?: number,
+  strikeMax?: number
+): string {
+  const sm = strikeMin != null ? Number(strikeMin).toFixed(4) : "all";
+  const sM = strikeMax != null ? Number(strikeMax).toFixed(4) : "all";
+  return `volsurface:${futureSymbol}:${optionSymbol}:${moneyness}:${sm}-${sM}`;
+}
+
 export async function fetchVolSurface(
   futureSymbol: string,
   optionSymbol: string,
@@ -204,7 +217,7 @@ export async function fetchVolSurface(
   if (!isFuturesSupabaseAvailable()) {
     return { success: false, error: 'Futures Insights Supabase credentials not configured. Please configure VITE_FUTURES_SUPABASE_URL and VITE_FUTURES_SUPABASE_PUBLISHABLE_KEY in your environment variables.' };
   }
-  const cacheKey = `volsurface:${futureSymbol}:${optionSymbol}:${moneyness ?? 50}:${strikeMin ?? 'all'}-${strikeMax ?? 'all'}`;
+  const cacheKey = getVolSurfaceCacheKey(futureSymbol, optionSymbol, moneyness ?? 50, strikeMin, strikeMax);
   if (!forceRefresh) {
     const cached = getCached<{ success: boolean; surfacePoints?: SurfacePoint[]; totalMaturities?: number }>(cacheKey);
     if (cached) return cached;
@@ -213,6 +226,14 @@ export async function fetchVolSurface(
     body: { futureSymbol, optionSymbol, moneyness, strikeMin, strikeMax },
   });
   if (error) return { success: false, error: error.message };
-  if (data?.success) setCache(cacheKey, data);
+  if (data?.success) {
+    const surfacePoints = data?.surfacePoints ?? [];
+    if (surfacePoints.length > 200) {
+      const schedule = typeof requestIdleCallback !== "undefined" ? requestIdleCallback : (cb: () => void) => setTimeout(cb, 100);
+      schedule(() => setCache(cacheKey, data));
+    } else {
+      setCache(cacheKey, data);
+    }
+  }
   return data;
 }

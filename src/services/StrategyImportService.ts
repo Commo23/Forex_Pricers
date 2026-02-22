@@ -20,6 +20,22 @@ export interface ImportedStrategy {
   };
 }
 
+/** Portfolio: user-created bucket (by currency, counterparty, activity, region, etc.) to group hedging instruments */
+export interface HedgingPortfolio {
+  id: string;
+  name: string;
+  currency?: string;
+  counterparty?: string;
+  activity?: string;
+  region?: string;
+}
+
+/** User-created counterparty (name used when adding instruments). */
+export interface HedgingCounterparty {
+  id: string;
+  name: string;
+}
+
 export interface HedgingInstrument {
   id: string;
   type: string;
@@ -33,6 +49,7 @@ export interface HedgingInstrument {
   hedge_accounting: boolean;
   effectiveness_ratio?: number;
   counterparty: string;
+  portfolioId?: string;
   barrier?: number;
   secondBarrier?: number;
   rebate?: number;
@@ -97,6 +114,8 @@ class StrategyImportService {
   private static instance: StrategyImportService;
   private importedStrategies: ImportedStrategy[] = [];
   private hedgingInstruments: HedgingInstrument[] = [];
+  private hedgingPortfolios: HedgingPortfolio[] = [];
+  private hedgingCounterparties: HedgingCounterparty[] = [];
 
   constructor() {
     this.loadFromStorage();
@@ -120,6 +139,25 @@ class StrategyImportService {
       if (savedInstruments) {
         this.hedgingInstruments = JSON.parse(savedInstruments);
       }
+
+      const savedPortfolios = localStorage.getItem('hedgingPortfolios');
+      if (savedPortfolios) {
+        this.hedgingPortfolios = JSON.parse(savedPortfolios);
+      }
+
+      const savedCounterparties = localStorage.getItem('hedgingCounterparties');
+      if (savedCounterparties) {
+        this.hedgingCounterparties = JSON.parse(savedCounterparties);
+      }
+      // Seed default counterparties when list is empty so UI list and dropdowns stay in sync
+      if (this.hedgingCounterparties.length === 0) {
+        const defaultNames = ["Deutsche Bank", "HSBC", "JPMorgan", "BNP Paribas", "Strategy Import", "Manual"];
+        this.hedgingCounterparties = defaultNames.map((name, i) => ({
+          id: `CPTY-default-${i}-${Date.now()}`,
+          name,
+        }));
+        this.saveToStorage();
+      }
     } catch (error) {
       console.error('Error loading from storage:', error);
     }
@@ -129,9 +167,36 @@ class StrategyImportService {
     try {
       localStorage.setItem('importedStrategies', JSON.stringify(this.importedStrategies));
       localStorage.setItem('hedgingInstruments', JSON.stringify(this.hedgingInstruments));
+      localStorage.setItem('hedgingPortfolios', JSON.stringify(this.hedgingPortfolios));
+      localStorage.setItem('hedgingCounterparties', JSON.stringify(this.hedgingCounterparties));
     } catch (error) {
       console.error('Error saving to storage:', error);
     }
+  }
+
+  getCounterparties(): HedgingCounterparty[] {
+    return [...this.hedgingCounterparties];
+  }
+
+  addCounterparty(counterparty: Omit<HedgingCounterparty, 'id'>): HedgingCounterparty {
+    const id = `CPTY-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newCounterparty: HedgingCounterparty = { ...counterparty, id };
+    this.hedgingCounterparties.push(newCounterparty);
+    this.saveToStorage();
+    return newCounterparty;
+  }
+
+  updateCounterparty(id: string, updates: Partial<Omit<HedgingCounterparty, 'id'>>): void {
+    const index = this.hedgingCounterparties.findIndex(c => c.id === id);
+    if (index !== -1) {
+      this.hedgingCounterparties[index] = { ...this.hedgingCounterparties[index], ...updates };
+      this.saveToStorage();
+    }
+  }
+
+  deleteCounterparty(id: string): void {
+    this.hedgingCounterparties = this.hedgingCounterparties.filter(c => c.id !== id);
+    this.saveToStorage();
   }
 
   importStrategy(
@@ -614,6 +679,49 @@ class StrategyImportService {
     return [...this.hedgingInstruments];
   }
 
+  getPortfolios(): HedgingPortfolio[] {
+    return [...this.hedgingPortfolios];
+  }
+
+  addPortfolio(portfolio: Omit<HedgingPortfolio, 'id'>): HedgingPortfolio {
+    const id = `PORT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newPortfolio: HedgingPortfolio = { ...portfolio, id };
+    this.hedgingPortfolios.push(newPortfolio);
+    this.saveToStorage();
+    return newPortfolio;
+  }
+
+  updatePortfolio(id: string, updates: Partial<Omit<HedgingPortfolio, 'id'>>): void {
+    const index = this.hedgingPortfolios.findIndex(p => p.id === id);
+    if (index !== -1) {
+      this.hedgingPortfolios[index] = { ...this.hedgingPortfolios[index], ...updates };
+      this.saveToStorage();
+    }
+  }
+
+  deletePortfolio(id: string): void {
+    this.hedgingPortfolios = this.hedgingPortfolios.filter(p => p.id !== id);
+    this.hedgingInstruments = this.hedgingInstruments.map(inst =>
+      inst.portfolioId === id ? { ...inst, portfolioId: undefined } : inst
+    );
+    this.saveToStorage();
+  }
+
+  /** Add a single manual hedging instrument (e.g. from Add Instrument dialog). */
+  addHedgingInstrument(instrument: Omit<HedgingInstrument, 'id'>): HedgingInstrument {
+    const id = `INST-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const newInstrument: HedgingInstrument = {
+      ...instrument,
+      id,
+      status: 'active',
+      mtm: 0,
+      hedge_accounting: false,
+    };
+    this.hedgingInstruments.push(newInstrument);
+    this.saveToStorage();
+    return newInstrument;
+  }
+
   getImportedStrategies(): ImportedStrategy[] {
     return [...this.importedStrategies];
   }
@@ -644,6 +752,8 @@ class StrategyImportService {
   clearAllData(): void {
     this.importedStrategies = [];
     this.hedgingInstruments = [];
+    this.hedgingPortfolios = [];
+    this.hedgingCounterparties = [];
     this.saveToStorage();
   }
 }

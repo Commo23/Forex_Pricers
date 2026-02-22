@@ -59,3 +59,51 @@ export function interpolateSurface(
 
   return result;
 }
+
+/**
+ * Bilinear IV interpolation at a single (strike, DTE) point.
+ * Same logic as the "IV interpolation" UI in Futures Insights.
+ * Returns null if the point is outside the grid or there is insufficient data.
+ */
+export function interpolateIVAtPoint(
+  strikes: number[],
+  dtes: number[],
+  z: (number | null)[][],
+  strike: number,
+  dte: number
+): number | null {
+  if (strikes.length < 2 || dtes.length < 2) return null;
+
+  let si = strikes.findIndex((s) => s >= strike);
+  let di = dtes.findIndex((d) => d >= dte);
+
+  if (si <= 0) si = 1;
+  if (si >= strikes.length) si = strikes.length - 1;
+  if (di <= 0) di = 1;
+  if (di >= dtes.length) di = dtes.length - 1;
+
+  const s0 = strikes[si - 1],
+    s1 = strikes[si];
+  const d0 = dtes[di - 1],
+    d1 = dtes[di];
+
+  const z00 = z[di - 1]?.[si - 1];
+  const z01 = z[di - 1]?.[si];
+  const z10 = z[di]?.[si - 1];
+  const z11 = z[di]?.[si];
+
+  const vals = [z00, z01, z10, z11].filter((v) => v !== null) as number[];
+  if (vals.length === 0) return null;
+  if (vals.length < 4) {
+    return vals.reduce((a, b) => a + b, 0) / vals.length;
+  }
+
+  const ts = s1 !== s0 ? (strike - s0) / (s1 - s0) : 0.5;
+  const td = d1 !== d0 ? (dte - d0) / (d1 - d0) : 0.5;
+  return (
+    z00! * (1 - ts) * (1 - td) +
+    z01! * ts * (1 - td) +
+    z10! * (1 - ts) * td +
+    z11! * ts * td
+  );
+}

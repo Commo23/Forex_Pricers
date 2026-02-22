@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, BarChart3, Activity, Boxes } from "lucide-react";
+import { RefreshCw, BarChart3, Activity, Boxes, Grid3X3 } from "lucide-react";
 import { fetchCurrencies, type CurrencyData } from "@/lib/api/barchart";
 import { LoadingState } from "./DataStates";
 
@@ -9,9 +9,10 @@ interface CurrencySelectorProps {
   onLoadFutures: () => void;
   onLoadVolatility: () => void;
   onLoadVolSurface?: () => void;
+  onLoadIvMatrix?: () => void;
 }
 
-export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, onLoadVolatility, onLoadVolSurface }: CurrencySelectorProps) {
+export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, onLoadVolatility, onLoadVolSurface, onLoadIvMatrix }: CurrencySelectorProps) {
   const [currencies, setCurrencies] = useState<CurrencyData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +107,15 @@ export function CurrencySelector({ selectedCurrency, onSelect, onLoadFutures, on
             >
               <Boxes className="w-3.5 h-3.5" />
               Vol Surface 3D
+            </button>
+          )}
+          {onLoadIvMatrix && (
+            <button
+              onClick={onLoadIvMatrix}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400 text-sm font-medium transition-colors border border-emerald-500/20"
+            >
+              <Grid3X3 className="w-3.5 h-3.5" />
+              IV Matrix
             </button>
           )}
         </>

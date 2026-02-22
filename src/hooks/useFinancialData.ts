@@ -77,21 +77,17 @@ export const useFinancialData = (): UseFinancialDataReturn => {
   useEffect(() => {
     const loadDataFromStorage = () => {
       try {
-        // Load exposures from localStorage
+        // Load exposures from localStorage: REPLACE service exposures (do not append) to avoid duplication
         const savedExposures = localStorage.getItem('fxExposures');
         if (savedExposures) {
           const exposuresData = JSON.parse(savedExposures);
-          exposuresData.forEach((exposure: any) => {
-            // Convert date strings back to Date objects
-            exposure.maturity = new Date(exposure.maturity);
-            serviceRef.current.addExposure(exposure);
-          });
+          serviceRef.current.setExposures(exposuresData);
         }
 
         // Sync with hedging instruments from StrategyImportService
         syncWithHedgingInstruments();
         
-        // Auto-generate exposures if none exist but instruments do
+        // Auto-generate exposures for new currency/maturity pairs only (existing ones are kept)
         autoGenerateExposures();
         
         // Update all state
@@ -105,9 +101,13 @@ export const useFinancialData = (): UseFinancialDataReturn => {
 
     // Listen for updates from other parts of the application
     const handleHedgingInstrumentsUpdate = () => {
-      syncWithHedgingInstruments();
-      autoGenerateExposures();
-      refreshAllData();
+      try {
+        syncWithHedgingInstruments();
+        autoGenerateExposures();
+        refreshAllData();
+      } catch (error) {
+        console.error("Error in hedgingInstrumentsUpdated handler:", error);
+      }
     };
 
     const handleStorageChange = (e: StorageEvent) => {
@@ -314,6 +314,26 @@ export const useFinancialData = (): UseFinancialDataReturn => {
             const totalNotional = maturityInstruments.reduce((sum, inst) => sum + inst.notional, 0);
             const maturityDate = new Date(maturityStr);
             
+            // ✅ Calculer l'exposition sous-jacente en premier (utilisée pour le fallback du hedge ratio)
+            let underlyingExposureVolume = 0;
+            if (originalInstruments.length > 0) {
+              const maturityOriginalInstruments = originalInstruments.filter(orig => {
+                const origMaturity = new Date(orig.maturity).toISOString().split('T')[0];
+                return origMaturity === maturityStr;
+              });
+              if (maturityOriginalInstruments.length > 0) {
+                const firstInstrument = maturityOriginalInstruments[0];
+                underlyingExposureVolume = firstInstrument.rawVolume !== undefined ? firstInstrument.rawVolume :
+                  firstInstrument.exposureVolume !== undefined ? firstInstrument.exposureVolume :
+                  firstInstrument.baseVolume !== undefined ? firstInstrument.baseVolume :
+                  totalNotional;
+              } else {
+                underlyingExposureVolume = totalNotional;
+              }
+            } else {
+              underlyingExposureVolume = totalNotional;
+            }
+            
             // ✅ CORRECTION : Calculer le hedge ratio basé sur les vraies quantités des instruments originaux
             let maxHedgeQuantity = 0; // Start with 0, will be calculated
             
@@ -363,7 +383,7 @@ export const useFinancialData = (): UseFinancialDataReturn => {
             // ✅ FALLBACK : Si aucun instrument original trouvé, essayer de calculer depuis les instruments financiers
             // en utilisant le rapport entre le notional total et le volume d'exposition sous-jacente
             if (maxHedgeQuantity === 0 && underlyingExposureVolume > 0) {
-              const calculatedRatio = (totalHedgingNotional / underlyingExposureVolume) * 100;
+              const calculatedRatio = (totalNotional / underlyingExposureVolume) * 100;
               if (calculatedRatio > 0) {
                 maxHedgeQuantity = calculatedRatio;
                 console.log(`[FX EXPOSURE] ${currency}-${maturityStr}: Calculated hedge ratio from notional/exposure: ${maxHedgeQuantity}%`);
@@ -371,35 +391,9 @@ export const useFinancialData = (): UseFinancialDataReturn => {
             }
             
             // ✅ FINAL FALLBACK : Si toujours 0, utiliser 0 (pas de couverture) au lieu de 95
-            // Cela indiquera clairement qu'il n'y a pas de données de couverture disponibles
-            
-            // ✅ CORRECTION : Calculer l'exposition sous-jacente réelle, pas la somme des instruments de couverture
-            let underlyingExposureVolume = 0;
-            
-            if (originalInstruments.length > 0) {
-              // Chercher le volume d'exposition original depuis les données de stratégie
-              const maturityOriginalInstruments = originalInstruments.filter(orig => {
-                const origMaturity = new Date(orig.maturity).toISOString().split('T')[0];
-                return origMaturity === maturityStr;
-              });
-              
-              if (maturityOriginalInstruments.length > 0) {
-                // ✅ CORRECTION : Prendre le volume d'exposition brut (rawVolume ou exposureVolume) 
-                // du premier instrument car ils représentent tous la même exposition sous-jacente
-                const firstInstrument = maturityOriginalInstruments[0];
-                underlyingExposureVolume = firstInstrument.rawVolume !== undefined ? firstInstrument.rawVolume : 
-                                         firstInstrument.exposureVolume !== undefined ? firstInstrument.exposureVolume : 
-                                         firstInstrument.baseVolume !== undefined ? firstInstrument.baseVolume :
-                                         totalNotional; // Fallback sur totalNotional si pas d'info d'exposition
-                
-                console.log(`[FX EXPOSURE] ${currency}-${maturityStr}: Using underlying exposure volume ${underlyingExposureVolume} instead of sum of hedging instruments ${totalNotional}`);
-              } else {
-                // Pas d'instruments originaux pour cette maturité, utiliser totalNotional comme fallback
-                underlyingExposureVolume = totalNotional;
-              }
-            } else {
-              // Pas d'instruments originaux, utiliser totalNotional
-              underlyingExposureVolume = totalNotional;
+            // (underlyingExposureVolume déjà calculé plus haut)
+            if (underlyingExposureVolume > 0 && underlyingExposureVolume !== totalNotional) {
+              console.log(`[FX EXPOSURE] ${currency}-${maturityStr}: Using underlying exposure volume ${underlyingExposureVolume} instead of sum of hedging instruments ${totalNotional}`);
             }
             
             // Determine if this should be a receivable or payable based on instrument types

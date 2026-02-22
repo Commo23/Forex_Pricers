@@ -520,10 +520,10 @@ const Exposures = () => {
           title: "Success",
           description: "Exposure updated successfully",
         });
-        
-        resetForm();
+        setIsAddDialogOpen(false);
         setIsEditDialogOpen(false);
         setEditingExposure(null);
+        resetForm();
       } else {
         toast({
           title: "Error",
@@ -1202,8 +1202,18 @@ const Exposures = () => {
           </>
         )}
 
-        {/* Add/Edit Exposure Dialog */}
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+        {/* Add/Edit Exposure Dialog - open when either Add or Edit is triggered */}
+        <Dialog
+          open={isAddDialogOpen || isEditDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setIsAddDialogOpen(false);
+              setIsEditDialogOpen(false);
+              setEditingExposure(null);
+              resetForm();
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>
@@ -1288,15 +1298,47 @@ const Exposures = () => {
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="maturityDays">Maturity (Days from now)</Label>
-                <Input
-                  id="maturityDays"
-                  type="number"
-                  placeholder="Enter days until maturity"
-                  value={newExposure.maturityDays || ''}
-                  onChange={(e) => setNewExposure({...newExposure, maturityDays: parseInt(e.target.value) || 30})}
-                />
+              <div className="space-y-3">
+                <Label>Maturity</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="maturityDate" className="text-xs text-muted-foreground">Date</Label>
+                    <Input
+                      id="maturityDate"
+                      type="date"
+                      value={(() => {
+                        const d = new Date();
+                        d.setDate(d.getDate() + newExposure.maturityDays);
+                        return d.toISOString().split("T")[0];
+                      })()}
+                      min={new Date().toISOString().split("T")[0]}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (!value) return;
+                        const selected = new Date(value + "T12:00:00");
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        selected.setHours(0, 0, 0, 0);
+                        const days = Math.round((selected.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+                        setNewExposure({ ...newExposure, maturityDays: Math.max(0, days) });
+                      }}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="maturityDays" className="text-xs text-muted-foreground">Days from now</Label>
+                    <Input
+                      id="maturityDays"
+                      type="number"
+                      min={0}
+                      placeholder="e.g. 30"
+                      value={newExposure.maturityDays ?? ""}
+                      onChange={(e) => setNewExposure({ ...newExposure, maturityDays: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">Choose a date or enter the number of days from today.</p>
               </div>
 
               <div className="space-y-2">
@@ -1338,6 +1380,8 @@ const Exposures = () => {
                 variant="outline"
                 onClick={() => {
                   setIsAddDialogOpen(false);
+                  setIsEditDialogOpen(false);
+                  setEditingExposure(null);
                   resetForm();
                 }}
               >
