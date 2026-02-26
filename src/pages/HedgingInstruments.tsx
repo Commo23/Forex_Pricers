@@ -2197,12 +2197,12 @@ const HedgingInstruments = () => {
               </div>
             </div>
 
-            {/* Market Data per Currency */}
+            {/* Market Data per Currency - compact list */}
             {getUniqueCurrencies(instruments).length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label className="text-sm font-medium text-muted-foreground">
-                    Market Parameters by Currency ({getUniqueCurrencies(instruments).length} currencies found)
+                    Market Parameters by Currency ({getUniqueCurrencies(instruments).length} currencies)
                   </Label>
                   <Button
                     variant="outline"
@@ -2214,32 +2214,29 @@ const HedgingInstruments = () => {
                     Refresh from Export
                   </Button>
                 </div>
-                {getUniqueCurrencies(instruments).map((currency) => {
-                  const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
-                  return (
-                    <div key={currency} className="border rounded-lg p-4 bg-muted/20">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="font-mono font-semibold">
+                <div className="rounded-lg border bg-muted/10 overflow-hidden w-fit">
+                  <div className="grid grid-cols-[7rem_10rem_auto_2.5rem] gap-x-3 items-center px-3 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/20">
+                    <span>Currency</span>
+                    <span>Spot Rate</span>
+                    <span className="text-center">IV</span>
+                    <span aria-hidden />
+                  </div>
+                  {getUniqueCurrencies(instruments).map((currency) => {
+                    const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
+                    const count = instruments.filter(inst => inst.currency === currency).length;
+                    const mappable = isPairMappableToFuturesInsights(currency);
+                    return (
+                      <div
+                        key={currency}
+                        className="grid grid-cols-[7rem_10rem_auto_2.5rem] gap-x-3 items-center px-3 py-2 border-b border-muted/50 last:border-b-0 hover:bg-muted/10"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Badge variant="outline" className="font-mono font-semibold text-xs shrink-0">
                             {currency}
                           </Badge>
-                          <span className="text-sm text-muted-foreground">
-                            {instruments.filter(inst => inst.currency === currency).length} instrument(s)
-                          </span>
+                          <span className="text-muted-foreground text-xs shrink-0">({count})</span>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => refreshMarketDataForCurrency(currency)}
-                          className="text-xs"
-                        >
-                          <RefreshCw className="h-3 w-3 mr-1" />
-                          Refresh
-                        </Button>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-4">
-                        <div className="space-y-1">
-                          <Label htmlFor={`spot-${currency}`} className="text-xs">Spot Rate</Label>
+                        <div className="min-w-0">
                           <Input
                             id={`spot-${currency}`}
                             type="number"
@@ -2247,75 +2244,47 @@ const HedgingInstruments = () => {
                             value={editingMarketCells[currency]?.spot ?? data.spot}
                             onChange={(e) => onMarketFieldChange(currency, 'spot', e.target.value)}
                             onBlur={() => onMarketFieldBlur(currency, 'spot')}
-                            className="font-mono text-sm"
+                            className="font-mono text-sm h-8 w-full"
                             placeholder="1.0850"
                           />
                         </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs">Volatility (%)</Label>
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-sm min-w-[3rem]">{data.volatility}</span>
-                            {isPairMappableToFuturesInsights(currency) ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => applyIvFromFuturesInsightsForCurrency(currency)}
-                                disabled={fetchingIvCurrency === currency}
-                                className="text-xs shrink-0"
-                              >
-                                {fetchingIvCurrency === currency ? "…" : "Update from Futures"}
-                              </Button>
-                            ) : (
-                              <Input
-                                id={`vol-${currency}`}
-                                type="number"
-                                step="0.1"
-                                min="0.01"
-                                max="200"
-                                value={editingMarketCells[currency]?.volatility ?? data.volatility}
-                                onChange={(e) => onMarketFieldChange(currency, 'volatility', e.target.value)}
-                                onBlur={() => onMarketFieldBlur(currency, 'volatility')}
-                                className="font-mono text-sm w-20"
-                                placeholder="20"
-                              />
-                            )}
-                          </div>
+                        <div className="flex justify-start shrink-0">
+                          {mappable ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => applyIvFromFuturesInsightsForCurrency(currency)}
+                              disabled={fetchingIvCurrency === currency}
+                              className="text-xs h-8"
+                            >
+                              {fetchingIvCurrency === currency ? "…" : "Update from Futures"}
+                            </Button>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => refreshMarketDataForCurrency(currency)}
+                              className="text-xs h-8"
+                            >
+                              Update
+                            </Button>
+                          )}
                         </div>
-                        <div className="space-y-1">
-                          <Label htmlFor={`dom-${currency}`} className="text-xs">Domestic Rate (%)</Label>
-                          <Input
-                            id={`dom-${currency}`}
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            max="20"
-                            value={editingMarketCells[currency]?.domesticRate ?? data.domesticRate}
-                            onChange={(e) => onMarketFieldChange(currency, 'domesticRate', e.target.value)}
-                            onBlur={() => onMarketFieldBlur(currency, 'domesticRate')}
-                            className="font-mono text-sm"
-                            placeholder="1.0"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label htmlFor={`for-${currency}`} className="text-xs">Foreign Rate (%)</Label>
-                          <Input
-                            id={`for-${currency}`}
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            max="20"
-                            value={editingMarketCells[currency]?.foreignRate ?? data.foreignRate}
-                            onChange={(e) => onMarketFieldChange(currency, 'foreignRate', e.target.value)}
-                            onBlur={() => onMarketFieldBlur(currency, 'foreignRate')}
-                            className="font-mono text-sm"
-                            placeholder="0.5"
-                          />
-                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => refreshMarketDataForCurrency(currency)}
+                          className="text-xs h-8 w-8 p-0 shrink-0"
+                          title="Refresh market data"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground">
@@ -2326,41 +2295,6 @@ const HedgingInstruments = () => {
           </div>
         </CardContent>
       </Card>
-
-      {/* Individual Volatility Overrides Summary */}
-      {instruments.some(inst => inst.impliedVolatility) && (
-        <Card className="mb-4 border-purple-200 bg-purple-50/50">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-purple-700 flex items-center gap-2">
-              <TrendingUp className="h-4 w-4" />
-              Individual Volatility Overrides
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Instruments using custom volatility instead of global market parameters
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="flex flex-wrap gap-2">
-              {instruments
-                .filter(inst => inst.impliedVolatility)
-                .map(inst => (
-                  <Badge key={inst.id} variant="secondary" className="text-xs bg-purple-100 text-purple-700">
-                    {inst.id}: {inst.impliedVolatility?.toFixed(1)}%
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-3 w-3 p-0 ml-1 text-purple-500 hover:text-red-500"
-                      onClick={() => resetInstrumentVolatility(inst.id)}
-                      title="Reset to global volatility"
-                    >
-                      ×
-                    </Button>
-                  </Badge>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Individual Spot Price Overrides Summary */}
       {instruments.some(inst => inst.impliedSpotPrice) && (
