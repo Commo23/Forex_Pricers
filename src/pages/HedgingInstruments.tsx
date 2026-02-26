@@ -36,6 +36,10 @@ import {
 import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty } from "@/services/StrategyImportService";
 import { PricingService } from "@/services/PricingService";
 import ExchangeRateService from "@/services/ExchangeRateService";
+import { fetchCurrencies, fetchVolSurface } from "@/lib/api/barchart";
+import type { SurfacePoint } from "@/lib/api/barchart";
+import { getFuturesContractForPair, isPairMappableToFuturesInsights } from "@/lib/pricersFuturesMapping";
+import { interpolateSurface, interpolateIVAtPoint } from "@/lib/volSurfaceInterpolation";
 // ✅ IMPORT EXACT DES FONCTIONS EXPORTÉES D'INDEX.TSX UTILISÉES PAR STRATEGY BUILDER
 import {
   calculateBarrierOptionPrice,
@@ -360,6 +364,8 @@ const HedgingInstruments = () => {
     return Array.from(currencies).sort();
   };
 
+  const MARKET_DEFAULTS: CurrencyMarketData = { spot: 1.0, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+
   // Fonction pour extraire les données de marché depuis les instruments exportés du Strategy Builder
   const getMarketDataFromInstruments = (currency: string): CurrencyMarketData | null => {
     const currencyInstruments = instruments.filter(inst => inst.currency === currency);
@@ -660,15 +666,11 @@ const HedgingInstruments = () => {
     }
   }, [bankRates, instruments, toast]);
 
-  // Force re-calculation when market parameters change (spot, volatility, rates)
-  useEffect(() => {
-    if (instruments.length > 0) {
-      console.log(`[DEBUG] Market parameters changed, forcing recalculation of Today Prices and MTM`);
-      // Force re-render to recalculate all Today Prices and MTM with new market parameters
-      const updatedInstruments = instruments.map(instrument => ({ ...instrument }));
-      setInstruments(updatedInstruments);
-    }
-  }, [currencyMarketData]);
+  // NOTE: No separate useEffect to force recalculation on currencyMarketData change.
+  // calculateTodayPrice reads currencyMarketData directly from the closure,
+  // and mtmByCurrency already depends on [instruments, currencyMarketData].
+  // The commitCurrencyMarketField helper calls setInstruments(prev => [...prev])
+  // for spot/vol changes, which is sufficient to trigger re-render.
 
   // ✅ Synchroniser les dates avec Strategy Builder et instruments exportés
   useEffect(() => {
@@ -882,6 +884,7 @@ const HedgingInstruments = () => {
 
   const DEBUG_PRICING = false; // set true to enable pricing logs (expensive with many instruments)
   const calculateTodayPrice = (instrument: HedgingInstrument): number => {
+   try {
     // ✅ STRATÉGIE : Utiliser les valeurs CURRENT affichées dans le tableau (modifiables par l'utilisateur)
     
     // ✅ 1. TIME TO MATURITY : Utiliser la Valuation Date pour le calcul MTM
@@ -893,7 +896,7 @@ const HedgingInstruments = () => {
     if (valuationDateObj >= maturityDateObj) {
       if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Option expired - Valuation Date (${valuationDate}) >= Maturity Date (${instrument.maturity})`);
       // Pour les options expirées, retourner la valeur intrinsèque
-      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
       const spotRate = instrument.impliedSpotPrice || marketData.spot;
       const K = instrument.strike || spotRate;
       
@@ -914,13 +917,13 @@ const HedgingInstruments = () => {
     const displayTimeToMaturity = calculationTimeToMaturity;
     
     // 2. PARAMÈTRES DE MARCHÉ : Utiliser les valeurs CURRENT des données de marché
-    const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+    const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
     
     // Utiliser les paramètres CURRENT (modifiables par l'utilisateur)
     // Hiérarchie pour le spot price : individuel > global
-    const spotRate = instrument.impliedSpotPrice || marketData.spot;  // Current spot price
-    const r_d = marketData.domesticRate / 100;  // Current domestic rate
-    const r_f = marketData.foreignRate / 100;  // Current foreign rate
+    const spotRate = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
+    const r_d = (Number(marketData.domesticRate) || 0) / 100;
+    const r_f = (Number(marketData.foreignRate) || 0) / 100;
     
     if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Using CURRENT parameters - spot=${spotRate}, r_d=${(r_d*100).toFixed(3)}%, r_f=${(r_f*100).toFixed(3)}%, t=${calculationTimeToMaturity.toFixed(6)} (valuationDate=${valuationDate})`);
     if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export spot: ${instrument.exportSpotPrice || 'N/A'}, Current: ${marketData.spot}`);
@@ -943,11 +946,14 @@ const HedgingInstruments = () => {
        if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Using CURRENT market volatility: ${(sigma*100).toFixed(3)}%`);
     } else {
       // 5. Fallback : Volatilité des données de marché
-      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
       sigma = marketData.volatility / 100;
       if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Using CURRENT market volatility: ${(sigma*100).toFixed(3)}%`);
     }
     
+    // Guard: avoid division-by-zero when user is mid-edit
+    if (!sigma || sigma <= 0 || !isFinite(sigma)) return 0;
+
     // 4. FORWARD CALCULATION : Utiliser PricingService pour calculer le forward
     const S = PricingService.calculateFXForwardPrice(spotRate, r_d, r_f, calculationTimeToMaturity);
     
@@ -1271,42 +1277,74 @@ const HedgingInstruments = () => {
     
     if (DEBUG_PRICING) console.log(`[DEBUG] Instrument ${instrument.id}: FINAL COMPARISON - Calculated: ${fallbackPrice.toFixed(6)}, Export: ${instrument.realOptionPrice || instrument.premium || 'N/A'}, Difference: ${fallbackPrice - (instrument.realOptionPrice || instrument.premium || 0)}`);
     return fallbackPrice;
+   } catch (err) {
+    console.warn(`[calculateTodayPrice] Error for instrument ${instrument.id}:`, err);
+    return 0;
+   }
   };
 
-  // Fonction pour mettre à jour les données de marché d'une devise spécifique
-  const updateCurrencyMarketData = (currency: string, field: keyof CurrencyMarketData, value: number) => {
+  // Local editing state for currency market data inputs (prevents recalc on every keystroke)
+  const [editingMarketCells, setEditingMarketCells] = useState<Record<string, Partial<Record<keyof CurrencyMarketData, string>>>>({});
+  const marketDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const MARKET_DEBOUNCE_MS = 600;
+
+  // Commit a single market-data field: validate, save, recalc once
+  const commitCurrencyMarketField = (currency: string, field: keyof CurrencyMarketData, raw: string) => {
+    const parsed = parseFloat(raw);
+    if (isNaN(parsed)) return;
+    if (field === 'volatility' && (parsed < 0.01 || parsed > 200)) return;
+    if (field === 'spot' && parsed <= 0) return;
+
     setCurrencyMarketData(prev => {
+      const base = prev[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
       const newData = {
-      ...prev,
-      [currency]: {
-        ...prev[currency],
-        [field]: value
-      }
+        ...prev,
+        [currency]: { ...MARKET_DEFAULTS, ...base, [field]: parsed },
       };
-      
-      // Sauvegarder dans localStorage
-      try {
-        localStorage.setItem('currencyMarketData', JSON.stringify(newData));
-      } catch (error) {
-        console.error('Error saving currency market data:', error);
-      }
-      
+      try { localStorage.setItem('currencyMarketData', JSON.stringify(newData)); } catch (_) {}
       return newData;
     });
-    
-    // Si c'est la volatilité ou le spot rate qui change, recalculer automatiquement les prix
-    if (field === 'volatility' || field === 'spot') {
-      // Force re-render pour recalculer les Today Price
-      setInstruments(prevInstruments => [...prevInstruments]);
-      
-      const fieldName = field === 'volatility' ? 'volatility' : 'spot rate';
-      const unit = field === 'volatility' ? '%' : '';
-      
-      toast({
-        title: `${fieldName === 'volatility' ? 'Volatility' : 'Spot Rate'} Updated`,
-        description: `Updated ${fieldName} to ${value}${unit} for ${currency}. Today Prices recalculated.`,
+
+    // Force re-render so calculateTodayPrice picks up the new market data
+    setInstruments(prev => [...prev]);
+
+    const labels: Record<string, string> = { volatility: 'Volatility', spot: 'Spot Rate', domesticRate: 'Domestic Rate', foreignRate: 'Foreign Rate' };
+    const units: Record<string, string> = { volatility: '%', spot: '', domesticRate: '%', foreignRate: '%' };
+    toast({ title: `${labels[field] || field} Updated`, description: `${labels[field] || field} → ${parsed}${units[field] || ''} for ${currency}. Prices recalculated.` });
+  };
+
+  // onChange handler for currency market inputs: local state + debounced commit
+  const onMarketFieldChange = (currency: string, field: keyof CurrencyMarketData, raw: string) => {
+    setEditingMarketCells(prev => ({ ...prev, [currency]: { ...prev[currency], [field]: raw } }));
+    const dkey = `${currency}-${field}`;
+    if (marketDebounceRef.current[dkey]) clearTimeout(marketDebounceRef.current[dkey]);
+    marketDebounceRef.current[dkey] = setTimeout(() => {
+      commitCurrencyMarketField(currency, field, raw);
+      setEditingMarketCells(prev => {
+        const next = { ...prev };
+        if (next[currency]) { delete next[currency][field]; if (Object.keys(next[currency]).length === 0) delete next[currency]; }
+        return next;
       });
-    }
+      delete marketDebounceRef.current[dkey];
+    }, MARKET_DEBOUNCE_MS);
+  };
+
+  // onBlur: commit immediately and clear local editing state
+  const onMarketFieldBlur = (currency: string, field: keyof CurrencyMarketData) => {
+    const dkey = `${currency}-${field}`;
+    if (marketDebounceRef.current[dkey]) { clearTimeout(marketDebounceRef.current[dkey]); delete marketDebounceRef.current[dkey]; }
+    const raw = editingMarketCells[currency]?.[field];
+    if (raw !== undefined) commitCurrencyMarketField(currency, field, raw);
+    setEditingMarketCells(prev => {
+      const next = { ...prev };
+      if (next[currency]) { delete next[currency][field]; if (Object.keys(next[currency]).length === 0) delete next[currency]; }
+      return next;
+    });
+  };
+
+  // Legacy wrapper (used by non-input callers like refresh, sync, etc.)
+  const updateCurrencyMarketData = (currency: string, field: keyof CurrencyMarketData, value: number) => {
+    commitCurrencyMarketField(currency, field, String(value));
   };
 
   // Fonction pour mettre à jour la volatilité d'un instrument spécifique
@@ -1328,6 +1366,202 @@ const HedgingInstruments = () => {
       title: "Individual Volatility Updated",
       description: `Updated volatility to ${volatility}% for instrument ${instrumentId}`,
     });
+  };
+
+  // ——— Apply IV from Futures Insights (strike × DTE), same logic as Pricers ———
+  const [fetchingIvFromFi, setFetchingIvFromFi] = useState(false);
+  const [fetchingIvInstrumentId, setFetchingIvInstrumentId] = useState<string | null>(null);
+  const [fetchingIvCurrency, setFetchingIvCurrency] = useState<string | null>(null);
+
+  const instrumentTypeUsesVolatility = (type: string) =>
+    type !== "forward" && type !== "swap";
+
+  const applyIvFromFuturesInsightsForAddForm = async () => {
+    if (!addForm.currencyPair || !addForm.maturity || !isPairMappableToFuturesInsights(addForm.currencyPair)) return;
+    if (!instrumentTypeUsesVolatility(addForm.type)) return;
+    setFetchingIvFromFi(true);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) {
+        toast({ title: "Futures Insights", description: "Could not load futures list.", variant: "destructive" });
+        return;
+      }
+      const contract = getFuturesContractForPair(addForm.currencyPair, currenciesRes.data);
+      if (!contract) {
+        toast({ title: "No mapping", description: `No Futures contract for ${addForm.currencyPair}.`, variant: "destructive" });
+        return;
+      }
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) {
+        toast({ title: "Surface fetch failed", description: surfaceRes.error || "Could not load vol surface.", variant: "destructive" });
+        return;
+      }
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+      const optionTypeForSurface: "call" | "put" =
+        addForm.type === "put" || addForm.type.startsWith("put-") ? "put" : "call";
+      const filtered = points.filter((p) => p.type === optionTypeForSurface);
+      if (filtered.length === 0) {
+        toast({ title: "No IV data", description: `No ${optionTypeForSurface} surface points.`, variant: "destructive" });
+        return;
+      }
+      const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+      const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+      const key = (dte: number, strike: number) => `${dte}-${strike}`;
+      const pointMap = new Map<string, SurfacePoint>();
+      for (const p of filtered) pointMap.set(key(p.dte, p.strike), p);
+      let z: (number | null)[][] = dtes.map((dte) =>
+        strikes.map((strike) => {
+          const point = pointMap.get(key(dte, strike));
+          const iv = point?.iv ?? null;
+          return iv !== null && iv > 0 ? iv : null;
+        })
+      );
+      z = interpolateSurface(z, strikes, dtes);
+      const strikeAbs =
+        addForm.strikeType === "percent"
+          ? (Number(addForm.spotPrice) || 0) * (Number(addForm.strike) || 0) / 100
+          : Number(addForm.strike) || 0;
+      const valDate = valuationDate || new Date().toISOString().split("T")[0];
+      const dteDays = Math.round(
+        (new Date(addForm.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+      );
+      const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
+      if (iv == null || iv <= 0) {
+        toast({ title: "IV interpolation", description: "No interpolated IV for this strike & DTE. Check surface range.", variant: "destructive" });
+        return;
+      }
+      setAddForm((f) => ({ ...f, volatility: Math.round(iv * 100) / 100 }));
+      toast({
+        title: "IV applied (Futures Insights)",
+        description: `Volatility ${iv.toFixed(2)}% at strike ${strikeAbs.toFixed(4)}, DTE ${dteDays} (${contract}).`,
+      });
+    } catch (e) {
+      toast({ title: "Error", description: e instanceof Error ? e.message : "Failed to fetch IV.", variant: "destructive" });
+    } finally {
+      setFetchingIvFromFi(false);
+    }
+  };
+
+  const applyIvFromFuturesInsightsForInstrument = async (instrument: HedgingInstrument): Promise<number | null> => {
+    if (!isPairMappableToFuturesInsights(instrument.currency) || !instrumentTypeUsesVolatility(instrument.type)) return null;
+    setFetchingIvInstrumentId(instrument.id);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) return null;
+      const contract = getFuturesContractForPair(instrument.currency, currenciesRes.data);
+      if (!contract) return null;
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) return null;
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+      const optionTypeForSurface: "call" | "put" =
+        instrument.type === "put" || instrument.type.startsWith("put-") ? "put" : "call";
+      const filtered = points.filter((p) => p.type === optionTypeForSurface);
+      if (filtered.length === 0) return null;
+      const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+      const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+      const key = (dte: number, strike: number) => `${dte}-${strike}`;
+      const pointMap = new Map<string, SurfacePoint>();
+      for (const p of filtered) pointMap.set(key(p.dte, p.strike), p);
+      let z: (number | null)[][] = dtes.map((dte) =>
+        strikes.map((strike) => {
+          const point = pointMap.get(key(dte, strike));
+          const iv = point?.iv ?? null;
+          return iv !== null && iv > 0 ? iv : null;
+        })
+      );
+      z = interpolateSurface(z, strikes, dtes);
+      const spot = currencyMarketData[instrument.currency]?.spot ?? 1;
+      const strikeAbs = instrument.strike ?? spot;
+      const valDate = valuationDate || new Date().toISOString().split("T")[0];
+      const dteDays = Math.round(
+        (new Date(instrument.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+      );
+      const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
+      return iv != null && iv > 0 ? iv : null;
+    } catch {
+      return null;
+    } finally {
+      setFetchingIvInstrumentId(null);
+    }
+  };
+
+  /** Update volatility from Futures Insights for all instruments of one currency (one surface fetch, then interpolate per instrument). */
+  const applyIvFromFuturesInsightsForCurrency = async (currency: string) => {
+    if (!isPairMappableToFuturesInsights(currency)) {
+      toast({ title: "Not available", description: `${currency} is not mapped to Futures Insights.`, variant: "destructive" });
+      return;
+    }
+    const list = instruments.filter((inst) => inst.currency === currency && instrumentTypeUsesVolatility(inst.type));
+    if (list.length === 0) {
+      toast({ title: "No instruments", description: `No option-type instruments for ${currency}.`, variant: "destructive" });
+      return;
+    }
+    setFetchingIvCurrency(currency);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) {
+        toast({ title: "Futures Insights", description: "Could not load futures list.", variant: "destructive" });
+        return;
+      }
+      const contract = getFuturesContractForPair(currency, currenciesRes.data);
+      if (!contract) {
+        toast({ title: "No mapping", description: `No Futures contract for ${currency}.`, variant: "destructive" });
+        return;
+      }
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) {
+        toast({ title: "Surface fetch failed", description: surfaceRes.error || "Could not load vol surface.", variant: "destructive" });
+        return;
+      }
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+      const valDate = valuationDate || new Date().toISOString().split("T")[0];
+      const updates: { id: string; iv: number }[] = [];
+      for (const inst of list) {
+        const optionType: "call" | "put" = inst.type === "put" || inst.type.startsWith("put-") ? "put" : "call";
+        const filtered = points.filter((p) => p.type === optionType);
+        if (filtered.length === 0) continue;
+        const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+        const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+        const key = (dte: number, strike: number) => `${dte}-${strike}`;
+        const pointMap = new Map<string, SurfacePoint>();
+        for (const p of filtered) pointMap.set(key(p.dte, p.strike), p);
+        let z: (number | null)[][] = dtes.map((dte) =>
+          strikes.map((strike) => {
+            const point = pointMap.get(key(dte, strike));
+            const iv = point?.iv ?? null;
+            return iv !== null && iv > 0 ? iv : null;
+          })
+        );
+        z = interpolateSurface(z, strikes, dtes);
+        const spot = currencyMarketData[inst.currency]?.spot ?? 1;
+        const strikeAbs = inst.strike ?? spot;
+        const dteDays = Math.round(
+          (new Date(inst.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+        );
+        const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
+        if (iv != null && iv > 0) updates.push({ id: inst.id, iv });
+      }
+      if (updates.length > 0) {
+        const idToIv = new Map(updates.map((u) => [u.id, u.iv]));
+        setInstruments((prev) => {
+          const next = prev.map((i) =>
+            idToIv.has(i.id) ? { ...i, impliedVolatility: idToIv.get(i.id)! } : i
+          );
+          try {
+            localStorage.setItem("hedgingInstruments", JSON.stringify(next));
+          } catch (_) {}
+          return next;
+        });
+      }
+      toast({
+        title: "Vol updated from Futures",
+        description: `${currency}: ${updates.length}/${list.length} instrument(s) updated.`,
+      });
+    } catch (e) {
+      toast({ title: "Error", description: e instanceof Error ? e.message : "Failed to fetch IV.", variant: "destructive" });
+    } finally {
+      setFetchingIvCurrency(null);
+    }
   };
 
   // Fonction pour réinitialiser la volatilité individuelle (utiliser la volatilité globale)
@@ -1396,32 +1630,26 @@ const HedgingInstruments = () => {
     });
   };
 
-  // Fonction pour appliquer les données par défaut d'une paire de devises
-  const applyDefaultDataForCurrency = (currency: string) => {
-    const defaultData = getMarketDataFromInstruments(currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-    
-    console.log(`[DEBUG] Applying default data for ${currency}:`, defaultData);
-    console.log(`[DEBUG] Source instrument exportSpotPrice:`, instruments.find(inst => inst.currency === currency)?.exportSpotPrice);
-    
-    setCurrencyMarketData(prev => {
-      const newData = {
-      ...prev,
-      [currency]: defaultData
-      };
-      
-      // Sauvegarder dans localStorage
+  /** Refresh market data for one currency from instruments (export data) or keep current; safe number fallbacks to avoid crashes. */
+  const refreshMarketDataForCurrency = (currency: string) => {
+    const fromInstruments = getMarketDataFromInstruments(currency);
+    const current = currencyMarketData[currency] || { spot: 1.0, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+    const spot = Number(fromInstruments?.spot ?? current.spot) || 1.0;
+    const volatility = Number(fromInstruments?.volatility ?? current.volatility) || 20;
+    const domesticRate = Number(fromInstruments?.domesticRate ?? current.domesticRate) ?? 1.0;
+    const foreignRate = Number(fromInstruments?.foreignRate ?? current.foreignRate) ?? 1.0;
+    const nextData: CurrencyMarketData = { spot, volatility, domesticRate, foreignRate };
+
+    setCurrencyMarketData((prev) => {
+      const newData = { ...prev, [currency]: nextData };
       try {
-        localStorage.setItem('currencyMarketData', JSON.stringify(newData));
-      } catch (error) {
-        console.error('Error saving currency market data:', error);
-      }
-      
+        localStorage.setItem("currencyMarketData", JSON.stringify(newData));
+      } catch (_) {}
       return newData;
     });
-    
     toast({
-      title: "Market Data Updated",
-      description: `Applied export parameters for ${currency}: Spot ${defaultData.spot.toFixed(6)}`,
+      title: "Data refreshed",
+      description: `${currency}: Spot ${spot.toFixed(6)}, Vol ${volatility}%`,
     });
   };
 
@@ -1487,15 +1715,17 @@ const HedgingInstruments = () => {
 
   // Format currency amount in specific currency
   const formatCurrency = (amount: number, currency: string = 'USD') => {
-    // Extract base currency from currency pair (e.g., "EUR/USD" -> "EUR")
     const baseCurrency = currency.includes('/') ? currency.split('/')[0] : currency;
-    
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: baseCurrency,
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2
-    }).format(amount);
+    try {
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: baseCurrency,
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+      }).format(amount);
+    } catch {
+      return `${baseCurrency} ${(amount || 0).toFixed(2)}`;
+    }
   };
 
   // Get base currency from currency pair
@@ -1985,7 +2215,7 @@ const HedgingInstruments = () => {
                   </Button>
                 </div>
                 {getUniqueCurrencies(instruments).map((currency) => {
-                  const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+                  const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
                   return (
                     <div key={currency} className="border rounded-lg p-4 bg-muted/20">
                       <div className="flex items-center justify-between mb-3">
@@ -2000,10 +2230,11 @@ const HedgingInstruments = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => applyDefaultDataForCurrency(currency)}
+                          onClick={() => refreshMarketDataForCurrency(currency)}
                           className="text-xs"
                         >
-                          Reset to Default
+                          <RefreshCw className="h-3 w-3 mr-1" />
+                          Refresh
                         </Button>
                       </div>
                       <div className="grid gap-3 md:grid-cols-4">
@@ -2013,25 +2244,43 @@ const HedgingInstruments = () => {
                             id={`spot-${currency}`}
                             type="number"
                             step="0.0001"
-                            value={data.spot}
-                            onChange={(e) => updateCurrencyMarketData(currency, 'spot', parseFloat(e.target.value) || data.spot)}
+                            value={editingMarketCells[currency]?.spot ?? data.spot}
+                            onChange={(e) => onMarketFieldChange(currency, 'spot', e.target.value)}
+                            onBlur={() => onMarketFieldBlur(currency, 'spot')}
                             className="font-mono text-sm"
                             placeholder="1.0850"
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label htmlFor={`vol-${currency}`} className="text-xs">Volatility (%)</Label>
-                          <Input
-                            id={`vol-${currency}`}
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            max="100"
-                            value={data.volatility}
-                            onChange={(e) => updateCurrencyMarketData(currency, 'volatility', parseFloat(e.target.value) || data.volatility)}
-                            className="font-mono text-sm"
-                            placeholder="20"
-                          />
+                          <Label className="text-xs">Volatility (%)</Label>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm min-w-[3rem]">{data.volatility}</span>
+                            {isPairMappableToFuturesInsights(currency) ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => applyIvFromFuturesInsightsForCurrency(currency)}
+                                disabled={fetchingIvCurrency === currency}
+                                className="text-xs shrink-0"
+                              >
+                                {fetchingIvCurrency === currency ? "…" : "Update from Futures"}
+                              </Button>
+                            ) : (
+                              <Input
+                                id={`vol-${currency}`}
+                                type="number"
+                                step="0.1"
+                                min="0.01"
+                                max="200"
+                                value={editingMarketCells[currency]?.volatility ?? data.volatility}
+                                onChange={(e) => onMarketFieldChange(currency, 'volatility', e.target.value)}
+                                onBlur={() => onMarketFieldBlur(currency, 'volatility')}
+                                className="font-mono text-sm w-20"
+                                placeholder="20"
+                              />
+                            )}
+                          </div>
                         </div>
                         <div className="space-y-1">
                           <Label htmlFor={`dom-${currency}`} className="text-xs">Domestic Rate (%)</Label>
@@ -2041,8 +2290,9 @@ const HedgingInstruments = () => {
                             step="0.01"
                             min="0"
                             max="20"
-                            value={data.domesticRate}
-                            onChange={(e) => updateCurrencyMarketData(currency, 'domesticRate', parseFloat(e.target.value) || data.domesticRate)}
+                            value={editingMarketCells[currency]?.domesticRate ?? data.domesticRate}
+                            onChange={(e) => onMarketFieldChange(currency, 'domesticRate', e.target.value)}
+                            onBlur={() => onMarketFieldBlur(currency, 'domesticRate')}
                             className="font-mono text-sm"
                             placeholder="1.0"
                           />
@@ -2055,8 +2305,9 @@ const HedgingInstruments = () => {
                             step="0.01"
                             min="0"
                             max="20"
-                            value={data.foreignRate}
-                            onChange={(e) => updateCurrencyMarketData(currency, 'foreignRate', parseFloat(e.target.value) || data.foreignRate)}
+                            value={editingMarketCells[currency]?.foreignRate ?? data.foreignRate}
+                            onChange={(e) => onMarketFieldChange(currency, 'foreignRate', e.target.value)}
+                            onBlur={() => onMarketFieldBlur(currency, 'foreignRate')}
                             className="font-mono text-sm"
                             placeholder="0.5"
                           />
@@ -2663,13 +2914,32 @@ const HedgingInstruments = () => {
                   <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4"><span /><p className="text-xs text-muted-foreground">Volume hedged = Notional ({addFormBaseCcy}) × Quantity% = {(Number(addForm.notionalBase) || 0) * (Number(addForm.quantity) || 0) / 100} {addFormBaseCcy}</p></div>
                   <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
                     <Label className="text-right font-medium whitespace-nowrap">Volatility (%)</Label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      className="w-full"
-                      value={addForm.volatility ?? ""}
-                      onChange={(e) => setAddForm((f) => ({ ...f, volatility: parseFloat(e.target.value) || 0 }))}
-                    />
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          step="0.1"
+                          className="w-full"
+                          value={addForm.volatility ?? ""}
+                          onChange={(e) => setAddForm((f) => ({ ...f, volatility: parseFloat(e.target.value) || 0 }))}
+                        />
+                        {instrumentTypeUsesVolatility(addForm.type) && isPairMappableToFuturesInsights(addForm.currencyPair) && addForm.currencyPair && addForm.maturity && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={applyIvFromFuturesInsightsForAddForm}
+                            disabled={fetchingIvFromFi}
+                            className="shrink-0"
+                          >
+                            {fetchingIvFromFi ? "…" : "Apply IV from Futures"}
+                          </Button>
+                        )}
+                      </div>
+                      {instrumentTypeUsesVolatility(addForm.type) && isPairMappableToFuturesInsights(addForm.currencyPair) && (
+                        <p className="text-xs text-muted-foreground">Strike × DTE → IV from Futures Insights (EUR/USD, GBP/USD, etc.)</p>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
                     <Label className="text-right font-medium whitespace-nowrap">{addFormQuoteCcy} rate (%)</Label>
@@ -3182,8 +3452,8 @@ const HedgingInstruments = () => {
                           {/* Spot Price - Current (debounced to avoid recalc on every keystroke) */}
                            <TableCell className="text-center bg-green-50/80 border-r border-slate-200">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-                              const currentSpot = instrument.impliedSpotPrice || marketData.spot;
+                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
+                              const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
                               const spotDisplayValue = editingTableCells[instrument.id]?.spot ?? (instrument.impliedSpotPrice != null ? String(instrument.impliedSpotPrice) : currentSpot.toFixed(6));
                               return (
                                 <div className="space-y-1">
@@ -3312,6 +3582,27 @@ const HedgingInstruments = () => {
                                   max="100"
                                 />
                                 <span className="text-xs">%</span>
+                                {instrumentTypeUsesVolatility(instrument.type) && isPairMappableToFuturesInsights(instrument.currency) && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-4 w-4 p-0 text-blue-600 hover:text-blue-700"
+                                    onClick={async () => {
+                                      const iv = await applyIvFromFuturesInsightsForInstrument(instrument);
+                                      if (iv != null) {
+                                        updateInstrumentVolatility(instrument.id, iv);
+                                        setEditingTableCells(prev => ({ ...prev, [instrument.id]: { ...prev[instrument.id], vol: String(iv) } }));
+                                        toast({ title: "IV applied", description: `Volatility ${iv.toFixed(2)}% from Futures Insights for ${instrument.currency}.` });
+                                      } else {
+                                        toast({ title: "IV unavailable", description: "Could not interpolate IV for this strike & DTE.", variant: "destructive" });
+                                      }
+                                    }}
+                                    disabled={fetchingIvInstrumentId === instrument.id}
+                                    title="Apply IV from Futures Insights (strike × DTE)"
+                                  >
+                                    {fetchingIvInstrumentId === instrument.id ? "…" : <BarChart3 className="w-3 h-3" />}
+                                  </Button>
+                                )}
                                 {instrument.impliedVolatility != null && (
                                   <Button
                                     variant="ghost"
@@ -3345,10 +3636,10 @@ const HedgingInstruments = () => {
                           {/* Domestic Rate - Current */}
                           <TableCell className="font-mono text-center bg-green-50">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
                               return (
                                 <div className="text-xs text-green-600">
-                                  {marketData.domesticRate.toFixed(3)}%
+                                  {(Number(marketData.domesticRate) || 0).toFixed(3)}%
                                 </div>
                               );
                             })()}
@@ -3369,10 +3660,10 @@ const HedgingInstruments = () => {
                           {/* Foreign Rate - Current */}
                           <TableCell className="font-mono text-center bg-green-50">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
+                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
                               return (
                                 <div className="text-xs text-green-600">
-                                  {marketData.foreignRate.toFixed(3)}%
+                                  {(Number(marketData.foreignRate) || 0).toFixed(3)}%
                             </div>
                               );
                             })()}
@@ -3393,22 +3684,22 @@ const HedgingInstruments = () => {
                           {/* Forward Price - Current */}
                           <TableCell className="font-mono text-center bg-green-50">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || { spot: 1.0000, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-                              // ✅ CORRECTION : Utiliser la même logique que Strategy Builder pour cohérence
+                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
+                              try {
                               const strategyStartDateObj = new Date(instrument.exportStrategyStartDate || strategyStartDate);
                               const calculationStartDate = new Date(strategyStartDateObj.getFullYear(), strategyStartDateObj.getMonth(), strategyStartDateObj.getDate());
                               const calculationStartDateStr = calculationStartDate.toISOString().split('T')[0];
                               const currentTimeToMat = PricingService.calculateTimeToMaturity(instrument.maturity, calculationStartDateStr);
-                              const r_d = marketData.domesticRate / 100;
-                              const r_f = marketData.foreignRate / 100;
-                              const currentSpot = instrument.impliedSpotPrice || marketData.spot;
+                              const r_d = (Number(marketData.domesticRate) || 0) / 100;
+                              const r_f = (Number(marketData.foreignRate) || 0) / 100;
+                              const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
                               const currentForward = PricingService.calculateFXForwardPrice(currentSpot, r_d, r_f, currentTimeToMat);
-                              console.log(`[DEBUG] ${instrument.id}: Forward Price - Current using Strategy Logic (${calculationStartDateStr}), TTM: ${currentTimeToMat.toFixed(4)}y, Forward: ${currentForward.toFixed(6)}`);
                               return (
                                 <div className="text-xs text-green-600">
-                                  {currentForward.toFixed(6)}
+                                  {isFinite(currentForward) ? currentForward.toFixed(6) : 'N/A'}
                                 </div>
                               );
+                              } catch { return <div className="text-xs text-slate-400">N/A</div>; }
                             })()}
                           </TableCell>
                           
