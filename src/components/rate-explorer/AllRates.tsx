@@ -12,6 +12,9 @@ import {
   priceToRate,
   exportToCSV,
   getBasisConvention,
+  daysBetween,
+  fractionOfYear,
+  interpolateAtTenor,
 } from "@/lib/rate-explorer/bootstrapping";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { DiscountFactorTable } from "./DiscountFactorTable";
 import { BootstrapCurveChart } from "./BootstrapCurveChart";
 import { Download, Calculator, RefreshCw, TrendingUp, Info, LayoutGrid, FileText } from "lucide-react";
@@ -57,6 +62,11 @@ export function AllRates() {
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [selectedCurrency, setSelectedCurrency] = useState<string>("");
   const [selectedMethod, setSelectedMethod] = useState<BootstrapMethod>("cubic_spline");
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 6);
+    return d.toISOString().slice(0, 10);
+  });
   
   // Fetch IRS/Futures for major currencies
   const usdFutures = useRateData("sofr");
@@ -547,6 +557,77 @@ export function AllRates() {
             </CardContent>
           </Card>
           
+          {/* Custom date: rates from bootstrapped curve (selected method) interpolated at date tenor */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Rates at custom date</CardTitle>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose a date to get the discount factor, zero rate and forward rate. Values are derived from the
+                <strong> bootstrapped curve</strong> (method: <strong>{BOOTSTRAP_METHODS.find(m => m.id === selectedRate.result.method)?.name ?? selectedRate.result.method}</strong>)
+                by <strong>interpolation</strong> at the corresponding tenor (curve reference: today).
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-end gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="custom-date" className="text-xs">Date</Label>
+                  <Input
+                    id="custom-date"
+                    type="date"
+                    value={customDate}
+                    onChange={(e) => setCustomDate(e.target.value)}
+                    className="w-[10rem] font-mono"
+                  />
+                </div>
+                {(() => {
+                  const today = new Date();
+                  today.setHours(0, 0, 0, 0);
+                  const target = new Date(customDate);
+                  target.setHours(0, 0, 0, 0);
+                  const days = daysBetween(today, target);
+                  const basis = selectedRate.result.basisConvention;
+                  const frac = fractionOfYear(today, target, basis.dayCount);
+                  // Use the same bootstrapped discount factors as the chart/table (selected method)
+                  const interpolated = days >= 0
+                    ? interpolateAtTenor(selectedRate.result.discountFactors, frac)
+                    : null;
+                  return (
+                    <div className="flex flex-wrap items-baseline gap-6 text-sm">
+                      <div className="font-mono">
+                        <span className="text-muted-foreground mr-1">Days:</span>
+                        <span className="font-semibold">{days}</span>
+                      </div>
+                      <div className="font-mono">
+                        <span className="text-muted-foreground mr-1">Fraction (Y):</span>
+                        <span className="font-semibold">{frac.toFixed(6)}</span>
+                      </div>
+                      {interpolated ? (
+                        <>
+                          <div className="font-mono">
+                            <span className="text-muted-foreground mr-1">Discount Factor:</span>
+                            <span className="font-semibold">{interpolated.df.toFixed(8)}</span>
+                          </div>
+                          <div className="font-mono">
+                            <span className="text-muted-foreground mr-1">Zero Rate:</span>
+                            <span className="font-semibold">{(interpolated.zeroRate * 100).toFixed(4)}%</span>
+                          </div>
+                          <div className="font-mono">
+                            <span className="text-muted-foreground mr-1">Forward Rate:</span>
+                            <span className="font-semibold">{(interpolated.forwardRate * 100).toFixed(4)}%</span>
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground italic">
+                          Select a date on or after today.
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Table */}
           <Card>
             <CardHeader>

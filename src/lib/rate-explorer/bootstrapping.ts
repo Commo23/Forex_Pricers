@@ -180,6 +180,131 @@ export function calculateForwardRate(
   return -Math.log(df2 / df1) / (tenor2 - tenor1);
 }
 
+// ============ Date to Tenor (for custom date lookup) ============
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Calendar days between two dates (start exclusive of end, so days to end of start day → start of end day).
+ * Use same-day as 0, next day as 1.
+ */
+export function daysBetween(start: Date, end: Date): number {
+  const s = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const e = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  return Math.round((e.getTime() - s.getTime()) / MS_PER_DAY);
+}
+
+/**
+ * Fraction of year between start and end using the given day count convention.
+ */
+export function fractionOfYear(
+  start: Date,
+  end: Date,
+  dayCount: DayCountConvention
+): number {
+  const days = daysBetween(start, end);
+  if (days <= 0) return 0;
+  switch (dayCount) {
+    case 'ACT/360':
+      return days / 360;
+    case 'ACT/365':
+      return days / 365;
+    case 'ACT/ACT': {
+      const startYear = start.getFullYear();
+      const endYear = end.getFullYear();
+      if (startYear === endYear) {
+        const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+        const daysInYear = isLeap(startYear) ? 366 : 365;
+        return days / daysInYear;
+      }
+      return days / 365.25;
+    }
+    case '30/360': {
+      let d1 = start.getDate();
+      let d2 = end.getDate();
+      const m1 = start.getMonth();
+      const m2 = end.getMonth();
+      const y1 = start.getFullYear();
+      const y2 = end.getFullYear();
+      if (d1 === 31) d1 = 30;
+      if (d2 === 31 && d1 >= 30) d2 = 30;
+      const dayDiff = 360 * (y2 - y1) + 30 * (m2 - m1) + (d2 - d1);
+      return dayDiff / 360;
+    }
+    default:
+      return days / 365;
+  }
+}
+
+/**
+ * Interpolate discount factor, zero rate and forward rate at an arbitrary tenor
+ * from the bootstrap curve. For short maturities (segment [0, first positive tenor])
+ * uses linear interpolation in zero rate to avoid discontinuity; otherwise log-linear in DF.
+ */
+export function interpolateAtTenor(
+  discountFactors: DiscountFactor[],
+  targetTenor: number
+): { df: number; zeroRate: number; forwardRate: number } | null {
+  if (discountFactors.length === 0 || targetTenor < 0) return null;
+  if (targetTenor === 0) {
+    const first = discountFactors[0];
+    return {
+      df: 1,
+      zeroRate: first?.zeroRate ?? 0,
+      forwardRate: first?.forwardRate ?? first?.zeroRate ?? 0,
+    };
+  }
+  const sorted = [...discountFactors].sort((a, b) => a.tenor - b.tenor);
+  const maxTenor = sorted[sorted.length - 1].tenor;
+  const minTenor = sorted[0].tenor;
+
+  if (targetTenor <= minTenor) {
+    const p = sorted[0];
+    return {
+      df: p.df,
+      zeroRate: p.zeroRate,
+      forwardRate: p.forwardRate ?? p.zeroRate,
+    };
+  }
+  if (targetTenor >= maxTenor) {
+    const p = sorted[sorted.length - 1];
+    return {
+      df: p.df,
+      zeroRate: p.zeroRate,
+      forwardRate: p.forwardRate ?? p.zeroRate,
+    };
+  }
+
+  let i = 0;
+  while (i < sorted.length - 1 && sorted[i + 1].tenor < targetTenor) i++;
+  const left = sorted[i];
+  const right = sorted[i + 1];
+  const dt = right.tenor - left.tenor;
+  if (dt <= 0) {
+    return { df: right.df, zeroRate: right.zeroRate, forwardRate: right.forwardRate ?? right.zeroRate };
+  }
+  const t = (targetTenor - left.tenor) / dt;
+
+  // Short end [0, first positive tenor]: linear interpolation in zero rate for smooth short maturities
+  if (left.tenor === 0 && left.df >= 0.99999) {
+    const zeroLeft = left.zeroRate;
+    const zeroRight = right.zeroRate;
+    const zeroInterp = zeroLeft + t * (zeroRight - zeroLeft);
+    const df = Math.exp(-zeroInterp * targetTenor);
+    const forwardRate = zeroInterp; // instantaneous forward from 0 to targetTenor
+    return { df, zeroRate: zeroInterp, forwardRate };
+  }
+
+  // General case: log-linear in DF
+  const logDfLeft = Math.log(left.df);
+  const logDfRight = Math.log(right.df);
+  const logDf = logDfLeft + t * (logDfRight - logDfLeft);
+  const df = Math.exp(logDf);
+  const zeroRate = calculateZeroRate(df, targetTenor);
+  const forwardRate = calculateForwardRate(left.df, left.tenor, right.df, right.tenor);
+  return { df, zeroRate, forwardRate };
+}
+
 // ============ Data Preparation ============
 
 /**
@@ -272,7 +397,9 @@ export function adjustFuturesToSwaps(points: BootstrapPoint[]): BootstrapPoint[]
 }
 
 /**
- * Remove duplicate tenors, keeping swaps over futures
+ * Remove duplicate tenors, keeping swaps over futures.
+ * Uses fine granularity (4 decimals) so multicurve nearby rates (e.g. futures vs swaps)
+ * are not merged and all contribute to interpolation.
  */
 export function removeDuplicates(points: BootstrapPoint[]): BootstrapPoint[] {
   const uniquePoints = new Map<string, BootstrapPoint>();
@@ -281,7 +408,7 @@ export function removeDuplicates(points: BootstrapPoint[]): BootstrapPoint[] {
   const sorted = [...points].sort((a, b) => a.priority - b.priority);
   
   for (const p of sorted) {
-    const key = p.tenor.toFixed(3);
+    const key = p.tenor.toFixed(4);
     if (!uniquePoints.has(key)) {
       uniquePoints.set(key, p);
     }
@@ -292,6 +419,17 @@ export function removeDuplicates(points: BootstrapPoint[]): BootstrapPoint[] {
   }
   
   return Array.from(uniquePoints.values()).sort((a, b) => a.tenor - b.tenor);
+}
+
+// ============ Anchor at zero (start curve from tenor 0) ============
+
+/**
+ * Rate at tenor 0: use shortest available rate (flat extrapolation).
+ * Ensures curve always starts at 0 for both mono and multicurve.
+ */
+function rateAtZero(sorted: BootstrapPoint[]): number {
+  if (sorted.length === 0) return 0;
+  return sorted[0].rate;
 }
 
 // ============ Linear Interpolation ============
@@ -330,21 +468,28 @@ export function bootstrapLinear(
   const sorted = [...points].sort((a, b) => a.tenor - b.tenor);
   const discountFactors: DiscountFactor[] = [];
 
-  // Generate curve at regular intervals
+  // Generate curve at regular intervals, starting at 0
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
 
-  let prevDf: DiscountFactor | null = null;
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({
+    tenor: 0,
+    df: 1,
+    zeroRate: r0,
+    forwardRate: r0,
+    source: 'interpolated',
+  });
+  let prevDf: DiscountFactor = discountFactors[0];
 
   for (let t = step; t <= maxTenor + step; t += step) {
     const rate = linearInterpolation(sorted, t);
     curvePoints.push({ tenor: t, rate });
 
     const df = calculateDiscountFactor(rate, t);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : rate;
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
 
     // Determine source for this point
     const closestInput = sorted.reduce((closest, p) => 
@@ -357,7 +502,7 @@ export function bootstrapLinear(
       tenor: t,
       df,
       zeroRate: rate,
-      forwardRate: Math.max(0, forwardRate), // Ensure non-negative
+      forwardRate: Math.max(0, forwardRate),
       source,
     });
 
@@ -470,16 +615,17 @@ export function bootstrapCubicSpline(
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
 
-  let prevDf: DiscountFactor | null = null;
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
 
   for (let t = step; t <= maxTenor + step; t += step) {
     const rate = evaluateSpline(coeffs, t);
     curvePoints.push({ tenor: t, rate });
 
     const df = calculateDiscountFactor(rate, t);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : rate;
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
 
     const closestInput = sorted.reduce((closest, p) => 
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest
@@ -494,7 +640,6 @@ export function bootstrapCubicSpline(
       forwardRate: Math.max(0, forwardRate),
       source,
     });
-
     prevDf = discountFactors[discountFactors.length - 1];
   }
 
@@ -604,16 +749,17 @@ export function bootstrapNelsonSiegel(
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
 
-  let prevDf: DiscountFactor | null = null;
+  const r0 = nelsonSiegelRate(0, params);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
 
   for (let t = step; t <= maxTenor + step; t += step) {
     const rate = nelsonSiegelRate(t, params);
     curvePoints.push({ tenor: t, rate });
 
     const df = calculateDiscountFactor(rate, t);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : rate;
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
 
     const closestInput = sorted.reduce((closest, p) => 
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest
@@ -747,7 +893,7 @@ export function bootstrapBloomberg(
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   
-  const initialDfs: { tenor: number; df: number }[] = [];
+  const initialDfs: { tenor: number; df: number }[] = [{ tenor: 0, df: 1 }];
   for (let t = step; t <= maxTenor + step; t += step) {
     const logDf = logLinearDfInterpolation(swapDfs, t);
     initialDfs.push({ tenor: t, df: Math.exp(logDf) });
@@ -773,15 +919,16 @@ export function bootstrapBloomberg(
   
   const discountFactors: DiscountFactor[] = [];
   const curvePoints: { tenor: number; rate: number }[] = [];
-  
-  let prevDf: DiscountFactor | null = null;
-  
+
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
+
   for (const dfPoint of finalDfs.slice(1)) {
     const zeroRate = calculateZeroRate(dfPoint.df, dfPoint.tenor);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, dfPoint.df, dfPoint.tenor)
-      : zeroRate;
-    
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, dfPoint.df, dfPoint.tenor);
+
     curvePoints.push({ tenor: dfPoint.tenor, rate: zeroRate });
     
     const closestInput = sorted.reduce((closest, p) =>
@@ -826,30 +973,31 @@ export function bootstrapQuantLibLogLinear(
     tenor: p.tenor,
     logDf: -p.rate * p.tenor,
   }));
-  
+
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
-  
-  let prevDf: DiscountFactor | null = null;
-  
+
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
+
   for (let t = step; t <= maxTenor + step; t += step) {
     const logDf = logLinearDfInterpolation(logDfPoints, t);
     const df = Math.exp(logDf);
     const zeroRate = calculateZeroRate(df, t);
-    
+
     curvePoints.push({ tenor: t, rate: zeroRate });
-    
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : zeroRate;
-    
+
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
+
     const closestInput = sorted.reduce((closest, p) =>
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest
     );
     const isExactMatch = Math.abs(closestInput.tenor - t) < 0.01;
     const source = isExactMatch ? closestInput.source : 'interpolated';
-    
+
     discountFactors.push({
       tenor: t,
       df,
@@ -857,10 +1005,10 @@ export function bootstrapQuantLibLogLinear(
       forwardRate: Math.max(0, forwardRate),
       source,
     });
-    
+
     prevDf = discountFactors[discountFactors.length - 1];
   }
-  
+
   return {
     method: 'quantlib_log_linear',
     discountFactors,
@@ -901,30 +1049,31 @@ export function bootstrapQuantLibLogCubic(
     tenor: p.tenor,
     logDf: -p.rate * p.tenor,
   }));
-  
+
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
-  
-  let prevDf: DiscountFactor | null = null;
-  
+
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
+
   for (let t = step; t <= maxTenor + step; t += step) {
     const logDf = logCubicInterpolation(logDfPoints, t);
     const df = Math.exp(logDf);
     const zeroRate = calculateZeroRate(df, t);
-    
+
     curvePoints.push({ tenor: t, rate: zeroRate });
-    
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : zeroRate;
-    
+
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
+
     const closestInput = sorted.reduce((closest, p) =>
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest
     );
     const isExactMatch = Math.abs(closestInput.tenor - t) < 0.01;
     const source = isExactMatch ? closestInput.source : 'interpolated';
-    
+
     discountFactors.push({
       tenor: t,
       df,
@@ -932,10 +1081,10 @@ export function bootstrapQuantLibLogCubic(
       forwardRate: Math.max(0, forwardRate),
       source,
     });
-    
+
     prevDf = discountFactors[discountFactors.length - 1];
   }
-  
+
   return {
     method: 'quantlib_log_cubic',
     discountFactors,
@@ -971,9 +1120,12 @@ export function bootstrapQuantLibLinearForward(
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
-  
-  let prevDf: DiscountFactor | null = null;
-  
+
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
+
   for (let t = step; t <= maxTenor + step; t += step) {
     let fwd: number;
     if (t <= forwardPoints[0].tenor) {
@@ -992,22 +1144,20 @@ export function bootstrapQuantLibLinearForward(
         }
       }
     }
-    
+
     const zeroRate = fwd;
-    
+
     curvePoints.push({ tenor: t, rate: zeroRate });
-    
+
     const df = calculateDiscountFactor(zeroRate, t);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : zeroRate;
-    
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
+
     const closestInput = sorted.reduce((closest, p) =>
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest
     );
     const isExactMatch = Math.abs(closestInput.tenor - t) < 0.01;
     const source = isExactMatch ? closestInput.source : 'interpolated';
-    
+
     discountFactors.push({
       tenor: t,
       df,
@@ -1015,10 +1165,10 @@ export function bootstrapQuantLibLinearForward(
       forwardRate: Math.max(0, forwardRate),
       source,
     });
-    
+
     prevDf = discountFactors[discountFactors.length - 1];
   }
-  
+
   return {
     method: 'quantlib_linear_forward',
     discountFactors,
@@ -1088,21 +1238,22 @@ export function bootstrapQuantLibMonotonicConvex(
 ): BootstrapResult {
   const sorted = [...points].sort((a, b) => a.tenor - b.tenor);
   const discountFactors: DiscountFactor[] = [];
-  
+
   const maxTenor = Math.max(...sorted.map(p => p.tenor), 1);
   const step = maxTenor > 10 ? 0.5 : 0.25;
   const curvePoints: { tenor: number; rate: number }[] = [];
-  
-  let prevDf: DiscountFactor | null = null;
-  
+
+  const r0 = rateAtZero(sorted);
+  curvePoints.push({ tenor: 0, rate: r0 });
+  discountFactors.push({ tenor: 0, df: 1, zeroRate: r0, forwardRate: r0, source: 'interpolated' });
+  let prevDf: DiscountFactor = discountFactors[0];
+
   for (let t = step; t <= maxTenor + step; t += step) {
     const rate = monotonicConvexInterpolation(sorted, t);
     curvePoints.push({ tenor: t, rate });
-    
+
     const df = calculateDiscountFactor(rate, t);
-    const forwardRate = prevDf
-      ? calculateForwardRate(prevDf.df, prevDf.tenor, df, t)
-      : rate;
+    const forwardRate = calculateForwardRate(prevDf.df, prevDf.tenor, df, t);
     
     const closestInput = sorted.reduce((closest, p) =>
       Math.abs(p.tenor - t) < Math.abs(closest.tenor - t) ? p : closest

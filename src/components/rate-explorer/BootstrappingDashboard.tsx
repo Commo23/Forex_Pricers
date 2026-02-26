@@ -14,6 +14,9 @@ import {
   priceToRate,
   exportToCSV,
   getBasisConvention,
+  daysBetween,
+  fractionOfYear,
+  interpolateAtTenor,
 } from "@/lib/rate-explorer/bootstrapping";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { DiscountFactorTable } from "./DiscountFactorTable";
 import { BootstrapCurveChart } from "./BootstrapCurveChart";
 import { BootstrappingDocumentation } from "./BootstrappingDocumentation";
@@ -75,6 +79,11 @@ export function BootstrappingDashboard() {
   ]);
   const [comparisonMode, setComparisonMode] = useState(false);
   const [selectedMethods, setSelectedMethods] = useState<BootstrapMethod[]>(["linear", "cubic_spline"]);
+  const [customDate, setCustomDate] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 6);
+    return d.toISOString().slice(0, 10);
+  });
 
   const activeCurve = curves[0];
 
@@ -621,6 +630,73 @@ export function BootstrappingDashboard() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* Interpolation based on these input data: curve = bootstrap(input points), then interpolate at date */}
+                {activeResult && activeResult.results.length > 0 && (
+                  <div className="mt-6 pt-6 border-t">
+                    <h4 className="text-sm font-semibold mb-2">Interpolation à partir de ces données</h4>
+                    <p className="text-xs text-muted-foreground mb-4">
+                      La courbe bootstrapée est construite à partir des points ci-dessus ; choisissez une date pour obtenir le discount factor, zero rate et forward rate interpolés (référence: aujourd&apos;hui).
+                    </p>
+                    <div className="flex flex-wrap items-end gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="boot-input-date" className="text-xs">Date</Label>
+                        <Input
+                          id="boot-input-date"
+                          type="date"
+                          value={customDate}
+                          onChange={(e) => setCustomDate(e.target.value)}
+                          className="w-[10rem] font-mono"
+                        />
+                      </div>
+                      {(() => {
+                        const firstResult = activeResult.results[0];
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const target = new Date(customDate);
+                        target.setHours(0, 0, 0, 0);
+                        const days = daysBetween(today, target);
+                        const frac = fractionOfYear(today, target, firstResult.basisConvention.dayCount);
+                        const interpolated = days >= 0
+                          ? interpolateAtTenor(firstResult.discountFactors, frac)
+                          : null;
+                        const methodName = BOOTSTRAP_METHODS.find(m => m.id === firstResult.method)?.name ?? firstResult.method;
+                        return (
+                          <div className="flex flex-wrap items-baseline gap-4 text-sm">
+                            <span className="text-muted-foreground text-xs">Méthode:</span>
+                            <Badge variant="outline" className="text-xs">{methodName}</Badge>
+                            <div className="font-mono text-xs">
+                              <span className="text-muted-foreground mr-1">Jours:</span>
+                              <span className="font-semibold">{days}</span>
+                            </div>
+                            <div className="font-mono text-xs">
+                              <span className="text-muted-foreground mr-1">Fraction (an):</span>
+                              <span className="font-semibold">{frac.toFixed(6)}</span>
+                            </div>
+                            {interpolated ? (
+                              <>
+                                <div className="font-mono text-xs">
+                                  <span className="text-muted-foreground mr-1">DF:</span>
+                                  <span className="font-semibold">{interpolated.df.toFixed(8)}</span>
+                                </div>
+                                <div className="font-mono text-xs">
+                                  <span className="text-muted-foreground mr-1">Zero:</span>
+                                  <span className="font-semibold">{(interpolated.zeroRate * 100).toFixed(4)}%</span>
+                                </div>
+                                <div className="font-mono text-xs">
+                                  <span className="text-muted-foreground mr-1">Forward:</span>
+                                  <span className="font-semibold">{(interpolated.forwardRate * 100).toFixed(4)}%</span>
+                                </div>
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground italic text-xs">Choisir une date ≥ aujourd&apos;hui.</span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
