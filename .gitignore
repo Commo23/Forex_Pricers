@@ -32,6 +32,6 @@ dist-ssr
 .cursor
 .cursorrules
 .cursorignore
-.cursorignore.md
-.cursorrules.md
-.md
+
+# Markdown files
+*.md
