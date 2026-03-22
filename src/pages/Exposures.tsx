@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Layout } from "@/components/Layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,13 @@ import {
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { getAvailableCurrencies, getCurrencyOptionLabel } from "@/utils/currencyList";
+import {
+  parseCsvText,
+  parseExposureRows,
+  FX_EXPOSURE_CSV_TEMPLATE_HEADER,
+  FX_EXPOSURE_CSV_TEMPLATE_SAMPLE,
+  type ParsedExposureRow,
+} from "@/utils/fxExposureCsv";
 
 interface ExposureFormData {
   currency: string;
@@ -51,6 +58,14 @@ interface ExposureFormData {
 const Exposures = () => {
   const [selectedTab, setSelectedTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [importReportOpen, setImportReportOpen] = useState(false);
+  const [importReport, setImportReport] = useState<{
+    imported: number;
+    headerErrors: string[];
+    rowErrors: { row: number; msg: string }[];
+  }>({ imported: 0, headerErrors: [], rowErrors: [] });
+
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editingExposure, setEditingExposure] = useState<string | null>(null);
@@ -81,6 +96,7 @@ const Exposures = () => {
     instruments,
     riskMetrics,
     addExposure,
+    batchAddExposures,
     updateExposure,
     deleteExposure,
     updateMarketData,
@@ -599,8 +615,102 @@ const Exposures = () => {
 
     toast({
       title: "Export Complete",
-      description: "FX exposures exported to CSV file",
+      description: "FX exposures exported (same format as CSV import template)",
     });
+  };
+
+  const handleDownloadExposureTemplate = () => {
+    const blob = new Blob([FX_EXPOSURE_CSV_TEMPLATE_SAMPLE], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "fx-exposures-import-template.csv";
+    a.click();
+    window.URL.revokeObjectURL(url);
+    toast({
+      title: "Template downloaded",
+      description: "Required columns: currency, type, amount, description, maturity. Optional: subsidiary, hedge_ratio.",
+    });
+  };
+
+  const handleImportCsvClick = () => {
+    csvInputRef.current?.click();
+  };
+
+  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const input = e.target;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? "");
+      const rows = parseCsvText(text);
+      const { headerErrors, results } = parseExposureRows(rows);
+
+      if (headerErrors.length > 0) {
+        setImportReport({ imported: 0, headerErrors, rowErrors: [] });
+        setImportReportOpen(true);
+        input.value = "";
+        return;
+      }
+
+      const rowErrors = results
+        .filter((r): r is { ok: false; row: number; error: string } => !r.ok)
+        .map((r) => ({ row: r.row, msg: r.error }));
+
+      const validPayload = results
+        .filter((r): r is { ok: true; row: number; data: ParsedExposureRow } => r.ok)
+        .map((r) => ({
+          currency: r.data.currency,
+          amount: r.data.amount,
+          type: r.data.type,
+          maturity: r.data.maturity,
+          description: r.data.description,
+          subsidiary: r.data.subsidiary,
+          hedgeRatio: r.data.hedgeRatio,
+          hedgedAmount: r.data.hedgedAmount,
+        }));
+
+      if (validPayload.length > 0) {
+        batchAddExposures(validPayload);
+      }
+
+      if (rowErrors.length > 0) {
+        toast({
+          title: validPayload.length > 0 ? "Partial import" : "Import failed",
+          description: `${validPayload.length} row(s) imported, ${rowErrors.length} row(s) skipped. See details.`,
+          variant: validPayload.length > 0 ? "default" : "destructive",
+        });
+        setImportReport({
+          imported: validPayload.length,
+          headerErrors: [],
+          rowErrors,
+        });
+        setImportReportOpen(true);
+      } else if (validPayload.length > 0) {
+        toast({
+          title: "Import complete",
+          description: `${validPayload.length} exposure(s) imported from CSV.`,
+        });
+      } else {
+        toast({
+          title: "No data imported",
+          description: "Add at least one data row below the header, or check your file.",
+          variant: "destructive",
+        });
+      }
+
+      input.value = "";
+    };
+    reader.onerror = () => {
+      toast({
+        title: "Read error",
+        description: "Could not read the CSV file.",
+        variant: "destructive",
+      });
+      input.value = "";
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -633,6 +743,36 @@ const Exposures = () => {
             >
               <Download className="h-4 w-4" />
               Export
+            </Button>
+            <Button
+              type="button"
+              onClick={handleDownloadExposureTemplate}
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2"
+              title="Download CSV template for bulk import"
+            >
+              <FileText className="h-4 w-4" />
+              CSV template
+            </Button>
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={handleCsvFileChange}
+            />
+            <Button
+              type="button"
+              onClick={handleImportCsvClick}
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2"
+              disabled={isLoading}
+              title="Import multiple exposures from CSV (use template)"
+            >
+              <Upload className="h-4 w-4" />
+              Import CSV
             </Button>
             <Button
               onClick={() => setIsAddDialogOpen(true)}
@@ -1399,6 +1539,50 @@ const Exposures = () => {
                 ) : (
                   editingExposure ? 'Update Exposure' : 'Add Exposure'
                 )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={importReportOpen} onOpenChange={setImportReportOpen}>
+          <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>CSV import report</DialogTitle>
+              <DialogDescription>
+                {importReport.imported > 0
+                  ? `${importReport.imported} exposure(s) were imported successfully.`
+                  : "No exposures were imported."}
+                {(importReport.headerErrors.length > 0 || importReport.rowErrors.length > 0) &&
+                  " Fix the issues below and try again for skipped rows."}
+              </DialogDescription>
+            </DialogHeader>
+            {importReport.headerErrors.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-destructive">Header / file errors</p>
+                <ul className="list-disc pl-5 text-sm text-muted-foreground">
+                  {importReport.headerErrors.map((msg, i) => (
+                    <li key={i}>{msg}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {importReport.rowErrors.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Row errors</p>
+                <div className="max-h-48 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm">
+                  <ul className="space-y-1">
+                    {importReport.rowErrors.map((err, i) => (
+                      <li key={i}>
+                        <span className="font-mono text-xs">Row {err.row}:</span> {err.msg}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button type="button" onClick={() => setImportReportOpen(false)}>
+                Close
               </Button>
             </DialogFooter>
           </DialogContent>

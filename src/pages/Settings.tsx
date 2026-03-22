@@ -1185,8 +1185,13 @@ const Settings = () => {
                       <SelectItem value="reuters">Reuters</SelectItem>
                       <SelectItem value="central-bank">Central Banks</SelectItem>
                       <SelectItem value="manual">Manual</SelectItem>
+                      <SelectItem value="bootstrapping">Bootstrapping (Rate Explorer)</SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    <strong>Manual</strong> uses the rates entered in Hedging Instruments (and All Rates sync when applicable).{" "}
+                    <strong>Bootstrapping</strong> drives <em>Current Domestic / Foreign Rate (%)</em> from the bootstrapped curve at remaining maturity (valuation date → maturity).
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="pricing-frequency">Pricing Frequency</Label>

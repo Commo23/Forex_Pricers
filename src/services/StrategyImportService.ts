@@ -83,6 +83,8 @@ export interface HedgingInstrument {
   exportVolatility?: number;      // Volatility used during export
   exportTimeToMaturity?: number;  // Time to maturity used during export
   exportForwardPrice?: number;    // Forward price used during export
+  /** Strategy Builder used bootstrapped curves for rates at export time */
+  exportUsedBootstrappedRates?: boolean;
   // ✅ Export dates from Strategy Builder
   exportStrategyStartDate?: string;  // Strategy Start Date from export
   exportHedgingStartDate?: string;   // Hedging Start Date from export
@@ -215,6 +217,8 @@ class StrategyImportService {
       volumeType?: 'receivable' | 'payable';
       useCustomPeriods?: boolean;
       customPeriods?: Array<{ maturityDate: string; volume: number }>;
+      /** When true, per-period export rates come from bootstrap curves (Strategy Builder) */
+      useBootstrappedInterestRates?: boolean;
     },
     detailedResults?: any[] // Optional: results from the Detailed Results table
   ): string {
@@ -278,6 +282,7 @@ class StrategyImportService {
       volumeType?: 'receivable' | 'payable';
       useCustomPeriods?: boolean;
       customPeriods?: Array<{ maturityDate: string; volume: number }>;
+      useBootstrappedInterestRates?: boolean;
     },
     timestamp: number,
     detailedResults?: any[]
@@ -408,6 +413,13 @@ class StrategyImportService {
           const absoluteStrike = strategyDetail?.absoluteStrike || this.calculateStrike(component, params.spotPrice);
           const effectiveVolatility = strategyDetail?.effectiveVolatility || component.volatility;
           const realOptionPrice = strategyDetail?.calculatedPrice || periodResult.optionPrices?.[componentIndex]?.price;
+
+          const rdDec = strategyDetail?.repricingData?.domesticRate;
+          const rfDec = strategyDetail?.repricingData?.foreignRate;
+          const exportDomesticPct =
+            rdDec != null && Number.isFinite(Number(rdDec)) ? Number(rdDec) * 100 : params.domesticRate;
+          const exportForeignPct =
+            rfDec != null && Number.isFinite(Number(rfDec)) ? Number(rfDec) * 100 : params.foreignRate;
           
           const instrument: HedgingInstrument = {
             id: instrumentId,
@@ -437,8 +449,9 @@ class StrategyImportService {
             realPrice: strategyDetail?.repricingData?.underlyingPrice || periodResult.realPrice,
             // INFORMATIONS COMPLÈTES DE PRICING POUR ÉLIMINER LES ÉCARTS
             exportSpotPrice: params.spotPrice, // Spot utilisé lors de l'export
-            exportDomesticRate: params.domesticRate, // Taux domestique utilisé lors de l'export
-            exportForeignRate: params.foreignRate, // Taux étranger utilisé lors de l'export
+            exportDomesticRate: exportDomesticPct, // % — par période si repricingData (bootstrap ou params)
+            exportForeignRate: exportForeignPct,
+            exportUsedBootstrappedRates: params.useBootstrappedInterestRates === true,
             exportVolatility: effectiveVolatility, // Volatilité utilisée lors de l'export
             exportTimeToMaturity: periodResult.timeToMaturity, // Time to maturity exact utilisé lors de l'export
             exportForwardPrice: periodResult.forward, // Forward exact utilisé lors de l'export
@@ -455,23 +468,23 @@ class StrategyImportService {
               ...strategyDetail.repricingData,
               // Ajouter les paramètres exacts utilisés lors de l'export
               exportSpotPrice: params.spotPrice,
-              exportDomesticRate: params.domesticRate,
-              exportForeignRate: params.foreignRate,
+              exportDomesticRate: exportDomesticPct,
+              exportForeignRate: exportForeignPct,
               exportVolatility: effectiveVolatility,
               exportTimeToMaturity: periodResult.timeToMaturity,
               exportForwardPrice: periodResult.forward
             } : {
               // Créer un objet repricing même si pas fourni
-              underlyingPrice: params.spotPrice,
+              underlyingPrice: periodResult.forward,
               timeToMaturity: periodResult.timeToMaturity,
-              domesticRate: params.domesticRate,
-              foreignRate: params.foreignRate,
-              volatility: effectiveVolatility,
+              domesticRate: params.domesticRate / 100,
+              foreignRate: params.foreignRate / 100,
+              volatility: effectiveVolatility / 100,
               dividendYield: 0,
               pricingModel: 'Garman-Kohlhagen',
               exportSpotPrice: params.spotPrice,
-              exportDomesticRate: params.domesticRate,
-              exportForeignRate: params.foreignRate,
+              exportDomesticRate: exportDomesticPct,
+              exportForeignRate: exportForeignPct,
               exportVolatility: effectiveVolatility,
               exportTimeToMaturity: periodResult.timeToMaturity,
               exportForwardPrice: periodResult.forward
@@ -720,6 +733,25 @@ class StrategyImportService {
     this.hedgingInstruments.push(newInstrument);
     this.saveToStorage();
     return newInstrument;
+  }
+
+  /** Bulk add (single save) — e.g. CSV import */
+  addHedgingInstrumentsBatch(items: Omit<HedgingInstrument, 'id'>[]): number {
+    if (items.length === 0) return 0;
+    const ts = Date.now();
+    for (let i = 0; i < items.length; i++) {
+      const id = `INST-${ts}-${i}-${Math.random().toString(36).substr(2, 9)}`;
+      const newInstrument: HedgingInstrument = {
+        ...items[i],
+        id,
+        status: 'active',
+        mtm: 0,
+        hedge_accounting: false,
+      };
+      this.hedgingInstruments.push(newInstrument);
+    }
+    this.saveToStorage();
+    return items.length;
   }
 
   getImportedStrategies(): ImportedStrategy[] {

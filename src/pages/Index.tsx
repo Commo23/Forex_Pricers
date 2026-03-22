@@ -518,7 +518,11 @@ export const calculateDigitalOptionPrice = (
   
   // Protection: limiter le nombre de simulations pour éviter les crashes
   const maxSimulations = 5000; // Maximum raisonnable
-  const effectiveSimulations = Math.min(numSimulations, maxSimulations);
+  // Callers (e.g. Hedging table) may pass numSimulations=0 when closed-form is preferred; if CF
+  // fails (double-touch / double-no-touch return NaN), MC fallback must still run with a positive count.
+  const defaultMcSims = 2000;
+  const rawSims = numSimulations > 0 ? numSimulations : defaultMcSims;
+  const effectiveSimulations = Math.min(rawSims, maxSimulations);
   
   // Pré-calculs pour optimisation
   const b = r_d - r_f;
@@ -618,6 +622,9 @@ export const calculateDigitalOptionPrice = (
     }
   }
   
+  if (effectiveSimulations <= 0) {
+    return 0;
+  }
   // Calculer le prix moyen actualisé
   const avgPayout = payoutSum / effectiveSimulations;
   
@@ -1148,6 +1155,11 @@ import ZeroCostStrategies from '@/components/ZeroCostStrategies';
 import ZeroCostTab from '@/components/ZeroCostTab';
 import { PricingService } from '@/services/PricingService';
 import ExchangeRateService from '@/services/ExchangeRateService';
+import { fetchCurrencies, fetchVolSurface, type SurfacePoint } from '@/lib/api/barchart';
+import { getFuturesContractForPair, isPairMappableToFuturesInsights } from '@/lib/pricersFuturesMapping';
+import { interpolateSurface, interpolateIVAtPoint } from '@/lib/volSurfaceInterpolation';
+import { interpolateAtTenor } from '@/lib/rate-explorer/bootstrapping';
+import { useRateExplorerDiscountFactors } from '@/hooks/useRateExplorerDiscountFactors';
 
 // Currency Pair interface
 interface CurrencyPair {
@@ -1239,6 +1251,10 @@ export interface Result {
   hedgedCost: number;
   unhedgedCost: number;
   deltaPnL: number;
+  /** Bootstrapped zero rate for quote (domestic), % — null if disabled or curve unavailable */
+  bootstrapQuoteRatePct?: number | null;
+  /** Bootstrapped zero rate for base (foreign), % */
+  bootstrapBaseRatePct?: number | null;
 }
 
 interface SavedScenario {
@@ -1675,6 +1691,11 @@ const Index = () => {
   // Keep track of initial spot price
   const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
 
+  const strategyBuilderQuoteCcy = params.currencyPair?.quote ?? 'USD';
+  const strategyBuilderBaseCcy = params.currencyPair?.base ?? 'EUR';
+  const sbDomesticCurve = useRateExplorerDiscountFactors(strategyBuilderQuoteCcy, 'cubic_spline');
+  const sbForeignCurve = useRateExplorerDiscountFactors(strategyBuilderBaseCcy, 'cubic_spline');
+
   // Synchronize spot price and rates with market data on initial load
   const hasSyncedOnMount = React.useRef(false);
   React.useEffect(() => {
@@ -2063,7 +2084,24 @@ const Index = () => {
 
   // Add these new states
   const [useImpliedVol, setUseImpliedVol] = useState(false);
+  const [useBootstrappedInterestRates, setUseBootstrappedInterestRates] = useState(() => {
+    try {
+      const savedState = localStorage.getItem('calculatorState');
+      if (savedState) {
+        const s = JSON.parse(savedState);
+        return Boolean(s.useBootstrappedInterestRates);
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  });
   const [impliedVolatilities, setImpliedVolatilities] = useState<OptionImpliedVolatility>({});
+  const [fetchingFiIv, setFetchingFiIv] = useState(false);
+  const fiIvLastAppliedSignatureRef = React.useRef<string>('');
+  const fiIvApplyInFlightRef = React.useRef(false);
+  type IvGrid = { strikes: number[]; dtes: number[]; z: (number | null)[][] };
+  const fiIvGridCacheRef = React.useRef<{ contract?: string; call?: IvGrid; put?: IvGrid }>({});
 
   // État pour les prix d'options personnalisés
   const [useCustomOptionPrices, setUseCustomOptionPrices] = useState(false);
@@ -3141,6 +3179,42 @@ const Index = () => {
       monthlyVolumes = Array(months.length).fill(monthlyVolume);
     }
 
+    // Time to maturity (years) per period — needed before barrier path pricing and detailed results
+    const timeToMaturities = months.map((date) => {
+      const maturityDateStr = date.toISOString().split('T')[0];
+      const valuationDateStr = calculationStartDate.toISOString().split('T')[0];
+      return calculateTimeToMaturity(maturityDateStr, valuationDateStr);
+    });
+
+    const getBootstrappedPeriodRates = (tenorYears: number) => {
+      const fallbackRd = params.domesticRate / 100;
+      const fallbackRf = params.foreignRate / 100;
+      if (!useBootstrappedInterestRates || tenorYears <= 0) {
+        return {
+          r_d: fallbackRd,
+          r_f: fallbackRf,
+          quotePct: null as number | null,
+          basePct: null as number | null,
+        };
+      }
+      const domDfs = sbDomesticCurve.discountFactors;
+      const forDfs = sbForeignCurve.discountFactors;
+      if (!domDfs?.length || !forDfs?.length) {
+        return { r_d: fallbackRd, r_f: fallbackRf, quotePct: null, basePct: null };
+      }
+      const domI = interpolateAtTenor(domDfs, tenorYears);
+      const forI = interpolateAtTenor(forDfs, tenorYears);
+      if (!domI || !forI) {
+        return { r_d: fallbackRd, r_f: fallbackRf, quotePct: null, basePct: null };
+      }
+      return {
+        r_d: domI.zeroRate,
+        r_f: forI.zeroRate,
+        quotePct: domI.zeroRate * 100,
+        basePct: forI.zeroRate * 100,
+      };
+    };
+
     // Generate price paths for the entire period (from today's date for accurate calculations)
     const { paths, monthlyIndices } = generatePricePathsForPeriod(months, calculationStartDate, realPriceParams.numSimulations);
 
@@ -3219,13 +3293,15 @@ const Index = () => {
         // For each month, calculate the option price
         for (let monthIdx = 0; monthIdx < monthlyIndices.length; monthIdx++) {
           const maturityIndex = monthlyIndices[monthIdx];
-          
+          const tBarrier = timeToMaturities[monthIdx] ?? 0;
+          const { r_d: rDomesticForPath } = getBootstrappedPeriodRates(tBarrier);
+
           // Calculate option price at this point
           const optionPrice = calculatePricesFromPaths(
             barrierOption.type,
             params.spotPrice,
             strike,
-            params.domesticRate/100,
+            rDomesticForPath,
             maturityIndex,
             [path],
             barrier,
@@ -3249,13 +3325,6 @@ const Index = () => {
     });
 
     // Continue with the rest of calculateResults
-    // Calculate time to maturity using the same function as HedgingInstruments for consistency
-    const timeToMaturities = months.map(date => {
-      const maturityDateStr = date.toISOString().split('T')[0]; // Format YYYY-MM-DD
-      const valuationDateStr = calculationStartDate.toISOString().split('T')[0]; // Format YYYY-MM-DD
-      return calculateTimeToMaturity(maturityDateStr, valuationDateStr);
-    });
-
     // Suivi des options knocked out
     const knockedOutOptions = new Set();
     
@@ -3392,24 +3461,30 @@ const Index = () => {
       
       const t = timeToMaturities[i];
       const maturityIndex = monthlyIndices[i]; // Add the maturityIndex definition
-      
+      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+      const periodRates = getBootstrappedPeriodRates(t);
+      const periodRd = periodRates.r_d;
+      const periodRf = periodRates.r_f;
+
       // Get forward price using FX forward formula
-        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       const forward = (() => {
         // Vérifier que les paramètres nécessaires sont définis
         if (!initialSpotPrice || initialSpotPrice <= 0) {
           console.warn(`Invalid initialSpotPrice: ${initialSpotPrice} for period ${i}`);
           return params.spotPrice || 1.0; // Fallback au spot price ou valeur par défaut
         }
-        if (params.domesticRate === undefined || params.foreignRate === undefined) {
+        if (
+          !useBootstrappedInterestRates &&
+          (params.domesticRate === undefined || params.foreignRate === undefined)
+        ) {
           console.warn(`Missing interest rates for period ${i}`);
           return params.spotPrice || 1.0;
         }
         const calculatedForward = manualForwards[monthKey] || 
           calculateFXForwardPrice(
             initialSpotPrice, 
-            params.domesticRate / 100, 
-            params.foreignRate / 100, 
+            periodRd, 
+            periodRf, 
             t
           );
         // Vérifier que le forward calculé est valide
@@ -3425,18 +3500,20 @@ const Index = () => {
 
       // Calculer le prix du swap une fois pour tous les swaps
         const swapPrice = calculateSwapPrice(
-            months.map((_, idx) => {
-                const monthKey = `${_.getFullYear()}-${_.getMonth() + 1}`;
-                return manualForwards[monthKey] || 
+            months.map((d, idx) => {
+                const mk = `${d.getFullYear()}-${d.getMonth() + 1}`;
+                const tt = timeToMaturities[idx];
+                const pr = getBootstrappedPeriodRates(tt);
+                return manualForwards[mk] || 
             calculateFXForwardPrice(
               initialSpotPrice, 
-              params.domesticRate / 100, 
-              params.foreignRate / 100, 
-              timeToMaturities[idx]
+              pr.r_d, 
+              pr.r_f, 
+              tt
             );
             }),
             timeToMaturities,
-        params.domesticRate/100
+        periodRd
         );
 
       // Séparer les swaps, forwards et options
@@ -3485,9 +3562,9 @@ const Index = () => {
                 const balanceWithType = balanceWithOption.type.includes('put') ? 'put' : 'call';
                 const currentType = option.type.includes('put') ? 'put' : 'call';
                 
-                // Get the domestic and foreign interest rates
-                const r_d = params.domesticRate / 100;
-                const r_f = params.foreignRate / 100;
+                // Rates for this maturity (bootstrap or strategy inputs)
+                const r_d = periodRd;
+                const r_f = periodRf;
                 
                 // Calculate the premium of the balancing option for this specific time to maturity
                 // This is important - we use the specific time to maturity for this period
@@ -3650,7 +3727,7 @@ const Index = () => {
           // Le prix représente la valeur théorique de l'option, indépendamment de son état knocked out
           if (option.type === 'forward') {
             // For forwards, the value is simply the difference between forward rate and strike
-            price = (forward - strike) * Math.exp(-params.domesticRate/100 * t);
+            price = (forward - strike) * Math.exp(-periodRd * t);
           } else if (option.type === 'call' || option.type === 'put') {
             // Utiliser la volatilité implicite spécifique à l'option si disponible
             const iv = getImpliedVolatility(monthKey, strikeKey);
@@ -3661,16 +3738,16 @@ const Index = () => {
           if (optionPricingModel === 'garman-kohlhagen') {
             const underlyingResult = PricingService.calculateUnderlyingPrice(
               params.spotPrice,
-              params.domesticRate/100,
-              params.foreignRate/100,
+              periodRd,
+              periodRf,
               t
             );
             price = calculateGarmanKohlhagenPrice(
               option.type,
               underlyingResult.price,
               strike,
-              params.domesticRate/100,
-              params.foreignRate/100,
+              periodRd,
+              periodRf,
               t,
               effectiveSigma
             );
@@ -3678,32 +3755,32 @@ const Index = () => {
             // Use Monte Carlo for vanilla options
             const underlyingResult = PricingService.calculateUnderlyingPrice(
               params.spotPrice,
-              params.domesticRate/100,
-              params.foreignRate/100,
+              periodRd,
+              periodRf,
               t
             );
             price = calculateVanillaOptionMonteCarlo(
               option.type,
               underlyingResult.price,
               strike,
-              params.domesticRate / 100,
-              params.foreignRate / 100,
+              periodRd,
+              periodRf,
               t,
               effectiveSigma,
               1000 // Number of simulations for vanilla options
             );
           } else {
             // Black-Scholes fallback
-            const d1 = (Math.log(forward/strike) + (params.domesticRate/100 + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
+            const d1 = (Math.log(forward/strike) + (periodRd + effectiveSigma**2/2)*t) / (effectiveSigma*Math.sqrt(t));
             const d2 = d1 - effectiveSigma*Math.sqrt(t);
             
             const Nd1 = (1 + erf(d1/Math.sqrt(2)))/2;
             const Nd2 = (1 + erf(d2/Math.sqrt(2)))/2;
             
             if (option.type === 'call') {
-              price = forward*Nd1 - strike*Math.exp(-params.domesticRate/100*t)*Nd2;
+              price = forward*Nd1 - strike*Math.exp(-periodRd*t)*Nd2;
             } else { // put
-              price = strike*Math.exp(-params.domesticRate/100*t)*(1-Nd2) - forward*(1-Nd1);
+              price = strike*Math.exp(-periodRd*t)*(1-Nd2) - forward*(1-Nd1);
             }
           }
         } else if (option.type.includes('knockout') || option.type.includes('knockin')) {
@@ -3728,15 +3805,15 @@ const Index = () => {
           if (barrierPricingModel === 'closed-form') {
             const underlyingResult = PricingService.calculateUnderlyingPrice(
               params.spotPrice,
-              params.domesticRate/100,
-              params.foreignRate/100,
+              periodRd,
+              periodRf,
               t
             );
             price = calculateBarrierOptionClosedForm(
               option.type,
               underlyingResult.price,
               strike,
-              params.domesticRate/100,
+              periodRd,
               t,
               effectiveSigma,
               barrier,
@@ -3752,8 +3829,8 @@ const Index = () => {
             
             const underlyingResult = PricingService.calculateUnderlyingPrice(
               params.spotPrice,
-              params.domesticRate/100,
-              params.foreignRate/100,
+              periodRd,
+              periodRf,
               t
             );
             
@@ -3767,7 +3844,7 @@ const Index = () => {
                 
                 // Use the effective sigma (which may be implied volatility)
                 const nextPrice = prevPrice * Math.exp(
-                  (params.domesticRate/100 - params.foreignRate/100 - 0.5 * Math.pow(effectiveSigma, 2)) * dt + 
+                  (periodRd - periodRf - 0.5 * Math.pow(effectiveSigma, 2)) * dt + 
                   effectiveSigma * Math.sqrt(dt) * randomWalk
                 );
                 
@@ -3782,7 +3859,7 @@ const Index = () => {
                 option.type,
                 forward,
                     strike,
-                params.domesticRate/100,
+                periodRd,
               numSteps,
               localPaths,
             barrier,
@@ -3819,8 +3896,8 @@ const Index = () => {
             option.type,
             spotPriceForDigital,  // ✅ Toujours spot pour les digitales
             strike,
-            params.domesticRate / 100,
-            params.foreignRate / 100,
+            periodRd,
+            periodRf,
             t,
             option.volatility / 100,
             barrier,
@@ -3863,8 +3940,8 @@ const Index = () => {
         }),
         ...forwards.map((forwardItem, forwardIndex) => {
           const forwardStrike = forwardItem.strike || 0;
-          const forwardValue = forward && !isNaN(forward) && forwardStrike !== undefined && params.domesticRate !== undefined
-            ? (forward - forwardStrike) * Math.exp(-(params.domesticRate || 0)/100 * t)
+          const forwardValue = forward && !isNaN(forward) && forwardStrike !== undefined && periodRd !== undefined
+            ? (forward - forwardStrike) * Math.exp(-periodRd * t)
             : 0;
           return {
             type: 'forward',
@@ -4056,7 +4133,9 @@ const Index = () => {
         monthlyVolume: monthlyVolume,
         hedgedCost: hedgedCost,
         unhedgedCost: unhedgedCost,
-        deltaPnL: deltaPnL
+        deltaPnL: deltaPnL,
+        bootstrapQuoteRatePct: useBootstrappedInterestRates ? periodRates.quotePct : null,
+        bootstrapBaseRatePct: useBootstrappedInterestRates ? periodRates.basePct : null,
         };
     });
 
@@ -4327,6 +4406,19 @@ const Index = () => {
       // avec informations enrichies pour le re-pricing
       const enrichedDetailedResults = filteredResults.map((result, periodIndex) => {
         const monthKey = `${new Date(result.date).getFullYear()}-${new Date(result.date).getMonth() + 1}`;
+
+        const domesticPctForPeriod =
+          useBootstrappedInterestRates &&
+          result.bootstrapQuoteRatePct != null &&
+          Number.isFinite(result.bootstrapQuoteRatePct)
+            ? result.bootstrapQuoteRatePct
+            : params.domesticRate;
+        const foreignPctForPeriod =
+          useBootstrappedInterestRates &&
+          result.bootstrapBaseRatePct != null &&
+          Number.isFinite(result.bootstrapBaseRatePct)
+            ? result.bootstrapBaseRatePct
+            : params.foreignRate;
         
         // Enrichir chaque résultat avec des informations supplémentaires
         const enrichedResult = {
@@ -4334,8 +4426,9 @@ const Index = () => {
           // Informations de marché du moment
           marketData: {
             spotPrice: params.spotPrice,
-            domesticRate: params.domesticRate,
-            foreignRate: params.foreignRate,
+            domesticRate: domesticPctForPeriod,
+            foreignRate: foreignPctForPeriod,
+            useBootstrappedRates: useBootstrappedInterestRates,
             monthKey: monthKey,
             periodIndex: periodIndex
           },
@@ -4425,8 +4518,8 @@ const Index = () => {
               repricingData: {
                 underlyingPrice: result.forward,
                 timeToMaturity: result.timeToMaturity,
-                domesticRate: params.domesticRate / 100,
-                foreignRate: params.foreignRate / 100,
+                domesticRate: domesticPctForPeriod / 100,
+                foreignRate: foreignPctForPeriod / 100,
                 volatility: effectiveVolatility / 100,
                 dividendYield: 0, // Pas applicable pour FX
                 // Modèle de pricing utilisé
@@ -4452,6 +4545,7 @@ const Index = () => {
         volumeType: params.volumeType,
         useCustomPeriods: params.useCustomPeriods,
         customPeriods: params.customPeriods,
+        useBootstrappedInterestRates,
       }, enrichedDetailedResults); // Passer TOUS les résultats enrichis
 
       // Dispatch custom event to notify HedgingInstruments page
@@ -4488,6 +4582,7 @@ const Index = () => {
       customScenario,
       stressTestScenarios,
       useImpliedVol,
+      useBootstrappedInterestRates,
       impliedVolatilities
     };
     localStorage.setItem('calculatorState', JSON.stringify(state));
@@ -4505,6 +4600,7 @@ const Index = () => {
     customScenario,
     stressTestScenarios,
     useImpliedVol,
+    useBootstrappedInterestRates,
     impliedVolatilities
   ]);
 
@@ -4587,6 +4683,7 @@ const Index = () => {
     
     // Réinitialiser les données de volatilité implicite et prix personnalisés
     setUseImpliedVol(false);
+    setUseBootstrappedInterestRates(false);
     setImpliedVolatilities({});
     setUseCustomOptionPrices(false);
     setCustomOptionPrices({});
@@ -4722,6 +4819,7 @@ const Index = () => {
       },
       stressTestScenarios: DEFAULT_SCENARIOS,
       useImpliedVol: false,
+      useBootstrappedInterestRates: false,
       impliedVolatilities: {}
     };
     localStorage.setItem('calculatorState', JSON.stringify(state));
@@ -6782,6 +6880,180 @@ const pricingFunctions = {
     setImpliedVolatilities(newImpliedVols);
   };
 
+  const buildFiIvSignature = () => {
+    if (!params.currencyPair?.symbol || !results || results.length === 0) return '';
+    const pairSymbol = params.currencyPair.symbol;
+    const monthsSig = results
+      .map((monthResult) => {
+        const d = new Date(monthResult.date);
+        const monthKey = `${d.getFullYear()}-${d.getMonth() + 1}`;
+        const optsSig = monthResult.optionPrices
+          .filter((o) => o.type !== 'swap' && o.type !== 'forward')
+          .map((o, idx) => `${idx}:${o.type}:${o.strike}`)
+          .join(',');
+        return `${monthKey}:${monthResult.timeToMaturity}|${optsSig}`;
+      })
+      .join('~');
+    return `${pairSymbol}~${monthsSig}`;
+  };
+
+  // When "Use Implied Volatility" is enabled (and custom option prices are NOT used),
+  // we replace the IVs by Futures Insights interpolated values (strike × DTE).
+  const applyImpliedVolFromFuturesInsights = async () => {
+    if (!useImpliedVol || useCustomOptionPrices) return;
+    if (!results || results.length === 0) return;
+
+    const signature = buildFiIvSignature();
+    if (!signature) return;
+    if (signature === fiIvLastAppliedSignatureRef.current) return;
+    if (fiIvApplyInFlightRef.current) return;
+
+    const pairSymbol = params.currencyPair?.symbol;
+    if (!pairSymbol) return;
+
+    if (!isPairMappableToFuturesInsights(pairSymbol)) {
+      toast({
+        title: 'Futures Insights',
+        description: `${pairSymbol} is not mapped to Futures Insights. Using existing IV logic.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    fiIvApplyInFlightRef.current = true;
+    setFetchingFiIv(true);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) {
+        toast({
+          title: 'Futures Insights',
+          description: 'Could not load futures list.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const contract = getFuturesContractForPair(pairSymbol, currenciesRes.data);
+      if (!contract) {
+        toast({
+          title: 'Futures Insights',
+          description: `No Futures Insights contract found for ${pairSymbol}.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Fetch the full surface once, then interpolate per (strike, DTE).
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) {
+        toast({
+          title: 'Surface fetch failed',
+          description: surfaceRes.error ?? 'Could not load vol surface.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+
+      const buildGridForSide = (side: 'call' | 'put'): IvGrid | null => {
+        const filtered = points.filter((p) => p.type === side);
+        if (filtered.length === 0) return null;
+
+        const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+        const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+
+        if (strikes.length < 2 || dtes.length < 2) return null;
+
+        const pointMap = new Map<string, SurfacePoint>();
+        for (const p of filtered) pointMap.set(`${p.dte}-${p.strike}`, p);
+
+        let z: (number | null)[][] = dtes.map((dte) =>
+          strikes.map((strike) => {
+            const iv = pointMap.get(`${dte}-${strike}`)?.iv ?? null;
+            return iv !== null && iv > 0 ? iv : null;
+          }),
+        );
+
+        z = interpolateSurface(z, strikes, dtes);
+        return { strikes, dtes, z };
+      };
+
+      // Cache surface grids per contract to avoid rebuilding.
+      let callGrid = fiIvGridCacheRef.current.contract === contract ? fiIvGridCacheRef.current.call : undefined;
+      let putGrid = fiIvGridCacheRef.current.contract === contract ? fiIvGridCacheRef.current.put : undefined;
+
+      if (!callGrid || !putGrid) {
+        callGrid = buildGridForSide('call') ?? null;
+        putGrid = buildGridForSide('put') ?? null;
+        fiIvGridCacheRef.current = { contract, call: callGrid ?? undefined, put: putGrid ?? undefined };
+      }
+
+      if (!callGrid && !putGrid) {
+        toast({
+          title: 'IV interpolation',
+          description: 'No IV data available for call/put from Futures Insights.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const newImpliedVols: OptionImpliedVolatility = {};
+
+      for (const monthResult of results) {
+        const d = new Date(monthResult.date);
+        const monthKey = `${d.getFullYear()}-${d.getMonth() + 1}`;
+        const dteDays = Math.max(1, Math.round(monthResult.timeToMaturity * 365.25));
+
+        const monthIv: { [optionKey: string]: number; global?: number } = {};
+        const ivValues: number[] = [];
+
+        monthResult.optionPrices.forEach((opt, optIndex) => {
+          if (opt.type === 'swap' || opt.type === 'forward') return;
+
+          const side: 'call' | 'put' = opt.type.includes('put') ? 'put' : 'call';
+          const grid = side === 'put' ? putGrid : callGrid;
+          if (!grid) return;
+
+          const iv = interpolateIVAtPoint(grid.strikes, grid.dtes, grid.z, opt.strike, dteDays);
+          if (iv == null || iv <= 0 || Number.isNaN(iv)) return;
+
+          const optionKey = `${opt.type}-${optIndex}`;
+          monthIv[optionKey] = iv;
+          ivValues.push(iv);
+        });
+
+        if (ivValues.length > 0) {
+          monthIv.global = ivValues.reduce((a, b) => a + b, 0) / ivValues.length;
+        }
+
+        newImpliedVols[monthKey] = monthIv;
+      }
+
+      setImpliedVolatilities(newImpliedVols);
+      fiIvLastAppliedSignatureRef.current = signature;
+
+      // Recompute prices with the new Futures Insights interpolated IVs.
+      setTimeout(() => calculateResults(), 50);
+    } catch (e) {
+      toast({
+        title: 'Futures Insights',
+        description: e instanceof Error ? e.message : 'Failed to fetch/interpolate IVs.',
+        variant: 'destructive',
+      });
+    } finally {
+      fiIvApplyInFlightRef.current = false;
+      setFetchingFiIv(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!useImpliedVol || useCustomOptionPrices) return;
+    if (!results || results.length === 0) return;
+    void applyImpliedVolFromFuturesInsights();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useImpliedVol, useCustomOptionPrices, results, params.currencyPair?.symbol]);
+
   // Modifier le gestionnaire d'événements pour "Use my own prices"
   const handleUseCustomPricesToggle = (checked: boolean) => {
     setUseCustomOptionPrices(checked);
@@ -6811,8 +7083,9 @@ const pricingFunctions = {
   const handleUseImpliedVolToggle = (checked: boolean) => {
     setUseImpliedVol(checked);
     
-    // Si on active les volatilités implicites et qu'il n'y en a pas encore, les initialiser
-    if (checked && Object.keys(impliedVolatilities).length === 0) {
+    // Si "Use my own prices" est activé, on continue d'initialiser les IV à partir des prix.
+    // Sinon, la logique Futures Insights (interpolation) se charge de remplir `impliedVolatilities`.
+    if (checked && useCustomOptionPrices && Object.keys(impliedVolatilities).length === 0) {
       initializeImpliedVolatilities();
     }
     
@@ -6823,6 +7096,17 @@ const pricingFunctions = {
         recalculateResults();
       } else {
         // Sinon, recalculer complètement
+        calculateResults();
+      }
+    }, 100);
+  };
+
+  const handleUseBootstrappedRatesToggle = (checked: boolean) => {
+    setUseBootstrappedInterestRates(checked);
+    setTimeout(() => {
+      if (useCustomOptionPrices) {
+        recalculateResults();
+      } else {
         calculateResults();
       }
     }, 100);
@@ -8657,6 +8941,23 @@ const pricingFunctions = {
                         </span>
                       )}
                     </div>
+
+                    <div className="ml-4 flex items-center">
+                      <Switch
+                        id="useBootstrappedRatesUI"
+                        checked={useBootstrappedInterestRates}
+                        onCheckedChange={handleUseBootstrappedRatesToggle}
+                        className="mr-2"
+                      />
+                      <label htmlFor="useBootstrappedRatesUI" className="text-sm font-medium cursor-pointer">
+                        Real rates (bootstrap)
+                      </label>
+                      {useBootstrappedInterestRates && (
+                        <span className="text-xs text-muted-foreground ml-2 max-w-[220px] hidden sm:inline">
+                          Quote {params.currencyPair?.quote ?? ''} / Base {params.currencyPair?.base ?? ''} — Rate Explorer curves
+                        </span>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="custom-scrollbar">
@@ -8665,6 +8966,16 @@ const pricingFunctions = {
                         <tr className="bg-muted/50 text-xs uppercase tracking-wider">
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Maturity</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Time to Maturity</th>
+                          {useBootstrappedInterestRates && (
+                            <>
+                              <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-teal-500/10">
+                                R ({params.currencyPair?.quote ?? 'quote'}) % <span className="normal-case text-[10px] text-muted-foreground">bootstrap</span>
+                              </th>
+                              <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-cyan-500/10">
+                                R ({params.currencyPair?.base ?? 'base'}) % <span className="normal-case text-[10px] text-muted-foreground">bootstrap</span>
+                              </th>
+                            </>
+                          )}
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-blue-500/5">Forward FX Rate</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/5">Spot FX Rate</th>
                           
@@ -8721,6 +9032,20 @@ const pricingFunctions = {
                             <tr key={i} className={`${isEven ? 'bg-muted/20' : 'bg-background'} hover:bg-muted/40 transition-colors`}>
                               <td className="px-3 py-2 text-sm border-b border-border/30">{row.date}</td>
                               <td className="px-3 py-2 text-sm border-b border-border/30">{row.timeToMaturity.toFixed(4)}</td>
+                              {useBootstrappedInterestRates && (
+                                <>
+                                  <td className="px-3 py-2 text-sm border-b border-border/30 bg-teal-500/10 font-mono">
+                                    {row.bootstrapQuoteRatePct != null && !Number.isNaN(row.bootstrapQuoteRatePct)
+                                      ? `${row.bootstrapQuoteRatePct.toFixed(4)}%`
+                                      : '—'}
+                                  </td>
+                                  <td className="px-3 py-2 text-sm border-b border-border/30 bg-cyan-500/10 font-mono">
+                                    {row.bootstrapBaseRatePct != null && !Number.isNaN(row.bootstrapBaseRatePct)
+                                      ? `${row.bootstrapBaseRatePct.toFixed(4)}%`
+                                      : '—'}
+                                  </td>
+                                </>
+                              )}
                               <td className="px-3 py-2 text-sm border-b border-border/30 bg-blue-500/5">
                           <Input
                             type="number"

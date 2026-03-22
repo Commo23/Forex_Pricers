@@ -27,6 +27,8 @@ import {
   Trash2,
   Eye,
   Download,
+  Upload,
+  FileText,
   AlertCircle,
   Calculator,
   RefreshCw,
@@ -34,12 +36,33 @@ import {
   Hash
 } from "lucide-react";
 import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty } from "@/services/StrategyImportService";
+import {
+  parseCsvText,
+  parseHedgingInstrumentRows,
+  buildHedgingInstrumentPayload,
+  HEDGING_INSTRUMENT_CSV_TEMPLATE_HEADER,
+  HEDGING_INSTRUMENT_CSV_TEMPLATE_SAMPLE,
+  displayTypeToCsvType,
+} from "@/utils/hedgingInstrumentCsv";
 import { PricingService } from "@/services/PricingService";
 import ExchangeRateService from "@/services/ExchangeRateService";
 import { fetchCurrencies, fetchVolSurface } from "@/lib/api/barchart";
 import type { SurfacePoint } from "@/lib/api/barchart";
 import { getFuturesContractForPair, isPairMappableToFuturesInsights } from "@/lib/pricersFuturesMapping";
 import { interpolateSurface, interpolateIVAtPoint } from "@/lib/volSurfaceInterpolation";
+import { interpolateAtTenor } from "@/lib/rate-explorer/bootstrapping";
+import { useRateExplorerDiscountFactors } from "@/hooks/useRateExplorerDiscountFactors";
+import { useHedgingBootstrapCurveMap } from "@/hooks/useHedgingBootstrapCurveMap";
+import { getBootstrappedRatesForInstrument } from "@/utils/hedgingBootstrapRates";
+import { readPricingInterestRateSource } from "@/utils/pricingSettings";
+import {
+  computeSpotForCurrencyPair,
+  readForexMarketRateSnapshot,
+  writeForexMarketRateSnapshot,
+  FOREX_MARKET_RATE_SNAPSHOT_KEY,
+  FOREX_MARKET_RATE_SNAPSHOT_EVENT,
+  type ForexMarketRateSnapshot,
+} from "@/lib/forexMarketSpotSync";
 // ✅ IMPORT EXACT DES FONCTIONS EXPORTÉES D'INDEX.TSX UTILISÉES PAR STRATEGY BUILDER
 import {
   calculateBarrierOptionPrice,
@@ -85,6 +108,14 @@ const HedgingInstruments = () => {
   const [counterparties, setCounterparties] = useState<HedgingCounterparty[]>(() => importService.getCounterparties());
   const [selectedPortfolioFilter, setSelectedPortfolioFilter] = useState<string>("__all__"); // "__all__" | "__none__" | portfolioId
   const [selectedCounterpartyFilter, setSelectedCounterpartyFilter] = useState<string>("__all__"); // "__all__" | counterparty name
+
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [csvImportReportOpen, setCsvImportReportOpen] = useState(false);
+  const [csvImportReport, setCsvImportReport] = useState<{
+    imported: number;
+    headerErrors: string[];
+    rowErrors: { row: number; msg: string }[];
+  }>({ imported: 0, headerErrors: [], rowErrors: [] });
 
   // Custom currency pairs from Pricers/Strategy Builder (localStorage) - kept in sync
   const [customCurrencyPairs, setCustomCurrencyPairs] = useState<Array<{ symbol: string; name: string; base?: string; quote?: string; defaultSpotRate?: number }>>(() => {
@@ -174,6 +205,10 @@ const HedgingInstruments = () => {
     realPrice: "" as string | number, // optional: user-entered real traded price (overrides theoretical)
     portfolioId: undefined as string | undefined,
   }));
+  const [addFormRateOverrides, setAddFormRateOverrides] = useState<{ domestic: boolean; foreign: boolean }>({
+    domestic: false,
+    foreign: false,
+  });
 
   // Local editing state for table inputs (avoids recalc on every keystroke → prevents crash)
   const [editingTableCells, setEditingTableCells] = useState<Record<string, { spot?: string; vol?: string }>>({});
@@ -289,6 +324,64 @@ const HedgingInstruments = () => {
     return pair?.quote ?? addForm.currencyPair.split("/")[1] ?? "quote";
   }, [addForm.currencyPair, customCurrencyPairs]);
 
+  const addFormBaseForCurve = useMemo(
+    () => (/^[A-Z]{3}$/.test(addFormBaseCcy) ? addFormBaseCcy : "EUR"),
+    [addFormBaseCcy]
+  );
+  const addFormQuoteForCurve = useMemo(
+    () => (/^[A-Z]{3}$/.test(addFormQuoteCcy) ? addFormQuoteCcy : "USD"),
+    [addFormQuoteCcy]
+  );
+
+  const addDomesticCurve = useRateExplorerDiscountFactors(addFormQuoteForCurve, "cubic_spline");
+  const addForeignCurve = useRateExplorerDiscountFactors(addFormBaseForCurve, "cubic_spline");
+
+  const addFormTimeToMaturity = useMemo(() => {
+    if (!addForm.maturity) return 0;
+    return PricingService.calculateTimeToMaturity(addForm.maturity, valuationDate);
+  }, [addForm.maturity, valuationDate]);
+
+  const interpolatedAddDomestic = useMemo(() => {
+    if (!addDomesticCurve.discountFactors || addFormTimeToMaturity <= 0) return null;
+    return interpolateAtTenor(addDomesticCurve.discountFactors, addFormTimeToMaturity);
+  }, [addDomesticCurve.discountFactors, addFormTimeToMaturity]);
+
+  const interpolatedAddForeign = useMemo(() => {
+    if (!addForeignCurve.discountFactors || addFormTimeToMaturity <= 0) return null;
+    return interpolateAtTenor(addForeignCurve.discountFactors, addFormTimeToMaturity);
+  }, [addForeignCurve.discountFactors, addFormTimeToMaturity]);
+
+  useEffect(() => {
+    if (readPricingInterestRateSource() !== "bootstrapping") return;
+
+    const nextDomestic = interpolatedAddDomestic ? interpolatedAddDomestic.zeroRate * 100 : null;
+    const nextForeign = interpolatedAddForeign ? interpolatedAddForeign.zeroRate * 100 : null;
+    const eps = 1e-7;
+
+    setAddForm((prev) => {
+      let updated = prev;
+      if (nextDomestic !== null && !addFormRateOverrides.domestic) {
+        if (Math.abs((prev.domesticRate || 0) - nextDomestic) > eps) {
+          updated = { ...updated, domesticRate: nextDomestic };
+        }
+      }
+      if (nextForeign !== null && !addFormRateOverrides.foreign) {
+        if (Math.abs((prev.foreignRate || 0) - nextForeign) > eps) {
+          updated = { ...updated, foreignRate: nextForeign };
+        }
+      }
+      return updated;
+    });
+  }, [
+    interpolatedAddDomestic?.zeroRate,
+    interpolatedAddForeign?.zeroRate,
+    addFormRateOverrides.domestic,
+    addFormRateOverrides.foreign,
+  ]);
+
+  /** Curves for bootstrapped rates (same engine as Rate Explorer / Add Instrument). */
+  const hedgingBootstrapCurveMap = useHedgingBootstrapCurveMap();
+
   const [currencyMarketData, setCurrencyMarketData] = useState<{ [currency: string]: CurrencyMarketData }>(() => {
     // Charger les données de marché depuis localStorage
     try {
@@ -299,6 +392,18 @@ const HedgingInstruments = () => {
       return {};
     }
   });
+
+  const [interestRateSource, setInterestRateSource] = useState(() => readPricingInterestRateSource());
+  useEffect(() => {
+    const sync = () => setInterestRateSource(readPricingInterestRateSource());
+    window.addEventListener("storage", sync);
+    window.addEventListener("fxRiskManagerSettingsSaved", sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("fxRiskManagerSettingsSaved", sync);
+    };
+  }, []);
+
   const [isRecalculating, setIsRecalculating] = useState(false);
 
   // Dialog states for view and edit actions
@@ -511,6 +616,108 @@ const HedgingInstruments = () => {
     }
   };
 
+  /** Align spots with the same rate snapshot as Forex Market (localStorage + custom event). */
+  const applyForexMarketSnapshotToState = React.useCallback(
+    (snap: ForexMarketRateSnapshot) => {
+      if (snap.base !== baseCurrency) return;
+      if (instruments.length === 0) return;
+
+      const uniqueCurrencies = getUniqueCurrencies(instruments);
+      if (uniqueCurrencies.length === 0) return;
+
+      setCurrencyMarketData((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const pair of uniqueCurrencies) {
+          const spot = computeSpotForCurrencyPair(pair, snap.base, snap.rates);
+          if (spot == null || !(spot > 0) || isNaN(spot)) continue;
+          const cur = next[pair] || getMarketDataFromInstruments(pair) || MARKET_DEFAULTS;
+          if (Math.abs((cur.spot ?? 0) - spot) < 1e-10) continue;
+          next[pair] = { ...MARKET_DEFAULTS, ...cur, spot };
+          changed = true;
+        }
+        if (!changed) return prev;
+        try {
+          localStorage.setItem("currencyMarketData", JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        queueMicrotask(() => {
+          setEditingMarketCells((prev) => {
+            const nxt = { ...prev };
+            for (const pair of uniqueCurrencies) {
+              if (!nxt[pair]?.spot) continue;
+              const rest = { ...nxt[pair] };
+              delete rest.spot;
+              if (Object.keys(rest).length === 0) delete nxt[pair];
+              else nxt[pair] = rest;
+            }
+            return nxt;
+          });
+          setInstruments((prev) => [...prev]);
+        });
+        return next;
+      });
+    },
+    [baseCurrency, instruments]
+  );
+
+  // Live sync with Forex Market snapshot + refresh if stale (Forex page refreshes every 30s)
+  React.useEffect(() => {
+    const onSnap = (e: Event) => {
+      const ce = e as CustomEvent<ForexMarketRateSnapshot>;
+      if (ce.detail) applyForexMarketSnapshotToState(ce.detail);
+      else {
+        const s = readForexMarketRateSnapshot();
+        if (s) applyForexMarketSnapshotToState(s);
+      }
+    };
+    window.addEventListener(FOREX_MARKET_RATE_SNAPSHOT_EVENT, onSnap as EventListener);
+
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key !== FOREX_MARKET_RATE_SNAPSHOT_KEY || !ev.newValue) return;
+      try {
+        const s = JSON.parse(ev.newValue) as ForexMarketRateSnapshot;
+        applyForexMarketSnapshotToState(s);
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    const refreshSnapshotIfNeeded = async (): Promise<ForexMarketRateSnapshot | null> => {
+      let snap = readForexMarketRateSnapshot();
+      const now = Date.now();
+      const stale = !snap || snap.base !== baseCurrency || now - snap.updatedAt > 35000;
+      if (stale) {
+        try {
+          const ex = await exchangeRateService.getExchangeRates(baseCurrency);
+          snap = { base: ex.base, rates: ex.rates, updatedAt: Date.now() };
+          writeForexMarketRateSnapshot(snap);
+        } catch {
+          return snap;
+        }
+      }
+      return snap;
+    };
+
+    const id = setInterval(() => {
+      void refreshSnapshotIfNeeded().then((s) => {
+        if (s) applyForexMarketSnapshotToState(s);
+      });
+    }, 15000);
+
+    void refreshSnapshotIfNeeded().then((s) => {
+      if (s) applyForexMarketSnapshotToState(s);
+    });
+
+    return () => {
+      window.removeEventListener(FOREX_MARKET_RATE_SNAPSHOT_EVENT, onSnap as EventListener);
+      window.removeEventListener("storage", onStorage);
+      clearInterval(id);
+    };
+  }, [baseCurrency, exchangeRateService, applyForexMarketSnapshotToState]);
+
   // Synchronize spot price and rates with market data on initial load
   const hasSyncedOnMount = React.useRef(false);
   React.useEffect(() => {
@@ -531,15 +738,22 @@ const HedgingInstruments = () => {
           const parts = currencyPair.split('/');
           if (parts.length !== 2) return;
           
-          const baseCurrency = parts[0];
-          const quoteCurrency = parts[1];
+          const pairBase = parts[0];
+          const pairQuote = parts[1];
           
           // Get Bank Rates for base and quote currencies
-          const baseRate = bankRates[baseCurrency] ?? null;
-          const quoteRate = bankRates[quoteCurrency] ?? null;
+          const baseRate = bankRates[pairBase] ?? null;
+          const quoteRate = bankRates[pairQuote] ?? null;
           
-          // Fetch real-time spot price
-          const realTimeSpot = await fetchRealTimeSpotPrice(currencyPair);
+          // Spot: même snapshot que Forex Market si disponible, sinon API
+          const snap = readForexMarketRateSnapshot();
+          let realTimeSpot: number | null = null;
+          if (snap && snap.base === baseCurrency) {
+            realTimeSpot = computeSpotForCurrencyPair(currencyPair, snap.base, snap.rates);
+          }
+          if (realTimeSpot == null || isNaN(realTimeSpot) || realTimeSpot <= 0) {
+            realTimeSpot = await fetchRealTimeSpotPrice(currencyPair);
+          }
           
           // Get current data from state or from instruments
           const currentData = getMarketDataFromInstruments(currencyPair) || {
@@ -558,12 +772,13 @@ const HedgingInstruments = () => {
             pairUpdated = true;
           }
           
-          if (baseRate !== null && baseRate !== undefined) {
+          const skipBankRatesForInterest = readPricingInterestRateSource() === "bootstrapping";
+          if (!skipBankRatesForInterest && baseRate !== null && baseRate !== undefined) {
             updatedData.foreignRate = baseRate;
             pairUpdated = true;
           }
           
-          if (quoteRate !== null && quoteRate !== undefined) {
+          if (!skipBankRatesForInterest && quoteRate !== null && quoteRate !== undefined) {
             updatedData.domesticRate = quoteRate;
             pairUpdated = true;
           }
@@ -599,6 +814,7 @@ const HedgingInstruments = () => {
 
   // ✅ Synchronisation automatique des taux d'AllRates vers HedgingInstruments
   useEffect(() => {
+    if (interestRateSource === "bootstrapping") return; // taux courants viennent du bootstrap (courbe × maturité restante)
     if (Object.keys(bankRates).length === 0) return; // Pas de taux disponibles encore
     if (instruments.length === 0) return; // Pas d'instruments à synchroniser
     
@@ -664,7 +880,7 @@ const HedgingInstruments = () => {
         description: `Interest rates updated from All Rates for ${updatedPairs.length} currency pair(s)`,
       });
     }
-  }, [bankRates, instruments, toast]);
+  }, [bankRates, instruments, toast, interestRateSource]);
 
   // NOTE: No separate useEffect to force recalculation on currencyMarketData change.
   // calculateTodayPrice reads currencyMarketData directly from the closure,
@@ -759,6 +975,59 @@ const HedgingInstruments = () => {
     return null;
   };
 
+  /** Current domestic/foreign rates for pricing & table: manual (market data) vs bootstrapping (curve @ remaining maturity). */
+  const getEffectiveRatesForInstrument = (instrument: HedgingInstrument) => {
+    const marketData =
+      currencyMarketData[instrument.currency] ||
+      getMarketDataFromInstruments(instrument.currency) ||
+      MARKET_DEFAULTS;
+    if (interestRateSource !== "bootstrapping") {
+      // Per-period rates exported from Strategy Builder when bootstrap was used there
+      if (
+        instrument.exportUsedBootstrappedRates &&
+        instrument.exportDomesticRate != null &&
+        instrument.exportForeignRate != null &&
+        Number.isFinite(instrument.exportDomesticRate) &&
+        Number.isFinite(instrument.exportForeignRate)
+      ) {
+        const d = Number(instrument.exportDomesticRate);
+        const f = Number(instrument.exportForeignRate);
+        return {
+          domesticPct: d,
+          foreignPct: f,
+          r_d: d / 100,
+          r_f: f / 100,
+        };
+      }
+      return {
+        domesticPct: Number(marketData.domesticRate) || 0,
+        foreignPct: Number(marketData.foreignRate) || 0,
+        r_d: (Number(marketData.domesticRate) || 0) / 100,
+        r_f: (Number(marketData.foreignRate) || 0) / 100,
+      };
+    }
+    const b = getBootstrappedRatesForInstrument(
+      instrument.currency,
+      instrument.maturity,
+      valuationDate,
+      hedgingBootstrapCurveMap.curves
+    );
+    if (b) {
+      return {
+        domesticPct: b.domesticPct,
+        foreignPct: b.foreignPct,
+        r_d: b.r_d,
+        r_f: b.r_f,
+      };
+    }
+    return {
+      domesticPct: Number(marketData.domesticRate) || 0,
+      foreignPct: Number(marketData.foreignRate) || 0,
+      r_d: (Number(marketData.domesticRate) || 0) / 100,
+      r_f: (Number(marketData.foreignRate) || 0) / 100,
+    };
+  };
+
     // ✅ CORRECTION : Utiliser exactement les MÊMES FONCTIONS que Strategy Builder (exportées d'Index.tsx)
   const calculateOptionPrice = (type: string, S: number, K: number, r: number, t: number, sigma: number, instrument: HedgingInstrument, date?: Date, optionIndex?: number) => {
     // ✅ UTILISATION STRICTE DES FONCTIONS EXPORTÉES D'INDEX.TSX - MÊME LOGIQUE QUE STRATEGY BUILDER
@@ -831,9 +1100,9 @@ const HedgingInstruments = () => {
       const numSimulations = barrierOptionSimulations || 10000;
 
       // ✅ CORRIGÉ : Utiliser r_d et r_f pour Garman-Kohlhagen
-      const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency);
-      const r_d = marketData ? marketData.domesticRate / 100 : r;
-      const r_f = marketData ? marketData.foreignRate / 100 : 0;
+      const er = getEffectiveRatesForInstrument(instrument);
+      const r_d = er.r_d;
+      const r_f = er.r_f;
 
       // ✅ Utiliser barrierPricingModel pour choisir entre closed-form et monte-carlo
       const useClosedForm = barrierPricingModel === 'closed-form';
@@ -845,9 +1114,9 @@ const HedgingInstruments = () => {
     }
 
     // For vanilla options, use the selected pricing model - même logique que Strategy Builder
-    const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency);
-    const r_d = marketData ? marketData.domesticRate / 100 : r;
-    const r_f = marketData ? marketData.foreignRate / 100 : 0;
+    const erVanilla = getEffectiveRatesForInstrument(instrument);
+    const r_d = erVanilla.r_d;
+    const r_f = erVanilla.r_f;
     
     // For standard options, use appropriate pricing model
     let price = 0;
@@ -916,19 +1185,20 @@ const HedgingInstruments = () => {
     // Utiliser la même base de calcul pour l'affichage et le pricing
     const displayTimeToMaturity = calculationTimeToMaturity;
     
-    // 2. PARAMÈTRES DE MARCHÉ : Utiliser les valeurs CURRENT des données de marché
+    // 2. PARAMÈTRES DE MARCHÉ : spot depuis données marché ; taux = manuel ou bootstrap (settings)
     const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
+    const effRates = getEffectiveRatesForInstrument(instrument);
     
     // Utiliser les paramètres CURRENT (modifiables par l'utilisateur)
     // Hiérarchie pour le spot price : individuel > global
     const spotRate = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
-    const r_d = (Number(marketData.domesticRate) || 0) / 100;
-    const r_f = (Number(marketData.foreignRate) || 0) / 100;
+    const r_d = effRates.r_d;
+    const r_f = effRates.r_f;
     
     if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Using CURRENT parameters - spot=${spotRate}, r_d=${(r_d*100).toFixed(3)}%, r_f=${(r_f*100).toFixed(3)}%, t=${calculationTimeToMaturity.toFixed(6)} (valuationDate=${valuationDate})`);
     if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export spot: ${instrument.exportSpotPrice || 'N/A'}, Current: ${marketData.spot}`);
-    if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export r_d: ${instrument.exportDomesticRate ? (instrument.exportDomesticRate).toFixed(3) + '%' : 'N/A'}, Current: ${marketData.domesticRate.toFixed(3)}%`);
-    if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export r_f: ${instrument.exportForeignRate ? (instrument.exportForeignRate).toFixed(3) + '%' : 'N/A'}, Current: ${marketData.foreignRate.toFixed(3)}%`);
+    if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export r_d: ${instrument.exportDomesticRate ? (instrument.exportDomesticRate).toFixed(3) + '%' : 'N/A'}, Current: ${effRates.domesticPct.toFixed(3)}%`);
+    if (DEBUG_PRICING) console.log(`[DEBUG] ${instrument.id}: Export vs Current - Export r_f: ${instrument.exportForeignRate ? (instrument.exportForeignRate).toFixed(3) + '%' : 'N/A'}, Current: ${effRates.foreignPct.toFixed(3)}%`);
     
     // 3. VOLATILITÉ : Utiliser la volatilité CURRENT affichée dans le tableau (modifiable par l'utilisateur)
     let sigma;
@@ -1917,6 +2187,159 @@ const HedgingInstruments = () => {
     return [...fromList].sort();
   }, [counterparties, instruments]);
 
+  const escapeHedgingCsvCell = (value: string | number | undefined | null) => {
+    if (value === undefined || value === null || value === "") return "";
+    if (typeof value === "number" && isFinite(value)) return String(value);
+    const s = String(value);
+    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+
+  const handleDownloadHedgingCsvTemplate = () => {
+    const blob = new Blob([HEDGING_INSTRUMENT_CSV_TEMPLATE_SAMPLE], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "hedging-instruments-import-template.csv";
+    a.click();
+    window.URL.revokeObjectURL(url);
+    toast({
+      title: "Template downloaded",
+      description:
+        "Required: type, currency_pair, maturity, notional, spot. Optional: rates, vol, quantity, strike, counterparty, portfolio, etc.",
+    });
+  };
+
+  const handleExportHedgingInstrumentsCsv = () => {
+    const lines = [
+      HEDGING_INSTRUMENT_CSV_TEMPLATE_HEADER,
+      ...instruments.map((inst) => {
+        const portName = portfolios.find((p) => p.id === inst.portfolioId)?.name ?? "";
+        const typeToken = displayTypeToCsvType(inst.type);
+        const cells: (string | number)[] = [
+          typeToken,
+          inst.currency,
+          inst.maturity,
+          inst.notional,
+          inst.exportSpotPrice ?? "",
+          inst.exportDomesticRate ?? "",
+          inst.exportForeignRate ?? "",
+          inst.volatility ?? "",
+          inst.quantity ?? 100,
+          inst.strike ?? "",
+          "false",
+          inst.counterparty,
+          portName,
+          inst.realOptionPrice ?? inst.premium ?? "",
+          inst.barrier ?? "",
+          inst.secondBarrier ?? "",
+          inst.rebate ?? "",
+        ];
+        return cells.map((c) => escapeHedgingCsvCell(c)).join(",");
+      }),
+    ].join("\n");
+    const blob = new Blob([lines], { type: "text/csv;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hedging-instruments-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    toast({
+      title: "Export complete",
+      description: `${instruments.length} instrument(s) exported (re-importable template).`,
+    });
+  };
+
+  const handleImportHedgingCsvClick = () => csvInputRef.current?.click();
+
+  const handleHedgingCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const input = e.target;
+    const valDate = valuationDate || new Date().toISOString().split("T")[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? "");
+      const rows = parseCsvText(text);
+      const { headerErrors, results } = parseHedgingInstrumentRows(rows, { valuationDate: valDate });
+
+      if (headerErrors.length > 0) {
+        setCsvImportReport({ imported: 0, headerErrors, rowErrors: [] });
+        setCsvImportReportOpen(true);
+        input.value = "";
+        return;
+      }
+
+      const rowErrors: { row: number; msg: string }[] = results
+        .filter((r): r is { ok: false; row: number; error: string } => !r.ok)
+        .map((r) => ({ row: r.row, msg: r.error }));
+
+      const payloads: Omit<HedgingInstrument, "id">[] = [];
+      for (const r of results) {
+        if (!r.ok) continue;
+        const pName = r.data.portfolioName?.trim();
+        let portfolioId: string | undefined;
+        if (pName) {
+          const p = portfolios.find((x) => x.name.trim().toLowerCase() === pName.toLowerCase());
+          if (!p) {
+            rowErrors.push({ row: r.row, msg: `Unknown portfolio "${r.data.portfolioName}"` });
+            continue;
+          }
+          portfolioId = p.id;
+        }
+        payloads.push(
+          buildHedgingInstrumentPayload(r.data, {
+            valuationDate: valDate,
+            portfolioId,
+          })
+        );
+      }
+
+      if (payloads.length > 0) {
+        importService.addHedgingInstrumentsBatch(payloads);
+      }
+      requestAnimationFrame(() => {
+        setInstruments(importService.getHedgingInstruments());
+        window.dispatchEvent(new CustomEvent("hedgingInstrumentsUpdated"));
+      });
+
+      if (rowErrors.length > 0) {
+        toast({
+          title: payloads.length > 0 ? "Partial import" : "Import failed",
+          description: `${payloads.length} row(s) imported, ${rowErrors.length} row(s) skipped. See details.`,
+          variant: payloads.length > 0 ? "default" : "destructive",
+        });
+        setCsvImportReport({ imported: payloads.length, headerErrors: [], rowErrors });
+        setCsvImportReportOpen(true);
+      } else if (payloads.length > 0) {
+        toast({
+          title: "Import complete",
+          description: `${payloads.length} hedging instrument(s) imported from CSV.`,
+        });
+      } else {
+        toast({
+          title: "No data imported",
+          description: "Add at least one valid row under the header.",
+          variant: "destructive",
+        });
+      }
+
+      input.value = "";
+    };
+    reader.onerror = () => {
+      toast({
+        title: "Read error",
+        description: "Could not read the CSV file.",
+        variant: "destructive",
+      });
+      input.value = "";
+    };
+    reader.readAsText(file);
+  };
+
   // Get base currency from settings
   const baseCurrencyFromSettings = useBaseCurrency();
   
@@ -1986,7 +2409,7 @@ const HedgingInstruments = () => {
     });
     
     return mtmMap;
-  }, [instruments, currencyMarketData]);
+  }, [instruments, currencyMarketData, interestRateSource, valuationDate, hedgingBootstrapCurveMap.curves]);
 
   // Convert MTM total to reference currency
   const [convertedTotalMTM, setConvertedTotalMTM] = React.useState<number>(0);
@@ -2215,11 +2638,10 @@ const HedgingInstruments = () => {
                   </Button>
                 </div>
                 <div className="rounded-lg border bg-muted/10 overflow-hidden w-fit">
-                  <div className="grid grid-cols-[7rem_10rem_auto_2.5rem] gap-x-3 items-center px-3 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/20">
+                  <div className="grid grid-cols-[7rem_10rem_auto] gap-x-3 items-center px-3 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/20">
                     <span>Currency</span>
                     <span>Spot Rate</span>
                     <span className="text-center">IV</span>
-                    <span aria-hidden />
                   </div>
                   {getUniqueCurrencies(instruments).map((currency) => {
                     const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
@@ -2228,7 +2650,7 @@ const HedgingInstruments = () => {
                     return (
                       <div
                         key={currency}
-                        className="grid grid-cols-[7rem_10rem_auto_2.5rem] gap-x-3 items-center px-3 py-2 border-b border-muted/50 last:border-b-0 hover:bg-muted/10"
+                        className="grid grid-cols-[7rem_10rem_auto] gap-x-3 items-center px-3 py-2 border-b border-muted/50 last:border-b-0 hover:bg-muted/10"
                       >
                         <div className="flex items-center gap-1.5 min-w-0">
                           <Badge variant="outline" className="font-mono font-semibold text-xs shrink-0">
@@ -2272,15 +2694,6 @@ const HedgingInstruments = () => {
                             </Button>
                           )}
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => refreshMarketDataForCurrency(currency)}
-                          className="text-xs h-8 w-8 p-0 shrink-0"
-                          title="Refresh market data"
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" />
-                        </Button>
                       </div>
                     );
                   })}
@@ -2495,7 +2908,7 @@ const HedgingInstruments = () => {
                 Manage forwards, options, swaps and other hedging instruments
               </CardDescription>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {/* Toggle Export Columns */}
               <Button 
                 onClick={() => setShowExportColumns(!showExportColumns)}
@@ -2504,6 +2917,47 @@ const HedgingInstruments = () => {
                 className="whitespace-nowrap"
               >
                 {showExportColumns ? "Hide Export" : "Show Export"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="whitespace-nowrap"
+                onClick={handleExportHedgingInstrumentsCsv}
+                disabled={instruments.length === 0}
+                title="Export all instruments in CSV import format"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Export CSV
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="whitespace-nowrap"
+                onClick={handleDownloadHedgingCsvTemplate}
+                title="Download CSV template for bulk import"
+              >
+                <FileText className="h-4 w-4 mr-2" />
+                CSV template
+              </Button>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={handleHedgingCsvFileChange}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="whitespace-nowrap"
+                onClick={handleImportHedgingCsvClick}
+                title="Import multiple instruments from CSV"
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Import CSV
               </Button>
               
             <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
@@ -2598,6 +3052,7 @@ const HedgingInstruments = () => {
                     });
                     // Close dialog and show toast immediately so UI doesn't freeze
                     setIsAddDialogOpen(false);
+                    setAddFormRateOverrides({ domestic: false, foreign: false });
                     setAddForm({
                       type: "forward",
                       currencyPair: "",
@@ -2670,17 +3125,31 @@ const HedgingInstruments = () => {
                         const spot = pair?.defaultSpotRate ?? addForm.spotPrice;
                         const base = pair?.base || value?.split("/")[0];
                         const quote = pair?.quote || value?.split("/")[1];
-                        const domesticRate = base && quote ? (bankRates[quote as keyof typeof bankRates] ?? addForm.domesticRate) : addForm.domesticRate;
-                        const foreignRate = base && quote ? (bankRates[base as keyof typeof bankRates] ?? addForm.foreignRate) : addForm.foreignRate;
+                        const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
+                        const domesticRate = fromBootstrapSettings
+                          ? undefined
+                          : base && quote
+                            ? (bankRates[quote as keyof typeof bankRates] ?? addForm.domesticRate)
+                            : addForm.domesticRate;
+                        const foreignRate = fromBootstrapSettings
+                          ? undefined
+                          : base && quote
+                            ? (bankRates[base as keyof typeof bankRates] ?? addForm.foreignRate)
+                            : addForm.foreignRate;
                         setAddForm((f) => ({
                           ...f,
                           currencyPair: value,
                           spotPrice: spot,
                           strike: spot,
-                          domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate,
-                          foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate,
+                          ...(fromBootstrapSettings
+                            ? {}
+                            : {
+                                domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate,
+                                foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate,
+                              }),
                           notionalQuote: Math.round((f.notionalBase || 0) * spot * 100) / 100,
                         }));
+                        setAddFormRateOverrides({ domestic: false, foreign: false });
                         if (pair) {
                           try {
                             const realTimeRate = await fetchRealTimeRate(pair);
@@ -2882,7 +3351,10 @@ const HedgingInstruments = () => {
                       step="0.01"
                       className="w-full"
                       value={addForm.domesticRate ?? ""}
-                      onChange={(e) => setAddForm((f) => ({ ...f, domesticRate: parseFloat(e.target.value) ?? 0 }))}
+                      onChange={(e) => {
+                        setAddForm((f) => ({ ...f, domesticRate: parseFloat(e.target.value) ?? 0 }));
+                        setAddFormRateOverrides((prev) => ({ ...prev, domestic: true }));
+                      }}
                     />
                   </div>
                   <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
@@ -2892,7 +3364,10 @@ const HedgingInstruments = () => {
                       step="0.01"
                       className="w-full"
                       value={addForm.foreignRate ?? ""}
-                      onChange={(e) => setAddForm((f) => ({ ...f, foreignRate: parseFloat(e.target.value) ?? 0 }))}
+                      onChange={(e) => {
+                        setAddForm((f) => ({ ...f, foreignRate: parseFloat(e.target.value) ?? 0 }));
+                        setAddFormRateOverrides((prev) => ({ ...prev, foreign: true }));
+                      }}
                     />
                   </div>
                   {/* Barrier - same logic as Pricers: show for knockout, knockin, touch */}
@@ -3113,60 +3588,60 @@ const HedgingInstruments = () => {
                 </div>
               ) : (
                                  <div className="overflow-x-auto" style={{ maxWidth: 'calc(100vw - 280px)' }}>
-                   <Table className="min-w-full border-collapse bg-white shadow-sm rounded-lg overflow-hidden">
-                     <TableHeader className="bg-gradient-to-r from-slate-50 to-slate-100">
-                       <TableRow className="border-b-2 border-slate-200">
+                   <Table className="min-w-full border-collapse bg-background shadow-sm rounded-lg overflow-hidden">
+                     <TableHeader className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
+                       <TableRow className="border-b-2 border-slate-200 dark:border-slate-700">
                          {/* Fixed columns */}
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[60px] sticky left-0 z-[5]">ID</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Type</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Currency Pair</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Quantity (%)</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Unit Price (Initial)</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Today Price</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">MTM (Unit)</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">MTM</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[60px] sticky left-0 z-[5]">ID</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Type</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Currency Pair</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Quantity (%)</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Unit Price (Initial)</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Today Price</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">MTM (Unit)</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">MTM</TableHead>
                          
                          {/* Dynamic columns with conditional Export */}
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-blue-50 font-semibold min-w-[120px]">Time to Maturity</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-green-50 font-semibold min-w-[100px]">Spot Price</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-yellow-50 font-semibold min-w-[100px]">Volatility (%)</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-purple-50 font-semibold min-w-[120px]">Domestic Rate (%)</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-pink-50 font-semibold min-w-[120px]">Foreign Rate (%)</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-indigo-50 font-semibold min-w-[120px]">Forward Price</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 bg-orange-50 font-semibold min-w-[120px]">Strike Analysis</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-blue-50 dark:bg-blue-900/20 font-semibold min-w-[120px]">Time to Maturity</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-green-50 dark:bg-green-900/20 font-semibold min-w-[100px]">Spot Price</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-yellow-50 dark:bg-yellow-900/20 font-semibold min-w-[100px]">Volatility (%)</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-purple-50 dark:bg-purple-900/20 font-semibold min-w-[120px]">Domestic Rate (%)</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-pink-50 dark:bg-pink-900/20 font-semibold min-w-[120px]">Foreign Rate (%)</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-indigo-50 dark:bg-indigo-900/20 font-semibold min-w-[120px]">Forward Price</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-orange-50 dark:bg-orange-900/20 font-semibold min-w-[120px]">Strike Analysis</TableHead>
                          
                          {/* Fixed end columns */}
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Barrier 1</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Barrier 2</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Rebate (%)</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Notional</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Total premium</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[100px]">Maturity</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center border-r border-slate-200 min-w-[80px]">Status</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 font-semibold text-center min-w-[120px]">Actions</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Barrier 1</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Barrier 2</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Rebate (%)</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Notional</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Total premium</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Maturity</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Status</TableHead>
+                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center min-w-[120px]">Actions</TableHead>
                     </TableRow>
-                       <TableRow className="border-b border-slate-200">
+                       <TableRow className="border-b border-slate-200 dark:border-slate-700">
                          {/* Sub-headers for dynamic columns */}
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-blue-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-blue-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-green-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-green-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-green-50 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-yellow-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-yellow-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-yellow-50 dark:bg-yellow-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-yellow-50 dark:bg-yellow-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-purple-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-purple-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-purple-50 dark:bg-purple-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-purple-50 dark:bg-purple-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-pink-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-pink-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-pink-50 dark:bg-pink-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-pink-50 dark:bg-pink-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-indigo-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-indigo-50 border-r border-slate-200 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-indigo-50 dark:bg-indigo-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-indigo-50 dark:bg-indigo-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 bg-orange-50 border-r border-slate-200 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 bg-orange-50 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-orange-50 dark:bg-orange-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-400 bg-orange-50 dark:bg-orange-900/20 font-medium">Current</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -3220,9 +3695,9 @@ const HedgingInstruments = () => {
                       const mtmWithQuantity = mtmValue * Math.abs(instrument.notional) * quantityFactor;
                       
                       return (
-                         <TableRow key={instrument.id} className="hover:bg-slate-50/80 border-b border-slate-100 transition-all duration-200 group">
-                           <TableCell className="font-semibold bg-slate-50/90 border-r border-slate-200 text-center sticky left-0 z-[5] text-slate-700">
-                             <div className="px-2 py-1 rounded-md bg-white shadow-sm">
+                         <TableRow key={instrument.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 border-b border-slate-100 dark:border-slate-700 transition-all duration-200 group">
+                           <TableCell className="font-semibold bg-slate-50/90 dark:bg-slate-900/90 border-r border-slate-200 dark:border-slate-700 text-center sticky left-0 z-[5] text-slate-700 dark:text-slate-200">
+                             <div className="px-2 py-1 rounded-md bg-white dark:bg-slate-800 shadow-sm">
                                {instrument.id}
                              </div>
                            </TableCell>
@@ -3232,7 +3707,7 @@ const HedgingInstruments = () => {
                               {getInstrumentIcon(instrument.type)}
                               </div>
                               <div className="space-y-1">
-                                <div className="font-medium text-slate-900">{instrument.type}</div>
+                                <div className="font-medium text-slate-900 dark:text-slate-100">{instrument.type}</div>
                                 {instrument.strategyName && (
                                   <div className="text-xs text-slate-500 flex items-center gap-1">
                                     <span className="w-1 h-1 bg-slate-400 rounded-full"></span>
@@ -3249,17 +3724,17 @@ const HedgingInstruments = () => {
                             </div>
                           </TableCell>
                           <TableCell className="text-center">
-                            <Badge variant="outline" className="font-mono font-semibold px-3 py-1 bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 transition-colors">
+                            <Badge variant="outline" className="font-mono font-semibold px-3 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-700 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
                               {instrument.currency}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-center">
-                            <div className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-green-50 text-green-700 font-mono font-semibold text-sm">
+                            <div className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 font-mono font-semibold text-sm">
                             {quantityToHedge.toFixed(1)}%
                             </div>
                           </TableCell>
                           <TableCell className="text-right">
-                            <div className="font-mono text-slate-700 font-semibold">
+                            <div className="font-mono text-slate-700 dark:text-slate-200 font-semibold">
                               {unitPrice > 0 ? unitPrice.toFixed(4) : 
                                 <span className="text-slate-400 italic">N/A</span>
                               }
@@ -3306,7 +3781,7 @@ const HedgingInstruments = () => {
                               }
                               
                               return (
-                                <div className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-md">
+                                <div className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded-md">
                                   Model: {modelName}
                                 </div>
                               );
@@ -3317,8 +3792,8 @@ const HedgingInstruments = () => {
                           <TableCell className="text-right">
                             <div className={`inline-flex items-center justify-center px-3 py-1 rounded-lg font-mono font-semibold text-sm ${
                               mtmValue >= 0 
-                                ? 'bg-green-50 text-green-700 border border-green-200' 
-                                : 'bg-red-50 text-red-700 border border-red-200'
+                                ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800/60'
+                                : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/60'
                             }`}>
                               {Math.abs(mtmValue) > 0.0001 ? (mtmValue >= 0 ? '+' : '') + mtmValue.toFixed(4) : '0.0000'}
                             </div>
@@ -3330,8 +3805,8 @@ const HedgingInstruments = () => {
                           <TableCell className="text-right">
                             <div className={`inline-flex items-center justify-center px-3 py-1 rounded-lg font-mono font-semibold ${
                               mtmWithQuantity >= 0 
-                                ? 'bg-green-50 text-green-700 border border-green-200' 
-                                : 'bg-red-50 text-red-700 border border-red-200'
+                                ? 'bg-green-50 text-green-700 border border-green-200 dark:bg-green-900/20 dark:text-green-300 dark:border-green-800/60'
+                                : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/60'
                             }`}>
                               {Math.abs(mtmWithQuantity) > 0.0001 ? (mtmWithQuantity >= 0 ? '+' : '') + formatCurrency(mtmWithQuantity, instrument.currency) : formatCurrency(0, instrument.currency)}
                             </div>
@@ -3341,7 +3816,7 @@ const HedgingInstruments = () => {
                           </TableCell>
                                                      {/* Time to Maturity - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 border-r border-slate-200">
+                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                               <div className="text-xs text-blue-600">
                               {instrument.exportTimeToMaturity ? 
                                 `${instrument.exportTimeToMaturity.toFixed(4)}y` : 
@@ -3357,15 +3832,15 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Time to Maturity - Current */}
-                           <TableCell className="text-center bg-green-50/80 border-r border-slate-200">
+                           <TableCell className="text-center bg-green-50/80 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700">
                             <div className="space-y-1">
-                              <div className={`text-sm font-mono font-semibold ${timeToMaturity === 0 ? 'text-red-600' : 'text-green-700'}`}>
+                              <div className={`text-sm font-mono font-semibold ${timeToMaturity === 0 ? 'text-red-600 dark:text-red-300' : 'text-green-700 dark:text-green-300'}`}>
                               {timeToMaturity.toFixed(4)}y
                             </div>
-                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-600 bg-red-100/50' : 'text-green-600 bg-green-100/50'}`}>
+                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-600 bg-red-100/50 dark:text-red-300 dark:bg-red-900/20' : 'text-green-600 bg-green-100/50 dark:text-green-300 dark:bg-green-900/20'}`}>
                               {timeToMaturity === 0 ? 'EXPIRED' : `${(timeToMaturity * 365).toFixed(0)}d`}
                               </div>
-                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-500 bg-red-50' : 'text-green-500 bg-green-50'}`}>
+                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-500 bg-red-50 dark:text-red-300 dark:bg-red-900/20' : 'text-green-500 bg-green-50 dark:text-green-300 dark:bg-green-900/20'}`}>
                                 {timeToMaturity === 0 ? `Expired on ${instrument.maturity}` : `From ${valuationDate} to ${instrument.maturity}`}
                               </div>
                             </div>
@@ -3373,7 +3848,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Spot Price - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="text-center bg-blue-50/80 border-r border-slate-200">
+                             <TableCell className="text-center bg-blue-50/80 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                                <div className="text-sm font-mono font-semibold text-blue-700">
                               {instrument.exportSpotPrice ? 
                                 instrument.exportSpotPrice.toFixed(6) : 
@@ -3384,7 +3859,7 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Spot Price - Current (debounced to avoid recalc on every keystroke) */}
-                           <TableCell className="text-center bg-green-50/80 border-r border-slate-200">
+                           <TableCell className="text-center bg-green-50/80 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700">
                             {(() => {
                               const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
                               const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
@@ -3431,7 +3906,7 @@ const HedgingInstruments = () => {
                                         });
                                       }}
                                       placeholder={currentSpot.toFixed(6)}
-                                      className="w-20 h-6 text-xs text-center bg-white border-green-200 focus:border-green-400 focus:ring-green-400/20"
+                                      className="w-20 h-6 text-xs text-center bg-background border-green-200 dark:border-green-700 focus:border-green-400 focus:ring-green-400/20"
                                       step="0.0001"
                                       min="0"
                                     />
@@ -3447,7 +3922,7 @@ const HedgingInstruments = () => {
                                       </Button>
                                     )}
                                   </div>
-                                <div className="text-xs text-green-600 bg-green-100/50 px-2 py-1 rounded-md">
+                                <div className="text-xs text-green-600 dark:text-green-400 bg-green-100/50 dark:bg-green-900/30 px-2 py-1 rounded-md">
                                     Using: {currentSpot.toFixed(6)}
                                   </div>
                                 </div>
@@ -3457,7 +3932,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Volatility - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="text-center bg-blue-50/80 border-r border-slate-200">
+                             <TableCell className="text-center bg-blue-50/80 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                                <div className="text-sm font-mono font-semibold text-blue-700">
                               {instrument.exportVolatility ? 
                                 `${instrument.exportVolatility.toFixed(2)}%` : 
@@ -3468,7 +3943,7 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Volatility - Current (debounced to avoid recalc on every keystroke) */}
-                           <TableCell className="text-center bg-green-50/80 border-r border-slate-200">
+                           <TableCell className="text-center bg-green-50/80 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700">
                             <div className="space-y-1">
                               <div className="flex items-center gap-1">
                                 <Input
@@ -3510,7 +3985,7 @@ const HedgingInstruments = () => {
                                     });
                                   }}
                                   placeholder={volatility.toFixed(1)}
-                                  className="w-16 h-6 text-xs text-center bg-white border-green-200 focus:border-green-400 focus:ring-green-400/20"
+                                  className="w-16 h-6 text-xs text-center bg-background border-green-200 dark:border-green-700 focus:border-green-400 focus:ring-green-400/20"
                                   step="0.1"
                                   min="0"
                                   max="100"
@@ -3549,7 +4024,7 @@ const HedgingInstruments = () => {
                                   </Button>
                                 )}
                               </div>
-                                                              <div className="text-xs text-green-600 bg-green-100/50 px-2 py-1 rounded-md">
+                                                              <div className="text-xs text-green-600 dark:text-green-300 bg-green-100/50 dark:bg-green-900/20 px-2 py-1 rounded-md">
                                 Using: {instrument.impliedVolatility ?? volatility}%
                               </div>
                             </div>
@@ -3557,7 +4032,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Domestic Rate - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 border-r border-slate-200">
+                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                             <div className="text-xs text-blue-600">
                               {instrument.exportDomesticRate ? 
                                 `${instrument.exportDomesticRate.toFixed(3)}%` : 
@@ -3568,12 +4043,15 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Domestic Rate - Current */}
-                          <TableCell className="font-mono text-center bg-green-50">
+                          <TableCell className="font-mono text-center bg-green-50 dark:bg-green-900/20">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
+                              const eff = getEffectiveRatesForInstrument(instrument);
                               return (
-                                <div className="text-xs text-green-600">
-                                  {(Number(marketData.domesticRate) || 0).toFixed(3)}%
+                                <div className="text-xs text-green-600 dark:text-green-300">
+                                  {eff.domesticPct.toFixed(3)}%
+                                  {interestRateSource === "bootstrapping" && (
+                                    <span className="block text-[10px] text-muted-foreground">bootstrap</span>
+                                  )}
                                 </div>
                               );
                             })()}
@@ -3581,7 +4059,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Foreign Rate - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 border-r border-slate-200">
+                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                                 <div className="text-xs text-blue-600">
                               {instrument.exportForeignRate ? 
                                 `${instrument.exportForeignRate.toFixed(3)}%` : 
@@ -3592,12 +4070,15 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Foreign Rate - Current */}
-                          <TableCell className="font-mono text-center bg-green-50">
+                          <TableCell className="font-mono text-center bg-green-50 dark:bg-green-900/20">
                             {(() => {
-                              const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
+                              const eff = getEffectiveRatesForInstrument(instrument);
                               return (
-                                <div className="text-xs text-green-600">
-                                  {(Number(marketData.foreignRate) || 0).toFixed(3)}%
+                                <div className="text-xs text-green-600 dark:text-green-300">
+                                  {eff.foreignPct.toFixed(3)}%
+                                  {interestRateSource === "bootstrapping" && (
+                                    <span className="block text-[10px] text-muted-foreground">bootstrap</span>
+                                  )}
                             </div>
                               );
                             })()}
@@ -3605,7 +4086,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Forward Price - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 border-r border-slate-200">
+                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                             <div className="text-xs text-blue-600">
                               {instrument.exportForwardPrice ? 
                                 instrument.exportForwardPrice.toFixed(6) : 
@@ -3616,7 +4097,7 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Forward Price - Current */}
-                          <TableCell className="font-mono text-center bg-green-50">
+                          <TableCell className="font-mono text-center bg-green-50 dark:bg-green-900/20">
                             {(() => {
                               const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
                               try {
@@ -3624,8 +4105,9 @@ const HedgingInstruments = () => {
                               const calculationStartDate = new Date(strategyStartDateObj.getFullYear(), strategyStartDateObj.getMonth(), strategyStartDateObj.getDate());
                               const calculationStartDateStr = calculationStartDate.toISOString().split('T')[0];
                               const currentTimeToMat = PricingService.calculateTimeToMaturity(instrument.maturity, calculationStartDateStr);
-                              const r_d = (Number(marketData.domesticRate) || 0) / 100;
-                              const r_f = (Number(marketData.foreignRate) || 0) / 100;
+                              const effFwd = getEffectiveRatesForInstrument(instrument);
+                              const r_d = effFwd.r_d;
+                              const r_f = effFwd.r_f;
                               const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
                               const currentForward = PricingService.calculateFXForwardPrice(currentSpot, r_d, r_f, currentTimeToMat);
                               return (
@@ -3639,7 +4121,7 @@ const HedgingInstruments = () => {
                           
                                                      {/* Strike - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 border-r border-slate-200">
+                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
                             <div className="text-xs text-blue-600">
                               {(() => {
                                 // Calculer le strike d'export basé sur les paramètres d'export
@@ -3661,7 +4143,7 @@ const HedgingInstruments = () => {
                            )}
                           
                           {/* Strike - Current */}
-                          <TableCell className="font-mono text-center bg-green-50">
+                          <TableCell className="font-mono text-center bg-green-50 dark:bg-green-900/20">
                             <div className="text-xs text-green-600">
                             {instrument.strike ? instrument.strike.toFixed(4) : 'N/A'}
                             </div>
@@ -3828,6 +4310,50 @@ const HedgingInstruments = () => {
               onCancel={() => setIsEditDialogOpen(false)}
             />
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={csvImportReportOpen} onOpenChange={setCsvImportReportOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>CSV import report</DialogTitle>
+            <DialogDescription>
+              {csvImportReport.imported > 0
+                ? `${csvImportReport.imported} instrument(s) imported.`
+                : "No instruments were imported."}
+              {(csvImportReport.headerErrors.length > 0 || csvImportReport.rowErrors.length > 0) &&
+                " Fix the issues below and try again for skipped rows."}
+            </DialogDescription>
+          </DialogHeader>
+          {csvImportReport.headerErrors.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-destructive">Header / file errors</p>
+              <ul className="list-disc pl-5 text-sm text-muted-foreground">
+                {csvImportReport.headerErrors.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {csvImportReport.rowErrors.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Row errors</p>
+              <div className="max-h-48 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm">
+                <ul className="space-y-1">
+                  {csvImportReport.rowErrors.map((err, i) => (
+                    <li key={i}>
+                      <span className="font-mono text-xs">Row {err.row}:</span> {err.msg}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" onClick={() => setCsvImportReportOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </Layout>

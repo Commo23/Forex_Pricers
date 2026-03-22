@@ -38,5 +38,7 @@ export interface CalculatorState {
     customScenario: any;
     stressTestScenarios: Record<string, any>;
     useImpliedVol: boolean;
+    /** Use bootstrapped curves (Rate Explorer) for quote/base rates by maturity */
+    useBootstrappedInterestRates?: boolean;
     impliedVolatilities: OptionImpliedVolatility;
   } 

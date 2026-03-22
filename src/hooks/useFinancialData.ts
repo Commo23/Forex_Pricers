@@ -18,6 +18,8 @@ interface UseFinancialDataReturn {
   
   // Actions
   addExposure: (exposure: Omit<ExposureData, 'id'>) => void;
+  /** Add many exposures in one refresh cycle (e.g. CSV import) */
+  batchAddExposures: (exposures: Omit<ExposureData, 'id'>[]) => void;
   updateExposure: (id: string, updates: Partial<Omit<ExposureData, 'id'>>) => boolean;
   deleteExposure: (id: string) => boolean;
   addInstrument: (instrument: Omit<HedgingInstrument, 'id' | 'mtm'>) => void;
@@ -555,6 +557,19 @@ export const useFinancialData = (): UseFinancialDataReturn => {
     }
   }, [refreshAllData]);
 
+  const batchAddExposures = useCallback((items: Omit<ExposureData, 'id'>[]) => {
+    if (items.length === 0) return;
+    setIsLoading(true);
+    try {
+      for (const exposure of items) {
+        serviceRef.current.addExposure(exposure);
+      }
+      refreshAllData();
+    } finally {
+      setIsLoading(false);
+    }
+  }, [refreshAllData]);
+
   const updateExposure = useCallback((id: string, updates: Partial<Omit<ExposureData, 'id'>>) => {
     setIsLoading(true);
     try {
@@ -658,6 +673,7 @@ export const useFinancialData = (): UseFinancialDataReturn => {
     
     // Actions
     addExposure,
+    batchAddExposures,
     updateExposure,
     deleteExposure,
     addInstrument,

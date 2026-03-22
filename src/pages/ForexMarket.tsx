@@ -22,6 +22,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useBaseCurrency } from '@/hooks/useBaseCurrency';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import TradingViewForexHeatmap from '@/components/TradingViewForexHeatmap';
+import { writeForexMarketRateSnapshot } from '@/lib/forexMarketSpotSync';
 import '@/styles/forex-market.css';
 
 interface CurrencyData {
@@ -233,6 +234,12 @@ const ForexMarket: React.FC = () => {
       
       // Get exchange rates from ExchangeRateService
       const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+      // Shared snapshot for Hedging Instruments & other pages (same API payload)
+      writeForexMarketRateSnapshot({
+        base: exchangeData.base,
+        rates: exchangeData.rates,
+        updatedAt: Date.now(),
+      });
       const formattedData = exchangeRateService.formatCurrencyData(exchangeData);
       
       // Transform to CurrencyData format with change calculation
