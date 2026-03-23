@@ -197,19 +197,13 @@ class FinancialDataService {
    * Calculate Expected Shortfall (Conditional VaR) using correct formula
    */
   private calculateExpectedShortfall(valueAtRisk: number, confidenceLevel: number): number {
-    // Correct Expected Shortfall formula for normal distribution
-    // ES = VaR * φ(Z_α) / (1 - α) where φ is the standard normal PDF
-    
-    const alpha = 1 - confidenceLevel;
+    // Normal-theory ES:
+    // VaR = z * sigma  => ES = sigma * φ(z)/(1-c) = VaR * φ(z)/(z*(1-c))
+    const tailProb = 1 - confidenceLevel;
     const zScore = confidenceLevel === 0.95 ? 1.645 : 2.326;
-    
-    // Standard normal probability density function at z-score
     const phi = (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * zScore * zScore);
-    
-    // Expected Shortfall formula
-    const expectedShortfall = valueAtRisk * (phi / alpha);
-    
-    return expectedShortfall;
+    if (tailProb <= 0 || zScore <= 0) return valueAtRisk;
+    return valueAtRisk * (phi / (zScore * tailProb));
   }
 
   /**

@@ -75,8 +75,8 @@ const Dashboard = () => {
   // Function to get theme-adaptive text colors using CSS classes
   const getTextColors = () => {
     return {
-      rate: 'text-slate-700 group-hover:text-slate-600 dark:text-blue-300 dark:group-hover:text-blue-200 bloomberg-theme:text-orange-300 bloomberg-theme:group-hover:text-orange-200',
-      pair: 'text-slate-500 dark:text-blue-400/80 bloomberg-theme:text-orange-400/80',
+      rate: 'text-slate-700 group-hover:text-slate-600 dark:text-lime-300 dark:group-hover:text-lime-200 bloomberg-theme:text-orange-300 bloomberg-theme:group-hover:text-orange-200',
+      pair: 'text-slate-500 dark:text-lime-400/80 bloomberg-theme:text-orange-400/80',
       change: 'text-emerald-600 dark:text-emerald-400 bloomberg-theme:text-emerald-400'
     };
   };
@@ -86,17 +86,17 @@ const Dashboard = () => {
   // Function to get theme-adaptive currency card colors using CSS classes
   const getCurrencyCardClasses = (baseColor: string) => {
     const colorMap = {
-      blue: 'from-blue-100/80 to-blue-50/60 border-blue-300/40 hover:border-blue-400/60 hover:shadow-blue-400/20 dark:from-blue-900/30 dark:to-blue-800/20 dark:border-blue-500/30 dark:hover:border-blue-400/60 dark:hover:shadow-blue-500/20 bloomberg-theme:from-orange-800/30 bloomberg-theme:to-orange-700/20 bloomberg-theme:border-orange-500/30 bloomberg-theme:hover:border-orange-400/60 bloomberg-theme:hover:shadow-orange-500/20',
-      purple: 'from-purple-100/80 to-purple-50/60 border-purple-300/40 hover:border-purple-400/60 hover:shadow-purple-400/20 dark:from-purple-900/30 dark:to-purple-800/20 dark:border-purple-500/30 dark:hover:border-purple-400/60 dark:hover:shadow-purple-500/20 bloomberg-theme:from-yellow-800/30 bloomberg-theme:to-yellow-700/20 bloomberg-theme:border-yellow-500/30 bloomberg-theme:hover:border-yellow-400/60 bloomberg-theme:hover:shadow-yellow-500/20',
+      blue: 'from-lime-100/80 to-lime-50/60 border-lime-300/40 hover:border-lime-400/60 hover:shadow-lime-400/20 dark:from-lime-900/30 dark:to-lime-800/20 dark:border-lime-500/30 dark:hover:border-lime-400/60 dark:hover:shadow-lime-500/20 bloomberg-theme:from-orange-800/30 bloomberg-theme:to-orange-700/20 bloomberg-theme:border-orange-500/30 bloomberg-theme:hover:border-orange-400/60 bloomberg-theme:hover:shadow-orange-500/20',
+      purple: 'from-emerald-100/80 to-emerald-50/60 border-emerald-300/40 hover:border-emerald-400/60 hover:shadow-emerald-400/20 dark:from-emerald-900/30 dark:to-emerald-800/20 dark:border-emerald-500/30 dark:hover:border-emerald-400/60 dark:hover:shadow-emerald-500/20 bloomberg-theme:from-yellow-800/30 bloomberg-theme:to-yellow-700/20 bloomberg-theme:border-yellow-500/30 bloomberg-theme:hover:border-yellow-400/60 bloomberg-theme:hover:shadow-yellow-500/20',
       cyan: 'from-cyan-100/80 to-cyan-50/60 border-cyan-300/40 hover:border-cyan-400/60 hover:shadow-cyan-400/20 dark:from-cyan-900/30 dark:to-cyan-800/20 dark:border-cyan-500/30 dark:hover:border-cyan-400/60 dark:hover:shadow-cyan-500/20 bloomberg-theme:from-orange-700/30 bloomberg-theme:to-orange-600/20 bloomberg-theme:border-orange-400/30 bloomberg-theme:hover:border-orange-300/60 bloomberg-theme:hover:shadow-orange-400/20',
       emerald: 'from-emerald-100/80 to-emerald-50/60 border-emerald-300/40 hover:border-emerald-400/60 hover:shadow-emerald-400/20 dark:from-emerald-900/30 dark:to-emerald-800/20 dark:border-emerald-500/30 dark:hover:border-emerald-400/60 dark:hover:shadow-emerald-500/20 bloomberg-theme:from-yellow-700/30 bloomberg-theme:to-yellow-600/20 bloomberg-theme:border-yellow-400/30 bloomberg-theme:hover:border-yellow-300/60 bloomberg-theme:hover:shadow-yellow-400/20',
       orange: 'from-orange-100/80 to-orange-50/60 border-orange-300/40 hover:border-orange-400/60 hover:shadow-orange-400/20 dark:from-orange-900/30 dark:to-orange-800/20 dark:border-orange-500/30 dark:hover:border-orange-400/60 dark:hover:shadow-orange-500/20 bloomberg-theme:from-orange-600/30 bloomberg-theme:to-orange-500/20 bloomberg-theme:border-orange-300/30 bloomberg-theme:hover:border-orange-200/60 bloomberg-theme:hover:shadow-orange-300/20',
       rose: 'from-rose-100/80 to-rose-50/60 border-rose-300/40 hover:border-rose-400/60 hover:shadow-rose-400/20 dark:from-rose-900/30 dark:to-rose-800/20 dark:border-rose-500/30 dark:hover:border-rose-400/60 dark:hover:shadow-rose-500/20 bloomberg-theme:from-red-800/30 bloomberg-theme:to-red-700/20 bloomberg-theme:border-red-500/30 bloomberg-theme:hover:border-red-400/60 bloomberg-theme:hover:shadow-red-500/20',
-      indigo: 'from-indigo-100/80 to-indigo-50/60 border-indigo-300/40 hover:border-indigo-400/60 hover:shadow-indigo-400/20 dark:from-indigo-900/30 dark:to-indigo-800/20 dark:border-indigo-500/30 dark:hover:border-indigo-400/60 dark:hover:shadow-indigo-500/20 bloomberg-theme:from-orange-900/30 bloomberg-theme:to-orange-800/20 bloomberg-theme:border-orange-600/30 bloomberg-theme:hover:border-orange-500/60 bloomberg-theme:hover:shadow-orange-600/20',
+      indigo: 'from-lime-100/80 to-lime-50/60 border-lime-300/40 hover:border-lime-400/60 hover:shadow-lime-400/20 dark:from-lime-900/30 dark:to-lime-800/20 dark:border-lime-500/30 dark:hover:border-lime-400/60 dark:hover:shadow-lime-500/20 bloomberg-theme:from-orange-900/30 bloomberg-theme:to-orange-800/20 bloomberg-theme:border-orange-600/30 bloomberg-theme:hover:border-orange-500/60 bloomberg-theme:hover:shadow-orange-600/20',
       yellow: 'from-yellow-100/80 to-yellow-50/60 border-yellow-300/40 hover:border-yellow-400/60 hover:shadow-yellow-400/20 dark:from-yellow-900/30 dark:to-yellow-800/20 dark:border-yellow-500/30 dark:hover:border-yellow-400/60 dark:hover:shadow-yellow-500/20 bloomberg-theme:from-yellow-600/30 bloomberg-theme:to-yellow-500/20 bloomberg-theme:border-yellow-300/30 bloomberg-theme:hover:border-yellow-200/60 bloomberg-theme:hover:shadow-yellow-300/20',
       teal: 'from-teal-100/80 to-teal-50/60 border-teal-300/40 hover:border-teal-400/60 hover:shadow-teal-400/20 dark:from-teal-900/30 dark:to-teal-800/20 dark:border-teal-500/30 dark:hover:border-teal-400/60 dark:hover:shadow-teal-500/20 bloomberg-theme:from-orange-800/30 bloomberg-theme:to-orange-700/20 bloomberg-theme:border-orange-500/30 bloomberg-theme:hover:border-orange-400/60 bloomberg-theme:hover:shadow-orange-500/20',
       pink: 'from-pink-100/80 to-pink-50/60 border-pink-300/40 hover:border-pink-400/60 hover:shadow-pink-400/20 dark:from-pink-900/30 dark:to-pink-800/20 dark:border-pink-500/30 dark:hover:border-pink-400/60 dark:hover:shadow-pink-500/20 bloomberg-theme:from-red-700/30 bloomberg-theme:to-red-600/20 bloomberg-theme:border-red-400/30 bloomberg-theme:hover:border-red-300/60 bloomberg-theme:hover:shadow-red-400/20',
-      violet: 'from-violet-100/80 to-violet-50/60 border-violet-300/40 hover:border-violet-400/60 hover:shadow-violet-400/20 dark:from-violet-900/30 dark:to-violet-800/20 dark:border-violet-500/30 dark:hover:border-violet-400/60 dark:hover:shadow-violet-500/20 bloomberg-theme:from-orange-800/30 bloomberg-theme:to-orange-700/20 bloomberg-theme:border-orange-500/30 bloomberg-theme:hover:border-orange-400/60 bloomberg-theme:hover:shadow-orange-500/20',
+      violet: 'from-emerald-100/80 to-emerald-50/60 border-emerald-300/40 hover:border-emerald-400/60 hover:shadow-emerald-400/20 dark:from-emerald-900/30 dark:to-emerald-800/20 dark:border-emerald-500/30 dark:hover:border-emerald-400/60 dark:hover:shadow-emerald-500/20 bloomberg-theme:from-orange-800/30 bloomberg-theme:to-orange-700/20 bloomberg-theme:border-orange-500/30 bloomberg-theme:hover:border-orange-400/60 bloomberg-theme:hover:shadow-orange-500/20',
       amber: 'from-amber-100/80 to-amber-50/60 border-amber-300/40 hover:border-amber-400/60 hover:shadow-amber-400/20 dark:from-amber-900/30 dark:to-amber-800/20 dark:border-amber-500/30 dark:hover:border-amber-400/60 dark:hover:shadow-amber-500/20 bloomberg-theme:from-yellow-700/30 bloomberg-theme:to-yellow-600/20 bloomberg-theme:border-yellow-400/30 bloomberg-theme:hover:border-yellow-300/60 bloomberg-theme:hover:shadow-yellow-400/20'
     };
 
@@ -429,7 +429,7 @@ const Dashboard = () => {
               <div key={index} className="flex items-start gap-3 p-3 rounded-lg border bg-card">
                 <div className={`h-2 w-2 rounded-full mt-2 ${
                   alert.type === "high" ? "bg-red-500" : 
-                  alert.type === "medium" ? "bg-yellow-500" : "bg-blue-500"
+                  alert.type === "medium" ? "bg-yellow-500" : "bg-lime-500"
                 }`} />
                 <div className="flex-1">
                   <p className="text-sm font-medium">{alert.message}</p>
@@ -502,14 +502,14 @@ const Dashboard = () => {
       <Card className="relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-slate-100 border-slate-200 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 dark:border-slate-700 bloomberg-theme:from-orange-950 bloomberg-theme:via-orange-900 bloomberg-theme:to-orange-950 bloomberg-theme:border-orange-800">
         {/* Animated background pattern - Theme adaptive */}
         <div className="absolute inset-0 opacity-10">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 dark:from-blue-500/10 dark:to-purple-500/10 bloomberg-theme:from-orange-500/15 bloomberg-theme:to-yellow-500/15 rounded-lg"></div>
-          <div className="absolute top-0 left-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(59,130,246,0.05)_50%,transparent_75%)] bg-[length:20px_20px] animate-pulse"></div>
+          <div className="absolute inset-0 bg-gradient-to-br from-lime-500/5 to-emerald-500/5 dark:from-lime-500/10 dark:to-emerald-500/10 bloomberg-theme:from-orange-500/15 bloomberg-theme:to-yellow-500/15 rounded-lg"></div>
+          <div className="absolute top-0 left-0 w-full h-full bg-[linear-gradient(45deg,transparent_25%,rgba(196,216,46,0.07)_50%,transparent_75%)] bg-[length:20px_20px] animate-pulse"></div>
         </div>
         
         <CardHeader className="relative z-10">
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-cyan-600 dark:from-blue-400 dark:via-purple-400 dark:to-cyan-400 bloomberg-theme:from-orange-400 bloomberg-theme:via-yellow-400 bloomberg-theme:to-orange-300 bg-clip-text text-transparent">
+              <CardTitle className="text-xl font-bold bg-gradient-to-r from-lime-600 via-emerald-600 to-teal-600 dark:from-lime-400 dark:via-emerald-400 dark:to-teal-400 bloomberg-theme:from-orange-400 bloomberg-theme:via-yellow-400 bloomberg-theme:to-orange-300 bg-clip-text text-transparent">
                 Market Overview
               </CardTitle>
               <CardDescription className="text-slate-600 dark:text-slate-300 bloomberg-theme:text-orange-200">
@@ -520,7 +520,7 @@ const Dashboard = () => {
               variant="outline"
               size="sm"
               onClick={loadMarketOverviewData}
-              className="flex items-center gap-2 bg-slate-100/80 border-slate-300 text-slate-700 hover:bg-slate-200/80 hover:border-blue-500 dark:bg-slate-800/50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700/50 dark:hover:border-blue-400 bloomberg-theme:bg-orange-900/50 bloomberg-theme:border-orange-700 bloomberg-theme:text-orange-200 bloomberg-theme:hover:bg-orange-800/50 bloomberg-theme:hover:border-orange-500 transition-all duration-300"
+              className="flex items-center gap-2 bg-slate-100/80 border-slate-300 text-slate-700 hover:bg-slate-200/80 hover:border-lime-500 dark:bg-slate-800/50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700/50 dark:hover:border-lime-400 bloomberg-theme:bg-orange-900/50 bloomberg-theme:border-orange-700 bloomberg-theme:text-orange-200 bloomberg-theme:hover:bg-orange-800/50 bloomberg-theme:hover:border-orange-500 transition-all duration-300"
             >
               <RefreshCw className="h-4 w-4" />
               Refresh
@@ -533,7 +533,7 @@ const Dashboard = () => {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
               {/* Major Pairs */}
               <div className={`group relative p-4 rounded-xl bg-gradient-to-br ${getCurrencyCardClasses('blue')} transition-all duration-300 hover:shadow-lg`}>
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-lime-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
                   <div className={`text-lg font-mono font-bold ${textColors.rate} transition-colors`}>
                     {marketOverviewData.EUR_USD.rate.toFixed(4)}
@@ -546,12 +546,12 @@ const Dashboard = () => {
               </div>
 
               <div className={`group relative p-4 rounded-xl bg-gradient-to-br ${getCurrencyCardClasses('purple')} transition-all duration-300 hover:shadow-lg`}>
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
-                  <div className="text-lg font-mono font-bold text-purple-300 group-hover:text-purple-200 transition-colors">
+                  <div className="text-lg font-mono font-bold text-emerald-300 group-hover:text-emerald-200 transition-colors">
                     {marketOverviewData.GBP_USD.rate.toFixed(4)}
                   </div>
-                  <div className="text-sm text-purple-400/80 font-medium">GBP/USD</div>
+                  <div className="text-sm text-emerald-400/80 font-medium">GBP/USD</div>
                   <div className={`text-xs font-semibold ${marketOverviewData.GBP_USD.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {marketOverviewData.GBP_USD.change >= 0 ? '↗' : '↘'} {marketOverviewData.GBP_USD.change >= 0 ? '+' : ''}{marketOverviewData.GBP_USD.change.toFixed(2)}%
                   </div>
@@ -611,12 +611,12 @@ const Dashboard = () => {
               </div>
 
               <div className={`group relative p-4 rounded-xl bg-gradient-to-br ${getCurrencyCardClasses('indigo')} transition-all duration-300 hover:shadow-lg`}>
-                <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-lime-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
-                  <div className="text-lg font-mono font-bold text-indigo-300 group-hover:text-indigo-200 transition-colors">
+                  <div className="text-lg font-mono font-bold text-lime-300 group-hover:text-lime-200 transition-colors">
                     {marketOverviewData.NZD_USD.rate.toFixed(4)}
                   </div>
-                  <div className="text-sm text-indigo-400/80 font-medium">NZD/USD</div>
+                  <div className="text-sm text-lime-400/80 font-medium">NZD/USD</div>
                   <div className={`text-xs font-semibold ${marketOverviewData.NZD_USD.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {marketOverviewData.NZD_USD.change >= 0 ? '↗' : '↘'} {marketOverviewData.NZD_USD.change >= 0 ? '+' : ''}{marketOverviewData.NZD_USD.change.toFixed(2)}%
               </div>
@@ -663,12 +663,12 @@ const Dashboard = () => {
               </div>
 
               <div className={`group relative p-4 rounded-xl bg-gradient-to-br ${getCurrencyCardClasses('violet')} transition-all duration-300 hover:shadow-lg`}>
-                <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
-                  <div className="text-lg font-mono font-bold text-violet-300 group-hover:text-violet-200 transition-colors">
+                  <div className="text-lg font-mono font-bold text-emerald-300 group-hover:text-emerald-200 transition-colors">
                     {marketOverviewData.USD_MXN.rate.toFixed(4)}
                   </div>
-                  <div className="text-sm text-violet-400/80 font-medium">USD/MXN</div>
+                  <div className="text-sm text-emerald-400/80 font-medium">USD/MXN</div>
                   <div className={`text-xs font-semibold ${marketOverviewData.USD_MXN.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {marketOverviewData.USD_MXN.change >= 0 ? '↗' : '↘'} {marketOverviewData.USD_MXN.change >= 0 ? '+' : ''}{marketOverviewData.USD_MXN.change.toFixed(2)}%
               </div>
@@ -690,8 +690,8 @@ const Dashboard = () => {
             </div>
           ) : (
             <div className="text-center py-12">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-r from-blue-500/30 to-purple-500/30 border-blue-500/40 dark:from-blue-500/20 dark:to-purple-500/20 dark:border-blue-500/30 bloomberg-theme:from-orange-500/25 bloomberg-theme:to-yellow-500/25 bloomberg-theme:border-orange-500/40 mb-4">
-                <Activity className="h-8 w-8 text-blue-400 animate-pulse" />
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-r from-lime-500/30 to-emerald-500/30 border-lime-500/40 dark:from-lime-500/20 dark:to-emerald-500/20 dark:border-lime-500/30 bloomberg-theme:from-orange-500/25 bloomberg-theme:to-yellow-500/25 bloomberg-theme:border-orange-500/40 mb-4">
+                <Activity className="h-8 w-8 text-lime-400 animate-pulse" />
               </div>
               <div className="text-slate-600 dark:text-slate-300 bloomberg-theme:text-orange-200 text-lg font-medium mb-2">Loading Market Data</div>
               <div className="text-slate-500 dark:text-slate-400 bloomberg-theme:text-orange-300 text-sm mb-4">Fetching real-time FX rates...</div>
@@ -699,7 +699,7 @@ const Dashboard = () => {
                 variant="outline"
                 size="sm"
                 onClick={loadMarketOverviewData}
-                className="bg-slate-100/80 border-slate-300 text-slate-700 hover:bg-slate-200/80 hover:border-blue-500 dark:bg-slate-800/50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700/50 dark:hover:border-blue-400 bloomberg-theme:bg-orange-900/50 bloomberg-theme:border-orange-700 bloomberg-theme:text-orange-200 bloomberg-theme:hover:bg-orange-800/50 bloomberg-theme:hover:border-orange-500 transition-all duration-300"
+                className="bg-slate-100/80 border-slate-300 text-slate-700 hover:bg-slate-200/80 hover:border-lime-500 dark:bg-slate-800/50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700/50 dark:hover:border-lime-400 bloomberg-theme:bg-orange-900/50 bloomberg-theme:border-orange-700 bloomberg-theme:text-orange-200 bloomberg-theme:hover:bg-orange-800/50 bloomberg-theme:hover:border-orange-500 transition-all duration-300"
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Load Data

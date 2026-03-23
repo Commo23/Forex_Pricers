@@ -84,6 +84,7 @@ interface AppSettings {
     interestRateSource: string;
     pricingFrequency: string;
     underlyingPriceType: 'spot' | 'forward';
+    maturityDateForPricing: 'last-day-of-month' | 'third-friday';
     backtestExerciseType: 'monthly-average' | 'third-friday';
   };
   
@@ -194,6 +195,7 @@ const Settings = () => {
       interestRateSource: "bloomberg",
       pricingFrequency: "real-time",
       underlyingPriceType: "spot",
+      maturityDateForPricing: "last-day-of-month",
       backtestExerciseType: "monthly-average"
     },
     ui: {
@@ -277,7 +279,12 @@ const Settings = () => {
               company: {
                 ...prev.company,
                 ...parsed.company
-              }
+              },
+              // Keep defaults for newly added pricing keys when old saved objects don't have them
+              pricing: {
+                ...prev.pricing,
+                ...(parsed.pricing || {})
+              },
             }));
           }
         }
@@ -1245,6 +1252,24 @@ const Settings = () => {
                   </Select>
                   <p className="text-xs text-muted-foreground">
                     Choose how to calculate exercise prices for backtesting: use monthly average price or the price on the third Friday of each month (typical option expiry date).
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="maturity-date-for-pricing">Maturity date for pricing</Label>
+                  <Select
+                    value={settings.pricing.maturityDateForPricing}
+                    onValueChange={(value) => updateSettings('pricing', { maturityDateForPricing: value as 'last-day-of-month' | 'third-friday' })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="last-day-of-month">Last day of month</SelectItem>
+                      <SelectItem value="third-friday">Third Friday of month</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Choose which maturity date rule is used for generated pricing periods in Strategy Builder.
                   </p>
                 </div>
               </div>

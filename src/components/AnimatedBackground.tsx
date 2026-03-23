@@ -4,12 +4,12 @@ const AnimatedBackground = () => {
   return (
     <div className="absolute inset-0 overflow-hidden">
       {/* Animated background with financial/forex theme */}
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-900 via-slate-900 to-purple-900">
+      <div className="absolute inset-0 bg-gradient-to-br from-black via-slate-900 to-zinc-900">
         {/* Moving particles */}
         <div className="absolute inset-0">
           {/* Large floating shapes */}
-          <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-blue-500/10 rounded-full blur-xl animate-pulse"></div>
-          <div className="absolute top-3/4 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-xl animate-pulse delay-1000"></div>
+          <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-lime-500/10 rounded-full blur-xl animate-pulse"></div>
+          <div className="absolute top-3/4 right-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-xl animate-pulse delay-1000"></div>
           <div className="absolute bottom-1/4 left-1/3 w-80 h-80 bg-green-500/10 rounded-full blur-xl animate-pulse delay-2000"></div>
           
           {/* Moving grid */}
@@ -27,9 +27,9 @@ const AnimatedBackground = () => {
           {/* Floating financial symbols */}
           <div className="absolute inset-0 overflow-hidden">
             {/* EUR symbol */}
-            <div className="absolute top-20 left-10 text-blue-400/20 text-4xl font-bold animate-float">€</div>
+            <div className="absolute top-20 left-10 text-lime-400/20 text-4xl font-bold animate-float">€</div>
             <div className="absolute top-40 right-20 text-green-400/20 text-3xl font-bold animate-float delay-500">$</div>
-            <div className="absolute bottom-32 left-16 text-purple-400/20 text-3xl font-bold animate-float delay-1000">£</div>
+            <div className="absolute bottom-32 left-16 text-emerald-400/20 text-3xl font-bold animate-float delay-1000">£</div>
             <div className="absolute bottom-20 right-32 text-yellow-400/20 text-2xl font-bold animate-float delay-1500">¥</div>
             
             {/* Trend lines */}
@@ -50,12 +50,12 @@ const AnimatedBackground = () => {
               />
               <defs>
                 <linearGradient id="gradient1">
-                  <stop offset="0%" stopColor="#3b82f6" />
-                  <stop offset="100%" stopColor="#8b5cf6" />
+                  <stop offset="0%" stopColor="#c4d82e" />
+                  <stop offset="100%" stopColor="#65a30d" />
                 </linearGradient>
                 <linearGradient id="gradient2">
                   <stop offset="0%" stopColor="#10b981" />
-                  <stop offset="100%" stopColor="#3b82f6" />
+                  <stop offset="100%" stopColor="#c4d82e" />
                 </linearGradient>
               </defs>
             </svg>
@@ -66,7 +66,7 @@ const AnimatedBackground = () => {
             {Array.from({ length: 15 }).map((_, i) => (
               <div
                 key={i}
-                className={`absolute w-2 h-2 bg-gradient-to-r from-blue-400 to-purple-400 rounded-full animate-pulse`}
+                className={`absolute w-2 h-2 bg-gradient-to-r from-lime-400 to-emerald-400 rounded-full animate-pulse`}
                 style={{
                   left: `${Math.random() * 100}%`,
                   top: `${Math.random() * 100}%`,

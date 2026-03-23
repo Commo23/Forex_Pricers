@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { useBankRates } from "@/hooks/useBankRates";
 import { useBaseCurrency } from "@/hooks/useBaseCurrency";
@@ -82,6 +83,7 @@ interface CurrencyMarketData {
 }
 
 const HedgingInstruments = () => {
+  const navigate = useNavigate();
   const { toast } = useToast();
   const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
   const baseCurrency = useBaseCurrency(); // Get base currency from settings
@@ -108,6 +110,7 @@ const HedgingInstruments = () => {
   const [counterparties, setCounterparties] = useState<HedgingCounterparty[]>(() => importService.getCounterparties());
   const [selectedPortfolioFilter, setSelectedPortfolioFilter] = useState<string>("__all__"); // "__all__" | "__none__" | portfolioId
   const [selectedCounterpartyFilter, setSelectedCounterpartyFilter] = useState<string>("__all__"); // "__all__" | counterparty name
+  const [instrumentSearchTerm, setInstrumentSearchTerm] = useState("");
 
   const csvInputRef = useRef<HTMLInputElement>(null);
   const [csvImportReportOpen, setCsvImportReportOpen] = useState(false);
@@ -1693,7 +1696,7 @@ const HedgingInstruments = () => {
           : Number(addForm.strike) || 0;
       const valDate = valuationDate || new Date().toISOString().split("T")[0];
       const dteDays = Math.round(
-        (new Date(addForm.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+        PricingService.calculateTimeToMaturity(addForm.maturity, valDate) * 365.25
       );
       const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
       if (iv == null || iv <= 0) {
@@ -1744,7 +1747,7 @@ const HedgingInstruments = () => {
       const strikeAbs = instrument.strike ?? spot;
       const valDate = valuationDate || new Date().toISOString().split("T")[0];
       const dteDays = Math.round(
-        (new Date(instrument.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+        PricingService.calculateTimeToMaturity(instrument.maturity, valDate) * 365.25
       );
       const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
       return iv != null && iv > 0 ? iv : null;
@@ -1806,7 +1809,7 @@ const HedgingInstruments = () => {
         const spot = currencyMarketData[inst.currency]?.spot ?? 1;
         const strikeAbs = inst.strike ?? spot;
         const dteDays = Math.round(
-          (new Date(inst.maturity).getTime() - new Date(valDate).getTime()) / (24 * 60 * 60 * 1000)
+          PricingService.calculateTimeToMaturity(inst.maturity, valDate) * 365.25
         );
         const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
         if (iv != null && iv > 0) updates.push({ id: inst.id, iv });
@@ -2176,8 +2179,17 @@ const HedgingInstruments = () => {
 
     const matchesCounterparty = selectedCounterpartyFilter === "__all__" ||
       (instrument.counterparty === selectedCounterpartyFilter);
+
+    const search = instrumentSearchTerm.trim().toLowerCase();
+    const matchesSearch =
+      search.length === 0 ||
+      instrument.id.toLowerCase().includes(search) ||
+      instrument.type.toLowerCase().includes(search) ||
+      instrument.currency.toLowerCase().includes(search) ||
+      (instrument.counterparty || "").toLowerCase().includes(search) ||
+      (instrument.strategyName || "").toLowerCase().includes(search);
     
-    return matchesTab && matchesPortfolio && matchesCounterparty;
+    return matchesTab && matchesPortfolio && matchesCounterparty && matchesSearch;
   });
 
   // Counterparties for filter and Add form: from Counterparties list + any present on instruments (legacy)
@@ -3526,6 +3538,15 @@ const HedgingInstruments = () => {
           {/* Display by portfolio and counterparty */}
           <div className="flex flex-wrap items-center gap-4 mb-4">
             <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Search</Label>
+              <Input
+                value={instrumentSearchTerm}
+                onChange={(e) => setInstrumentSearchTerm(e.target.value)}
+                placeholder="ID, type, pair, counterparty..."
+                className="w-[260px]"
+              />
+            </div>
+            <div className="flex items-center gap-2">
               <Label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Display by portfolio</Label>
               <Select value={selectedPortfolioFilter} onValueChange={setSelectedPortfolioFilter}>
                 <SelectTrigger className="w-[200px]">
@@ -3588,7 +3609,7 @@ const HedgingInstruments = () => {
                 </div>
               ) : (
                                  <div className="overflow-x-auto" style={{ maxWidth: 'calc(100vw - 280px)' }}>
-                   <Table className="min-w-full border-collapse bg-background shadow-sm rounded-lg overflow-hidden">
+                   <Table className="min-w-full border-collapse bg-background shadow-sm rounded-lg overflow-hidden [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                      <TableHeader className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
                        <TableRow className="border-b-2 border-slate-200 dark:border-slate-700">
                          {/* Fixed columns */}
@@ -3695,7 +3716,15 @@ const HedgingInstruments = () => {
                       const mtmWithQuantity = mtmValue * Math.abs(instrument.notional) * quantityFactor;
                       
                       return (
-                         <TableRow key={instrument.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 border-b border-slate-100 dark:border-slate-700 transition-all duration-200 group">
+                         <TableRow
+                           key={instrument.id}
+                           className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 border-b border-slate-100 dark:border-slate-700 transition-all duration-200 group cursor-pointer"
+                           onClick={(e) => {
+                             const target = e.target as HTMLElement;
+                             if (target.closest("button, input, a, [role='combobox']")) return;
+                             navigate(`/hedging/${instrument.id}`);
+                           }}
+                         >
                            <TableCell className="font-semibold bg-slate-50/90 dark:bg-slate-900/90 border-r border-slate-200 dark:border-slate-700 text-center sticky left-0 z-[5] text-slate-700 dark:text-slate-200">
                              <div className="px-2 py-1 rounded-md bg-white dark:bg-slate-800 shadow-sm">
                                {instrument.id}
@@ -3706,21 +3735,7 @@ const HedgingInstruments = () => {
                               <div className="p-2 rounded-lg bg-slate-100/50 group-hover:bg-slate-200/50 transition-colors">
                               {getInstrumentIcon(instrument.type)}
                               </div>
-                              <div className="space-y-1">
-                                <div className="font-medium text-slate-900 dark:text-slate-100">{instrument.type}</div>
-                                {instrument.strategyName && (
-                                  <div className="text-xs text-slate-500 flex items-center gap-1">
-                                    <span className="w-1 h-1 bg-slate-400 rounded-full"></span>
-                                    From: {instrument.strategyName}
-                                  </div>
-                                )}
-                                {instrument.repricingData && (
-                                  <div className="text-xs text-blue-600 flex items-center gap-1">
-                                    <span className="w-1 h-1 bg-blue-400 rounded-full"></span>
-                                    Period Data ✓
-                                  </div>
-                                )}
-                              </div>
+                              <div className="font-medium text-slate-900 dark:text-slate-100">{instrument.type}</div>
                             </div>
                           </TableCell>
                           <TableCell className="text-center">
@@ -3741,51 +3756,8 @@ const HedgingInstruments = () => {
                             </div>
                           </TableCell>
                           <TableCell className="text-right">
-                            <div className="space-y-1">
-                              <div className={`font-mono font-semibold ${todayPrice !== 0 ? "text-blue-600" : "text-slate-400"}`}>
+                            <div className={`font-mono font-semibold ${todayPrice !== 0 ? "text-blue-600" : "text-slate-400"}`}>
                               {todayPrice !== 0 ? todayPrice.toFixed(4) : 'N/A'}
-                              </div>
-                            {(() => {
-                              // Détecter le modèle de pricing utilisé (EXACTEMENT la même logique que calculateTodayPrice)
-                              const optionType = instrument.type.toLowerCase();
-                              let modelName = "unknown";
-                              
-                              // 1. OPTIONS BARRIÈRES - PRIORITÉ ABSOLUE (avant les vanilles)
-                              if (optionType.includes('knock-out') || optionType.includes('knock-in') || 
-                                  optionType.includes('barrier') || optionType.includes('ko ') || optionType.includes('ki ') ||
-                                  optionType.includes('knockout') || optionType.includes('knockin') || optionType.includes('reverse')) {
-                                modelName = "closed-form";
-                              }
-                              // 2. OPTIONS DIGITALES - DEUXIÈME PRIORITÉ
-                              else if (optionType.includes('touch') || optionType.includes('binary') || 
-                                       optionType.includes('digital')) {
-                                modelName = "monte-carlo";
-                              }
-                              // 3. OPTIONS VANILLES EXPLICITES
-                              else if (optionType === 'vanilla call' || optionType === 'vanilla put') {
-                                modelName = "garman-kohlhagen";
-                              }
-                              // 4. FORWARDS
-                              else if (optionType === 'forward') {
-                                modelName = "forward-pricing";
-                              }
-                              // 5. SWAPS
-                              else if (optionType === 'swap') {
-                                modelName = "swap-pricing";
-                              }
-                              // 6. OPTIONS VANILLES GÉNÉRIQUES - SEULEMENT si pas déjà traité
-                              else if (optionType.includes('call') && !optionType.includes('knock')) {
-                                modelName = "garman-kohlhagen";
-                              } else if (optionType.includes('put') && !optionType.includes('knock')) {
-                                modelName = "garman-kohlhagen";
-                              }
-                              
-                              return (
-                                <div className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded-md">
-                                  Model: {modelName}
-                                </div>
-                              );
-                            })()}
                             </div>
                           </TableCell>
                           {/* MTM (Unit) - MTM per unit price without quantity and notional */}
@@ -3797,9 +3769,6 @@ const HedgingInstruments = () => {
                             }`}>
                               {Math.abs(mtmValue) > 0.0001 ? (mtmValue >= 0 ? '+' : '') + mtmValue.toFixed(4) : '0.0000'}
                             </div>
-                            <div className="text-xs text-muted-foreground mt-1 text-center">
-                              per unit
-                            </div>
                           </TableCell>
                           {/* MTM (Total) - MTM with quantity and notional */}
                           <TableCell className="text-right">
@@ -3809,9 +3778,6 @@ const HedgingInstruments = () => {
                                 : 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-800/60'
                             }`}>
                               {Math.abs(mtmWithQuantity) > 0.0001 ? (mtmWithQuantity >= 0 ? '+' : '') + formatCurrency(mtmWithQuantity, instrument.currency) : formatCurrency(0, instrument.currency)}
-                            </div>
-                            <div className="text-xs text-muted-foreground mt-1 text-center">
-                              total
                             </div>
                           </TableCell>
                                                      {/* Time to Maturity - Export (conditional) */}
@@ -3823,26 +3789,13 @@ const HedgingInstruments = () => {
                                 'N/A'
                               }
                             </div>
-                            {instrument.exportTimeToMaturity && (
-                              <div className="text-xs text-gray-500">
-                                {(instrument.exportTimeToMaturity * 365).toFixed(0)}d
-                              </div>
-                            )}
                           </TableCell>
                            )}
                           
                           {/* Time to Maturity - Current */}
                            <TableCell className="text-center bg-green-50/80 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700">
-                            <div className="space-y-1">
-                              <div className={`text-sm font-mono font-semibold ${timeToMaturity === 0 ? 'text-red-600 dark:text-red-300' : 'text-green-700 dark:text-green-300'}`}>
+                            <div className={`text-sm font-mono font-semibold ${timeToMaturity === 0 ? 'text-red-600 dark:text-red-300' : 'text-green-700 dark:text-green-300'}`}>
                               {timeToMaturity.toFixed(4)}y
-                            </div>
-                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-600 bg-red-100/50 dark:text-red-300 dark:bg-red-900/20' : 'text-green-600 bg-green-100/50 dark:text-green-300 dark:bg-green-900/20'}`}>
-                              {timeToMaturity === 0 ? 'EXPIRED' : `${(timeToMaturity * 365).toFixed(0)}d`}
-                              </div>
-                              <div className={`text-xs px-2 py-1 rounded-md ${timeToMaturity === 0 ? 'text-red-500 bg-red-50 dark:text-red-300 dark:bg-red-900/20' : 'text-green-500 bg-green-50 dark:text-green-300 dark:bg-green-900/20'}`}>
-                                {timeToMaturity === 0 ? `Expired on ${instrument.maturity}` : `From ${valuationDate} to ${instrument.maturity}`}
-                              </div>
                             </div>
                           </TableCell>
                           
@@ -3921,9 +3874,6 @@ const HedgingInstruments = () => {
                                         ×
                                       </Button>
                                     )}
-                                  </div>
-                                <div className="text-xs text-green-600 dark:text-green-400 bg-green-100/50 dark:bg-green-900/30 px-2 py-1 rounded-md">
-                                    Using: {currentSpot.toFixed(6)}
                                   </div>
                                 </div>
                               );
@@ -4024,9 +3974,6 @@ const HedgingInstruments = () => {
                                   </Button>
                                 )}
                               </div>
-                                                              <div className="text-xs text-green-600 dark:text-green-300 bg-green-100/50 dark:bg-green-900/20 px-2 py-1 rounded-md">
-                                Using: {instrument.impliedVolatility ?? volatility}%
-                              </div>
                             </div>
                           </TableCell>
                           
@@ -4047,12 +3994,7 @@ const HedgingInstruments = () => {
                             {(() => {
                               const eff = getEffectiveRatesForInstrument(instrument);
                               return (
-                                <div className="text-xs text-green-600 dark:text-green-300">
-                                  {eff.domesticPct.toFixed(3)}%
-                                  {interestRateSource === "bootstrapping" && (
-                                    <span className="block text-[10px] text-muted-foreground">bootstrap</span>
-                                  )}
-                                </div>
+                                <div className="text-xs text-green-600 dark:text-green-300">{eff.domesticPct.toFixed(3)}%</div>
                               );
                             })()}
                           </TableCell>
@@ -4074,12 +4016,7 @@ const HedgingInstruments = () => {
                             {(() => {
                               const eff = getEffectiveRatesForInstrument(instrument);
                               return (
-                                <div className="text-xs text-green-600 dark:text-green-300">
-                                  {eff.foreignPct.toFixed(3)}%
-                                  {interestRateSource === "bootstrapping" && (
-                                    <span className="block text-[10px] text-muted-foreground">bootstrap</span>
-                                  )}
-                            </div>
+                                <div className="text-xs text-green-600 dark:text-green-300">{eff.foreignPct.toFixed(3)}%</div>
                               );
                             })()}
                           </TableCell>
@@ -4134,11 +4071,6 @@ const HedgingInstruments = () => {
                                 return 'N/A';
                               })()}
                             </div>
-                            {instrument.originalComponent && (
-                              <div className="text-xs text-gray-500">
-                                {instrument.originalComponent.strikeType}: {instrument.originalComponent.strike}
-                              </div>
-                            )}
                           </TableCell>
                            )}
                           
@@ -4147,16 +4079,6 @@ const HedgingInstruments = () => {
                             <div className="text-xs text-green-600">
                             {instrument.strike ? instrument.strike.toFixed(4) : 'N/A'}
                             </div>
-                            {instrument.originalComponent && (
-                              <div className="text-xs text-gray-500">
-                                Current calculation
-                              </div>
-                            )}
-                            {instrument.dynamicStrikeInfo && (
-                              <div className="text-xs text-orange-600">
-                                Dyn: {instrument.dynamicStrikeInfo.calculatedStrikePercent}
-                              </div>
-                            )}
                           </TableCell>
                           <TableCell className="font-mono text-right">
                             {instrument.barrier ? instrument.barrier.toFixed(4) : 'N/A'}
@@ -4181,7 +4103,10 @@ const HedgingInstruments = () => {
                               variant="ghost" 
                               size="sm" 
                               title="View Details"
-                              onClick={() => viewInstrument(instrument)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/hedging/${instrument.id}`);
+                              }}
                             >
                               <Eye className="h-4 w-4" />
                             </Button>
@@ -4189,7 +4114,10 @@ const HedgingInstruments = () => {
                               variant="ghost" 
                               size="sm" 
                               title="Edit"
-                              onClick={() => editInstrument(instrument)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                editInstrument(instrument);
+                              }}
                             >
                               <Edit className="h-4 w-4" />
                             </Button>
@@ -4197,7 +4125,10 @@ const HedgingInstruments = () => {
                               variant="ghost" 
                               size="sm" 
                               title="Delete"
-                              onClick={() => deleteInstrument(instrument.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteInstrument(instrument.id);
+                              }}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>

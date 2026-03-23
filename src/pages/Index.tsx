@@ -1010,8 +1010,11 @@ export const calculateSwapPrice = (forwards: number[], times: number[], r: numbe
 export const calculateTimeToMaturity = (maturityDate: string, valuationDate: string): number => {
   const maturity = new Date(maturityDate + 'T24:00:00Z');
   const valuation = new Date(valuationDate + 'T00:00:00Z');
-  const diffTime = Math.abs(maturity.getTime() - valuation.getTime());
-  return diffTime / (365.25 * 24 * 60 * 60 * 1000);
+  if (isNaN(maturity.getTime()) || isNaN(valuation.getTime())) return 0;
+  // Unified maturity logic across Strategy Builder / Pricers / Hedging:
+  // time cannot be negative (expired instruments => 0).
+  const diffTime = maturity.getTime() - valuation.getTime();
+  return Math.max(0, diffTime) / (365.25 * 24 * 60 * 60 * 1000);
 };
 
 // Strategy payoff calculation utility
@@ -1137,7 +1140,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter }
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash, Upload, BarChart3, Calculator, Shield, Calendar, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Save, X, AlertTriangle, Table, PlusCircle, Trash, Upload, BarChart3, Calculator, Shield, Calendar, RefreshCw, Loader2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Link } from 'react-router-dom';
 import { CalculatorState, CustomPeriod } from '@/types/CalculatorState';
@@ -2656,8 +2659,8 @@ const Index = () => {
   const generatePricePathsForPeriod = (months, startDate, numSimulations = 1000) => {
     const paths = [];
     const timeToMaturities = months.map(date => {
-      const maturityDateStr = date.toISOString().split('T')[0]; // Format YYYY-MM-DD
-      const valuationDateStr = startDate.toISOString().split('T')[0]; // Format YYYY-MM-DD
+      const maturityDateStr = formatDateLocalYmd(date); // Format YYYY-MM-DD (local)
+      const valuationDateStr = formatDateLocalYmd(startDate); // Format YYYY-MM-DD (local)
       return calculateTimeToMaturity(maturityDateStr, valuationDateStr);
     });
     
@@ -3137,6 +3140,18 @@ const Index = () => {
   };
 
   // Calculate detailed results
+  const formatDateLocalYmd = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const getPricingMaturityForDate = (date: Date) => {
+    const rule = PricingService.getMaturityDateForPricing();
+    return PricingService.getMaturityDateForMonth(date.getFullYear(), date.getMonth() + 1, rule);
+  };
+
   const calculateResults = () => {
     // Use strategy start date for financial calculations (accurate time-to-maturity and forward prices)
     const strategyStartDate = new Date(params.strategyStartDate);
@@ -3167,8 +3182,7 @@ const Index = () => {
       
       // Generate exactly params.monthsToHedge months
       for (let i = 0; i < params.monthsToHedge; i++) {
-        const monthEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-        months.push(monthEnd);
+        months.push(getPricingMaturityForDate(currentDate));
         currentDate.setMonth(currentDate.getMonth() + 1);
       }
       
@@ -3181,8 +3195,8 @@ const Index = () => {
 
     // Time to maturity (years) per period — needed before barrier path pricing and detailed results
     const timeToMaturities = months.map((date) => {
-      const maturityDateStr = date.toISOString().split('T')[0];
-      const valuationDateStr = calculationStartDate.toISOString().split('T')[0];
+      const maturityDateStr = formatDateLocalYmd(date);
+      const valuationDateStr = formatDateLocalYmd(calculationStartDate);
       return calculateTimeToMaturity(maturityDateStr, valuationDateStr);
     });
 
@@ -4123,7 +4137,7 @@ const Index = () => {
       const deltaPnL = hedgedCost - unhedgedCost;
 
         return {
-        date: date.toISOString().split('T')[0],
+        date: formatDateLocalYmd(date),
         timeToMaturity: t,
         forward: forward,
         realPrice: realPrice,
@@ -5040,7 +5054,7 @@ const Index = () => {
             
             if (!isNaN(date.getTime()) && !isNaN(price)) {
               newData.push({
-                            date: date.toISOString().split('T')[0],
+                            date: formatDateLocalYmd(date),
                 price
               });
             }
@@ -5899,7 +5913,7 @@ const Index = () => {
   const months = Array.from({ length: params.monthsToHedge }, (_, i) => {
     const date = new Date(startDate);
     date.setMonth(date.getMonth() + i + 1);
-    return date;
+    return getPricingMaturityForDate(date);
   });
   
   // Store simulation data
@@ -5929,16 +5943,16 @@ const Index = () => {
       // Use the standard month generation logic
     let currentDate = new Date(startDate);
 
-    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+    const firstMaturity = getPricingMaturityForDate(currentDate);
+    const remainingDaysInMonth = firstMaturity.getDate() - currentDate.getDate() + 1;
 
     if (remainingDaysInMonth > 0) {
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      months.push(getPricingMaturityForDate(currentDate));
     }
 
     for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
       currentDate.setMonth(currentDate.getMonth() + 1);
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
+      months.push(getPricingMaturityForDate(currentDate));
       }
     }
 
@@ -6121,7 +6135,7 @@ const Index = () => {
     
     // Create a new custom period with default values
     const newPeriod: CustomPeriod = {
-      maturityDate: startDate.toISOString().split('T')[0],
+      maturityDate: formatDateLocalYmd(getPricingMaturityForDate(startDate)),
       volume: Math.round(params.baseVolume / (params.customPeriods.length + 1))
     };
     
@@ -6169,7 +6183,7 @@ const Index = () => {
         useCustomPeriods: !params.useCustomPeriods,
         customPeriods: [
           {
-            maturityDate: startDate.toISOString().split('T')[0],
+            maturityDate: formatDateLocalYmd(getPricingMaturityForDate(startDate)),
             volume: params.baseVolume
           }
         ]
@@ -6188,7 +6202,7 @@ const Index = () => {
   };
 
   // Fonction pour calculer le prix des options à barrière avec formules fermées
-  const calculateBarrierOptionClosedForm = (
+  const _legacyCalculateBarrierOptionClosedForm = (
     optionType: string,
     S: number,      // Current price
     K: number,      // Strike price
@@ -8283,7 +8297,7 @@ const pricingFunctions = {
                       localStorage.removeItem('calculatorState');
                       window.location.reload();
                     }}
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+                    className="px-3 py-1 bg-primary hover:bg-primary/90 text-primary-foreground text-xs rounded transition-colors"
                     title="Reset and load all stress test scenarios"
                   >
                     🔄 Reset Scenarios
@@ -8293,12 +8307,12 @@ const pricingFunctions = {
             </CardHeader>
             <CardContent className="pt-2">
               {/* Scenarios count indicator */}
-              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="mb-2 p-2 bg-primary/10 border border-primary/30 rounded-lg">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium text-blue-800">
+                  <span className="font-medium text-primary">
                     📊 {Object.keys(stressTestScenarios).length} scenarios available
                   </span>
-                  <span className="text-blue-600">
+                  <span className="text-primary/80">
                     {Object.values(stressTestScenarios).filter(s => s.isHistorical).length} Historical | 
                     {Object.values(stressTestScenarios).filter(s => ['adverseECB', 'fedSCAR'].includes(Object.keys(stressTestScenarios).find(k => stressTestScenarios[k] === s) || '')).length} Regulatory | 
                     {Object.values(stressTestScenarios).filter(s => s.isCustom).length} Custom
@@ -8326,7 +8340,7 @@ const pricingFunctions = {
                     scenarios: Object.entries(stressTestScenarios).filter(([key]) => 
                       ['adverseECB', 'fedSCAR'].includes(key)
                     ),
-                    color: "bg-blue-50 border-blue-200",
+                    color: "bg-primary/10 border-primary/30",
                     icon: "🏛️"
                   },
                   { 
@@ -8342,7 +8356,7 @@ const pricingFunctions = {
                     scenarios: Object.entries(stressTestScenarios).filter(([key]) => 
                       key === 'reserveCurrencyCrisis'
                     ),
-                    color: "bg-purple-50 border-purple-200",
+                    color: "bg-emerald-50 border-emerald-200",
                     icon: "⚠️"
                   },
                   { 
@@ -8360,7 +8374,7 @@ const pricingFunctions = {
                       </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                         {scenarios.map(([key, scenario]) => (
-                          <Card key={key} className={`p-2 transition-all duration-200 ${activeStressTest === key ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:shadow-md'}`}>
+                          <Card key={key} className={`p-2 transition-all duration-200 ${activeStressTest === key ? 'ring-2 ring-primary bg-primary/10' : 'bg-white hover:shadow-md'}`}>
                             <div className="space-y-3">
                               <div className="flex items-start justify-between">
                                 <div className="flex-1">
@@ -8372,7 +8386,7 @@ const pricingFunctions = {
                                       </span>
                                     )}
                                     {['adverseECB', 'fedSCAR'].includes(key) && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary">
                                         Regulatory
                                       </span>
                                     )}
@@ -8418,7 +8432,7 @@ const pricingFunctions = {
                                 size="sm"
                                 className={`w-full ${
                                   activeStressTest === key 
-                                    ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                                    ? 'bg-primary hover:bg-primary/90 text-primary-foreground'
                                     : 'bg-gray-800 hover:bg-gray-900 text-white'
                                 }`}
                               >
@@ -8647,7 +8661,7 @@ const pricingFunctions = {
                   </span>
                   <button
                     onClick={updatePriceRangesForFX}
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+                    className="px-3 py-1 bg-primary hover:bg-primary/90 text-primary-foreground text-xs rounded transition-colors"
                     title="Update price ranges for current FX pair"
                   >
                     🔄 Update FX Ranges
@@ -8656,11 +8670,11 @@ const pricingFunctions = {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="mb-2 p-2 bg-primary/10 border border-primary/30 rounded-lg">
                 <div className="text-sm">
-                  <span className="font-medium text-blue-800">Current Setup:</span> 
-                  <span className="text-blue-700"> {params.currencyPair?.symbol} @ {params.spotPrice.toFixed(4)}</span>
-                  <span className="text-blue-600 ml-2">
+                  <span className="font-medium text-primary">Current Setup:</span> 
+                  <span className="text-primary"> {params.currencyPair?.symbol} @ {params.spotPrice.toFixed(4)}</span>
+                  <span className="text-primary/80 ml-2">
                     (Ranges auto-generated based on {params.currencyPair?.category} pair volatility)
                   </span>
                 </div>
@@ -8958,6 +8972,11 @@ const pricingFunctions = {
                         </span>
                       )}
                     </div>
+                    {fetchingFiIv && (
+                      <div className="ml-auto flex items-center pr-2" aria-live="polite">
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      </div>
+                    )}
                   </div>
                   
                   <div className="custom-scrollbar">
@@ -8976,7 +8995,7 @@ const pricingFunctions = {
                               </th>
                             </>
                           )}
-                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-blue-500/5">Forward FX Rate</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/10">Forward FX Rate</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/5">Spot FX Rate</th>
                           
                           {/* Ajouter des colonnes pour les strikes dynamiques si présents */}
@@ -9009,11 +9028,11 @@ const pricingFunctions = {
                             <th key={`opt-header-${i}`} className="px-3 py-3 text-left font-medium text-foreground/70 border-b">{opt.label}</th>
                           ))}
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Strategy Price</th>
-                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-purple-500/5">Strategy Payoff</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-emerald-500/10">Strategy Payoff</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b">Volume</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-green-500/5">Hedged Cost</th>
                           <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-red-500/5">Unhedged Cost</th>
-                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-indigo-500/5">Delta P&L</th>
+                          <th className="px-3 py-3 text-left font-medium text-foreground/70 border-b bg-primary/10">Delta P&L</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -9046,7 +9065,7 @@ const pricingFunctions = {
                                   </td>
                                 </>
                               )}
-                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-blue-500/5">
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-primary/10">
                           <Input
                             type="number"
                               value={(() => {
@@ -9212,7 +9231,7 @@ const pricingFunctions = {
                                   );
                                 })}
                               <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{(row.strategyPrice !== undefined && !isNaN(row.strategyPrice) ? row.strategyPrice : 0).toFixed(4)}</td>
-                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-purple-500/5 font-medium font-mono">{(row.totalPayoff !== undefined && !isNaN(row.totalPayoff) ? row.totalPayoff : 0).toFixed(4)}</td>
+                              <td className="px-3 py-2 text-sm border-b border-border/30 bg-emerald-500/10 font-medium font-mono">{(row.totalPayoff !== undefined && !isNaN(row.totalPayoff) ? row.totalPayoff : 0).toFixed(4)}</td>
                               <td className="px-3 py-2 text-sm border-b border-border/30">
                           <Input
                             type="number"
@@ -9234,7 +9253,7 @@ const pricingFunctions = {
                         </td>
                               <td className="px-3 py-2 text-sm border-b border-border/30 bg-green-500/5 font-medium font-mono">{row.hedgedCost.toFixed(2)}</td>
                               <td className="px-3 py-2 text-sm border-b border-border/30 bg-red-500/5 font-medium font-mono">{row.unhedgedCost.toFixed(2)}</td>
-                              <td className={`px-3 py-2 text-sm border-b border-border/30 bg-indigo-500/5 font-medium font-mono ${getPnLColor(row.deltaPnL)}`}>
+                              <td className={`px-3 py-2 text-sm border-b border-border/30 bg-primary/10 font-medium font-mono ${getPnLColor(row.deltaPnL)}`}>
                                 {row.deltaPnL.toFixed(2)}
                               </td>
                       </tr>
@@ -9357,7 +9376,7 @@ const pricingFunctions = {
                 </div>
                 <div className="flex items-center">
                   {isRunningSimulation ? (
-                    <span className="text-sm text-blue-600">
+                    <span className="text-sm text-primary">
                       Calculating simulations...
                     </span>
                   ) : realPriceParams.useSimulation ? (
@@ -9365,7 +9384,7 @@ const pricingFunctions = {
                       Using {realPriceParams.numSimulations || 1000} simulations (configured in Strategy Parameters)
                     </span>
                   ) : strategy.some(opt => opt.type.includes('knockout') || opt.type.includes('knockin')) ? (
-                    <span className="text-sm text-blue-600">
+                    <span className="text-sm text-primary">
                       Barrier option visualization available (Monte Carlo not used for real prices)
                     </span>
                   ) : (
@@ -9378,9 +9397,9 @@ const pricingFunctions = {
 
               {showMonteCarloVisualization && results && simulationData && (
                 <div>
-                  <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
-                    <h4 className="font-medium text-blue-800 mb-1 text-sm">Monte Carlo Visualization Information</h4>
-                    <ul className="list-disc ml-5 text-sm text-blue-700">
+                  <div className="mb-2 p-2 bg-primary/10 border border-primary/30 rounded-md">
+                    <h4 className="font-medium text-primary mb-1 text-sm">Monte Carlo Visualization Information</h4>
+                    <ul className="list-disc ml-5 text-sm text-primary/85">
                       {realPriceParams.useSimulation && (
                         <li>Displaying {Math.min(100, realPriceParams.numSimulations)} random paths out of {realPriceParams.numSimulations} total simulations</li>
                       )}

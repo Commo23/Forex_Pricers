@@ -659,7 +659,7 @@ const PayoffChart: React.FC<PayoffChartProps> = ({
               <Line
                 type="monotone"
                 dataKey="payoff"
-                stroke="#3b82f6"
+                stroke="#c4d82e"
                 strokeWidth={2}
                 dot={false}
                 name="Profit/Loss"

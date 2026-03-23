@@ -408,7 +408,8 @@ export function getPricingSettings() {
     interestRateSource: "bloomberg",
     pricingFrequency: "real-time",
     underlyingPriceType: "spot",
-    backtestExerciseType: "monthly-average"
+    backtestExerciseType: "monthly-average",
+    maturityDateForPricing: "last-day-of-month"
   };
 }
 
@@ -422,6 +423,12 @@ export function getUnderlyingPriceType(): 'spot' | 'forward' {
 export function getBacktestExerciseType(): 'monthly-average' | 'third-friday' {
   const pricingSettings = getPricingSettings();
   return pricingSettings.backtestExerciseType || 'monthly-average';
+}
+
+// Function to get the maturity-date rule used by pricing period generation
+export function getMaturityDateForPricing(): 'last-day-of-month' | 'third-friday' {
+  const pricingSettings = getPricingSettings() as { maturityDateForPricing?: 'last-day-of-month' | 'third-friday' };
+  return pricingSettings.maturityDateForPricing || 'last-day-of-month';
 }
 
 // Smart calendar system for accurate date calculations
@@ -470,6 +477,20 @@ export function getThirdFridayOfMonth(year: number, month: number): Date | null 
   // Handle edge case: months with less than 3 Fridays (very rare)
   console.warn(`[CALENDAR] ${year}-${String(month).padStart(2, '0')}: Only ${fridays.length} Fridays found, using last Friday`);
   return fridays.length > 0 ? fridays[fridays.length - 1] : null;
+}
+
+// Return maturity date for a month according to settings (month is 1..12)
+export function getMaturityDateForMonth(
+  year: number,
+  month: number,
+  rule: 'last-day-of-month' | 'third-friday' = getMaturityDateForPricing()
+): Date {
+  if (rule === 'third-friday') {
+    const thirdFriday = getThirdFridayOfMonth(year, month);
+    if (thirdFriday) return thirdFriday;
+  }
+  // JS Date month index: 0-based. day=0 gives last day of previous month => desired last day of target month.
+  return new Date(year, month, 0);
 }
 
 // Function to find the closest date in data to a target date
@@ -585,6 +606,8 @@ export class PricingService {
   static getUnderlyingPriceType = getUnderlyingPriceType;
   static calculateUnderlyingPrice = calculateUnderlyingPrice;
   static getBacktestExerciseType = getBacktestExerciseType;
+  static getMaturityDateForPricing = getMaturityDateForPricing;
+  static getMaturityDateForMonth = getMaturityDateForMonth;
   static getThirdFridayOfMonth = getThirdFridayOfMonth;
   // Smart calendar functions
   static isLeapYear = isLeapYear;

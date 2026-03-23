@@ -182,9 +182,18 @@ const Pricers = () => {
   });
   const [fetchingIvFromFi, setFetchingIvFromFi] = useState(false);
 
+  const defaultMaturityDate = useMemo(() => {
+    const today = new Date();
+    const nextMonthRef = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    return PricingService.getMaturityDateForMonth(
+      nextMonthRef.getFullYear(),
+      nextMonthRef.getMonth() + 1
+    ).toISOString().split('T')[0];
+  }, []);
+
   const [pricingInputs, setPricingInputs] = useState({
     startDate: new Date().toISOString().split('T')[0],
-    maturityDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    maturityDate: defaultMaturityDate,
     spotPrice: 1.1000,
     domesticRate: 5.0,
     foreignRate: 3.0,
@@ -377,8 +386,7 @@ const Pricers = () => {
         ? pricingInputs.spotPrice * (strategyComponent.strike / 100)
         : strategyComponent.strike;
       const dteDays = Math.round(
-        (new Date(pricingInputs.maturityDate).getTime() - new Date(pricingInputs.startDate).getTime())
-        / (24 * 60 * 60 * 1000)
+        PricingService.calculateTimeToMaturity(pricingInputs.maturityDate, pricingInputs.startDate) * 365.25
       );
       const iv = interpolateIVAtPoint(strikes, dtes, z, strikeAbs, dteDays);
       if (iv == null || iv <= 0) {

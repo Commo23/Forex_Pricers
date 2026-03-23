@@ -47,6 +47,13 @@ const RiskAnalysis = () => {
   const [timeHorizon, setTimeHorizon] = useState([30]);
   const [confidenceLevel, setConfidenceLevel] = useState("95");
   const [isAnalysisRunning, setIsAnalysisRunning] = useState(false);
+  const [appliedConfig, setAppliedConfig] = useState({
+    selectedScenario: "stress-test",
+    volatilityShock: 20,
+    currencyShock: 10,
+    timeHorizonDays: 30,
+    confidenceLevel: "95",
+  });
 
   // Données financières en temps réel
   const {
@@ -61,6 +68,55 @@ const RiskAnalysis = () => {
     isLiveMode,
     setLiveMode
   } = useFinancialData();
+
+  const confidenceToZ = (c: string): number => {
+    if (c === "90") return 1.282;
+    if (c === "95") return 1.645;
+    if (c === "99") return 2.326;
+    if (c === "99.9") return 3.09;
+    return 1.645;
+  };
+
+  const computeEsFromVar = (varValue: number, confidencePct: string): number => {
+    const c = Number(confidencePct) / 100;
+    const tail = 1 - c;
+    const z = confidenceToZ(confidencePct);
+    if (!isFinite(varValue) || varValue <= 0 || tail <= 0 || z <= 0) return 0;
+    const phi = (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * z * z);
+    return varValue * (phi / (z * tail));
+  };
+
+  const adjustedRiskMetrics = useMemo(() => {
+    const baseSigma1d = (riskMetrics.var95 || 0) / 1.645;
+    const z = confidenceToZ(appliedConfig.confidenceLevel);
+    const horizonScale = Math.sqrt(Math.max(1, appliedConfig.timeHorizonDays));
+    const volScale = Math.max(0.01, appliedConfig.volatilityShock / 20);
+    const varApplied = Math.abs(baseSigma1d * z * horizonScale * volScale);
+    const esApplied = computeEsFromVar(varApplied, appliedConfig.confidenceLevel);
+    return {
+      varApplied,
+      esApplied,
+      horizonScale,
+      volScale,
+    };
+  }, [riskMetrics.var95, appliedConfig.confidenceLevel, appliedConfig.timeHorizonDays, appliedConfig.volatilityShock]);
+
+  const hasPendingChanges = useMemo(() => {
+    return (
+      selectedScenario !== appliedConfig.selectedScenario ||
+      volatilityShock[0] !== appliedConfig.volatilityShock ||
+      currencyShock[0] !== appliedConfig.currencyShock ||
+      timeHorizon[0] !== appliedConfig.timeHorizonDays ||
+      confidenceLevel !== appliedConfig.confidenceLevel
+    );
+  }, [
+    selectedScenario,
+    volatilityShock,
+    currencyShock,
+    timeHorizon,
+    confidenceLevel,
+    appliedConfig,
+  ]);
 
   // Calculs dérivés pour les graphiques
   const portfolioBreakdown = useMemo(() => {
@@ -112,7 +168,7 @@ const RiskAnalysis = () => {
       date.setDate(today.getDate() - i);
       
       // VaR basé sur la vraie volatilité du portefeuille
-      const zScore95 = 1.645;
+      const zScore95 = confidenceToZ(appliedConfig.confidenceLevel);
       const var95 = zScore95 * dailyVolatility * (totalExposure || riskMetrics.totalExposure);
       
       // Simulation P&L avec autocorrélation (plus réaliste)
@@ -133,7 +189,7 @@ const RiskAnalysis = () => {
     }
     
     return data;
-  }, [riskMetrics, portfolioBreakdown, marketData]);
+  }, [riskMetrics, portfolioBreakdown, marketData, appliedConfig.confidenceLevel]);
 
   const stressTestResults = useMemo(() => {
     if (!generateStressScenarios) return [];
@@ -167,7 +223,7 @@ const RiskAnalysis = () => {
         }
         
         // Calcul de la sévérité basé sur les vraies métriques de risque
-        const impactRelativeToVar = Math.abs(scenario.impact) / (riskMetrics.var95 || 1);
+        const impactRelativeToVar = Math.abs(scenario.impact) / (adjustedRiskMetrics.varApplied || 1);
         let severity;
         if (impactRelativeToVar > 3) {
           severity = 'Critical';
@@ -194,7 +250,7 @@ const RiskAnalysis = () => {
       console.error('Error generating stress scenarios:', error);
       return [];
     }
-  }, [generateStressScenarios, riskMetrics]);
+  }, [generateStressScenarios, riskMetrics, adjustedRiskMetrics.varApplied]);
 
   const correlationMatrix = useMemo(() => {
     // Matrice de corrélation professionnelle basée sur les données historiques
@@ -275,6 +331,13 @@ const RiskAnalysis = () => {
     try {
       // Simulation d'analyse
       await new Promise(resolve => setTimeout(resolve, 2000));
+      setAppliedConfig({
+        selectedScenario,
+        volatilityShock: volatilityShock[0],
+        currencyShock: currencyShock[0],
+        timeHorizonDays: timeHorizon[0],
+        confidenceLevel,
+      });
       
       // Mise à jour des données de marché
       updateMarketData();
@@ -356,15 +419,15 @@ const RiskAnalysis = () => {
       <div className="grid gap-4 md:grid-cols-4 mb-6">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">VaR (95%)</CardTitle>
+            <CardTitle className="text-sm font-medium">VaR ({appliedConfig.confidenceLevel}%)</CardTitle>
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${getRiskColor(riskMetrics.var95, riskMetrics.totalExposure * 0.05)}`}>
-              {formatCurrency(riskMetrics.var95)}
+            <div className={`text-2xl font-bold ${getRiskColor(adjustedRiskMetrics.varApplied, riskMetrics.totalExposure * 0.05)}`}>
+              {formatCurrency(adjustedRiskMetrics.varApplied)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Value at Risk 1 day
+              Value at Risk {appliedConfig.timeHorizonDays} day(s)
             </p>
           </CardContent>
         </Card>
@@ -375,11 +438,11 @@ const RiskAnalysis = () => {
             <TrendingDown className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${getRiskColor(riskMetrics.expectedShortfall95, riskMetrics.var95)}`}>
-              {formatCurrency(riskMetrics.expectedShortfall95)}
+            <div className={`text-2xl font-bold ${getRiskColor(adjustedRiskMetrics.esApplied, adjustedRiskMetrics.varApplied)}`}>
+              {formatCurrency(adjustedRiskMetrics.esApplied)}
             </div>
             <p className="text-xs text-muted-foreground">
-              Conditional CVaR (95%)
+              Conditional CVaR ({appliedConfig.confidenceLevel}%)
             </p>
           </CardContent>
         </Card>
@@ -423,6 +486,14 @@ const RiskAnalysis = () => {
             <CardDescription>Stress test and simulation parameters</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+              <div className="flex items-center justify-between rounded-md border px-3 py-2 bg-muted/30">
+                <div className="text-xs text-muted-foreground">
+                  Applied: {appliedConfig.selectedScenario}, CL {appliedConfig.confidenceLevel}%, H {appliedConfig.timeHorizonDays}d
+                </div>
+                <Badge variant={hasPendingChanges ? "secondary" : "outline"}>
+                  {hasPendingChanges ? "Pending changes" : "Up to date"}
+                </Badge>
+              </div>
               <div>
               <Label>Scenario Type</Label>
                 <Select value={selectedScenario} onValueChange={setSelectedScenario}>
@@ -493,14 +564,14 @@ const RiskAnalysis = () => {
               <Button 
                 onClick={runScenarioAnalysis} 
                 className="flex-1"
-                disabled={isAnalysisRunning}
+                disabled={isAnalysisRunning || !hasPendingChanges}
               >
                 {isAnalysisRunning ? (
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <Play className="h-4 w-4 mr-2" />
                 )}
-                {isAnalysisRunning ? "Analyzing..." : "Run Analysis"}
+                {isAnalysisRunning ? "Analyzing..." : hasPendingChanges ? "Apply & Run" : "No changes"}
                 </Button>
                 <Button variant="outline">
                   <Settings className="h-4 w-4" />
@@ -518,9 +589,10 @@ const RiskAnalysis = () => {
           <CardContent>
             <div className="space-y-4">
               {[
-                { confidence: "95%", var: riskMetrics.var95, expected_shortfall: riskMetrics.expectedShortfall95 },
-                { confidence: "99%", var: riskMetrics.var99, expected_shortfall: riskMetrics.expectedShortfall99 },
-                { confidence: "99.9%", var: riskMetrics.var99 * 1.5, expected_shortfall: riskMetrics.expectedShortfall99 * 1.2 }
+                { confidence: "90%", var: Math.abs((riskMetrics.var95 / 1.645) * confidenceToZ("90") * adjustedRiskMetrics.horizonScale * adjustedRiskMetrics.volScale) },
+                { confidence: "95%", var: Math.abs((riskMetrics.var95 / 1.645) * confidenceToZ("95") * adjustedRiskMetrics.horizonScale * adjustedRiskMetrics.volScale) },
+                { confidence: "99%", var: Math.abs((riskMetrics.var95 / 1.645) * confidenceToZ("99") * adjustedRiskMetrics.horizonScale * adjustedRiskMetrics.volScale) },
+                { confidence: "99.9%", var: Math.abs((riskMetrics.var95 / 1.645) * confidenceToZ("99.9") * adjustedRiskMetrics.horizonScale * adjustedRiskMetrics.volScale) }
               ].map((item) => (
                 <div key={item.confidence} className="flex items-center justify-between p-3 border rounded-lg">
                   <div>
@@ -532,7 +604,7 @@ const RiskAnalysis = () => {
                       {formatCurrency(item.var)}
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      ES: {formatCurrency(item.expected_shortfall)}
+                      ES: {formatCurrency(computeEsFromVar(item.var, item.confidence))}
                     </div>
                   </div>
                 </div>
@@ -774,14 +846,14 @@ const RiskAnalysis = () => {
                 {/* Tests de stress configurés */}
                 {[
                   { 
-                    name: `EUR/USD Shock -${currencyShock[0]}%`, 
-                    impact: -riskMetrics.totalExposure * (currencyShock[0] / 100) * 0.6,
-                    hedged_impact: -riskMetrics.totalExposure * (currencyShock[0] / 100) * 0.6 * (1 - riskMetrics.hedgeRatio / 100)
+                    name: `EUR/USD Shock -${appliedConfig.currencyShock}%`, 
+                    impact: -riskMetrics.totalExposure * (appliedConfig.currencyShock / 100) * 0.6,
+                    hedged_impact: -riskMetrics.totalExposure * (appliedConfig.currencyShock / 100) * 0.6 * (1 - riskMetrics.hedgeRatio / 100)
                   },
                   { 
-                    name: `Volatility Shock +${volatilityShock[0]}%`, 
-                    impact: -riskMetrics.var95 * (volatilityShock[0] / 20),
-                    hedged_impact: -riskMetrics.var95 * (volatilityShock[0] / 20) * 0.5
+                    name: `Volatility Shock +${appliedConfig.volatilityShock}%`, 
+                    impact: -adjustedRiskMetrics.varApplied * (appliedConfig.volatilityShock / 20),
+                    hedged_impact: -adjustedRiskMetrics.varApplied * (appliedConfig.volatilityShock / 20) * 0.5
                   },
                   { 
                     name: "Liquidity Crisis", 
@@ -832,13 +904,13 @@ const RiskAnalysis = () => {
                       <div className="flex justify-between">
                         <span className="text-sm">Volatility +10%</span>
                         <span className="text-sm font-medium text-red-600">
-                          {formatCurrency(-riskMetrics.var95 * 0.1)}
+                          {formatCurrency(-adjustedRiskMetrics.varApplied * 0.1)}
                         </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-sm">Volatility -10%</span>
                         <span className="text-sm font-medium text-green-600">
-                          {formatCurrency(riskMetrics.var95 * 0.05)}
+                          {formatCurrency(adjustedRiskMetrics.varApplied * 0.05)}
                         </span>
                       </div>
                     </div>

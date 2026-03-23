@@ -78,13 +78,13 @@
 
 /* Currency Badge Styles */
 .currency-badge-eur {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  background: linear-gradient(135deg, #c4d82e 0%, #84cc16 100%);
   color: white;
   border: none;
 }
 
 .currency-badge-gbp {
-  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  background: linear-gradient(135deg, #84cc16 0%, #65a30d 100%);
   color: white;
   border: none;
 }
@@ -152,7 +152,7 @@
 
 .alert-info {
   background: linear-gradient(90deg, #eff6ff 0%, #dbeafe 100%);
-  border-left: 4px solid #2563eb;
+  border-left: 4px solid #84cc16;
 }
 
 @keyframes alertPulse {
@@ -262,13 +262,13 @@
 }
 
 .fx-sidebar-item:hover {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(196, 216, 46, 0.12);
   transform: translateX(2px);
 }
 
 .fx-sidebar-item.active {
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.2) 0%, rgba(59, 130, 246, 0.1) 100%);
-  border-left: 3px solid #3b82f6;
+  background: linear-gradient(90deg, rgba(196, 216, 46, 0.24) 0%, rgba(196, 216, 46, 0.12) 100%);
+  border-left: 3px solid #c4d82e;
 }
 
 /* Chart Enhancements */
