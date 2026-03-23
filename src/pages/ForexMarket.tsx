@@ -704,7 +704,7 @@ const ForexMarket: React.FC = () => {
                     {getAllCurrencyPairs().length} total
                   </span>
                   {customCurrencyPairs.length > 0 && (
-                    <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                    <span className="ml-2 text-xs bg-primary/15 text-primary px-2 py-1 rounded-full">
                       +{customCurrencyPairs.length} custom
                     </span>
                   )}
@@ -713,7 +713,7 @@ const ForexMarket: React.FC = () => {
                   key={`currency-select-${customCurrencyPairs.length}`}
                   value={selectedCurrencyPair}
                   onChange={(e) => setSelectedCurrencyPair(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary dark:bg-gray-800 dark:border-gray-600"
                 >
                   {getDefaultCurrencyPairs().map(pair => (
                     <option key={pair.symbol} value={pair.symbol}>
@@ -826,7 +826,7 @@ const ForexMarket: React.FC = () => {
                   </Button>
                   <Button
                     onClick={addCustomCurrencyPair}
-                    className="bg-blue-600 hover:bg-blue-700"
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground"
                   >
                     Add
                   </Button>
@@ -864,7 +864,7 @@ const ForexMarket: React.FC = () => {
                     <select
                       value={baseCurrency}
                       onChange={(e) => setBaseCurrency(e.target.value)}
-                      className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600"
+                      className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary dark:bg-gray-800 dark:border-gray-600"
                     >
                       {(() => {
                         const allPairs = [...getDefaultCurrencyPairs(), ...customCurrencyPairs];
@@ -896,8 +896,8 @@ const ForexMarket: React.FC = () => {
                         {filteredCurrencies.length}
                       </p>
                     </div>
-                    <div className="h-8 w-8 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center">
-                      <Globe className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                    <div className="h-8 w-8 bg-primary/15 dark:bg-primary/25 rounded-lg flex items-center justify-center">
+                      <Globe className="h-4 w-4 text-primary dark:text-primary" />
                     </div>
                   </div>
                 </CardContent>
@@ -987,7 +987,7 @@ const ForexMarket: React.FC = () => {
                         <XAxis dataKey="time" />
                         <YAxis />
                         <Tooltip />
-                        <Line type="monotone" dataKey="rate" stroke="#3b82f6" strokeWidth={2} />
+                        <Line type="monotone" dataKey="rate" stroke="#c4d82e" strokeWidth={2} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -1069,7 +1069,7 @@ const ForexMarket: React.FC = () => {
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-gray-900 dark:text-white">{currency.code}</span>
                               {getMajorPairs().some(p => p.code === currency.code) && (
-                                <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">Major</Badge>
+                                <Badge variant="secondary" className="text-xs bg-primary/15 text-primary dark:bg-primary/25 dark:text-primary">Major</Badge>
                               )}
                             </div>
                           </TableCell>
@@ -1127,7 +1127,7 @@ const ForexMarket: React.FC = () => {
               <Card>
                 <CardContent className="p-12">
                   <div className="flex items-center justify-center">
-                    <RefreshCw className="h-8 w-8 animate-spin text-blue-600" />
+                    <RefreshCw className="h-8 w-8 animate-spin text-primary" />
                     <span className="ml-2 text-gray-600">Loading market data...</span>
                   </div>
                 </CardContent>

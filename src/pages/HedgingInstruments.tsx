@@ -2047,12 +2047,12 @@ const HedgingInstruments = () => {
   const getInstrumentIcon = (type: string) => {
     switch (type.toLowerCase()) {
       case "forward":
-        return <ArrowUpDown className="h-4 w-4 text-blue-600" />;
+        return <ArrowUpDown className="h-4 w-4 text-primary" />;
       case "vanilla call":
       case "vanilla put":
         return <TrendingUp className="h-4 w-4 text-green-600" />;
       case "swap":
-        return <BarChart3 className="h-4 w-4 text-purple-600" />;
+        return <BarChart3 className="h-4 w-4 text-emerald-600" />;
       case "collar":
         return <Shield className="h-4 w-4 text-orange-600" />;
       default:
@@ -2723,9 +2723,9 @@ const HedgingInstruments = () => {
 
       {/* Individual Spot Price Overrides Summary */}
       {instruments.some(inst => inst.impliedSpotPrice) && (
-        <Card className="mb-4 border-blue-200 bg-blue-50/50">
+        <Card className="mb-4 border-primary/40 bg-primary/10">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-blue-700 flex items-center gap-2">
+            <CardTitle className="text-sm font-medium text-primary flex items-center gap-2">
               <TrendingUp className="h-4 w-4" />
               Individual Spot Price Overrides
             </CardTitle>
@@ -2738,12 +2738,12 @@ const HedgingInstruments = () => {
               {instruments
                 .filter(inst => inst.impliedSpotPrice)
                 .map(inst => (
-                  <Badge key={inst.id} variant="secondary" className="text-xs bg-blue-100 text-blue-700">
+                  <Badge key={inst.id} variant="secondary" className="text-xs bg-primary/15 text-primary">
                     {inst.id}: {inst.impliedSpotPrice?.toFixed(6)}
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-3 w-3 p-0 ml-1 text-blue-500 hover:text-red-500"
+                      className="h-3 w-3 p-0 ml-1 text-primary hover:text-red-500"
                       onClick={() => resetInstrumentSpotPrice(inst.id)}
                       title="Reset to global spot price"
                     >
@@ -3623,12 +3623,12 @@ const HedgingInstruments = () => {
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">MTM</TableHead>
                          
                          {/* Dynamic columns with conditional Export */}
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-blue-50 dark:bg-blue-900/20 font-semibold min-w-[120px]">Time to Maturity</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-primary/10 dark:bg-primary/15 font-semibold min-w-[120px]">Time to Maturity</TableHead>
                          <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-green-50 dark:bg-green-900/20 font-semibold min-w-[100px]">Spot Price</TableHead>
                          <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-yellow-50 dark:bg-yellow-900/20 font-semibold min-w-[100px]">Volatility (%)</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-purple-50 dark:bg-purple-900/20 font-semibold min-w-[120px]">Domestic Rate (%)</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-emerald-50 dark:bg-emerald-900/20 font-semibold min-w-[120px]">Domestic Rate (%)</TableHead>
                          <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-pink-50 dark:bg-pink-900/20 font-semibold min-w-[120px]">Foreign Rate (%)</TableHead>
-                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-indigo-50 dark:bg-indigo-900/20 font-semibold min-w-[120px]">Forward Price</TableHead>
+                         <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-primary/10 dark:bg-primary/15 font-semibold min-w-[120px]">Forward Price</TableHead>
                          <TableHead colSpan={showExportColumns ? 2 : 1} className="text-center border-b border-r border-slate-200 dark:border-slate-700 bg-orange-50 dark:bg-orange-900/20 font-semibold min-w-[120px]">Strike Analysis</TableHead>
                          
                          {/* Fixed end columns */}
@@ -3643,25 +3643,25 @@ const HedgingInstruments = () => {
                     </TableRow>
                        <TableRow className="border-b border-slate-200 dark:border-slate-700">
                          {/* Sub-headers for dynamic columns */}
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-green-50 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-green-50 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
                          <TableHead className="text-xs text-green-600 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-yellow-50 dark:bg-yellow-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-yellow-50 dark:bg-yellow-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
                          <TableHead className="text-xs text-green-600 dark:text-green-300 bg-yellow-50 dark:bg-yellow-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-purple-50 dark:bg-purple-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-purple-50 dark:bg-purple-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-emerald-50 dark:bg-emerald-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-emerald-50 dark:bg-emerald-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-pink-50 dark:bg-pink-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-pink-50 dark:bg-pink-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
                          <TableHead className="text-xs text-green-600 dark:text-green-300 bg-pink-50 dark:bg-pink-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-indigo-50 dark:bg-indigo-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
-                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-indigo-50 dark:bg-indigo-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         <TableHead className="text-xs text-green-600 dark:text-green-300 bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700 font-medium">Current</TableHead>
                          
-                         {showExportColumns && <TableHead className="text-xs text-blue-600 dark:text-blue-300 bg-orange-50 dark:bg-orange-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
+                         {showExportColumns && <TableHead className="text-xs text-primary dark:text-primary bg-orange-50 dark:bg-orange-900/20 border-r border-slate-200 dark:border-slate-700 font-medium">Export</TableHead>}
                          <TableHead className="text-xs text-green-600 dark:text-green-400 bg-orange-50 dark:bg-orange-900/20 font-medium">Current</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -3739,7 +3739,7 @@ const HedgingInstruments = () => {
                             </div>
                           </TableCell>
                           <TableCell className="text-center">
-                            <Badge variant="outline" className="font-mono font-semibold px-3 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-700 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+                            <Badge variant="outline" className="font-mono font-semibold px-3 py-1 bg-primary/10 dark:bg-primary/15 text-primary dark:text-primary border-primary/40 dark:border-primary/50 hover:bg-primary/15 dark:hover:bg-primary/20 transition-colors">
                               {instrument.currency}
                             </Badge>
                           </TableCell>
@@ -3756,7 +3756,7 @@ const HedgingInstruments = () => {
                             </div>
                           </TableCell>
                           <TableCell className="text-right">
-                            <div className={`font-mono font-semibold ${todayPrice !== 0 ? "text-blue-600" : "text-slate-400"}`}>
+                            <div className={`font-mono font-semibold ${todayPrice !== 0 ? "text-primary" : "text-slate-400"}`}>
                               {todayPrice !== 0 ? todayPrice.toFixed(4) : 'N/A'}
                             </div>
                           </TableCell>
@@ -3782,8 +3782,8 @@ const HedgingInstruments = () => {
                           </TableCell>
                                                      {/* Time to Maturity - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                              <div className="text-xs text-blue-600">
+                             <TableCell className="font-mono text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                              <div className="text-xs text-primary">
                               {instrument.exportTimeToMaturity ? 
                                 `${instrument.exportTimeToMaturity.toFixed(4)}y` : 
                                 'N/A'
@@ -3801,11 +3801,11 @@ const HedgingInstruments = () => {
                           
                                                      {/* Spot Price - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="text-center bg-blue-50/80 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                               <div className="text-sm font-mono font-semibold text-blue-700">
+                             <TableCell className="text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                               <div className="text-sm font-mono font-semibold text-primary">
                               {instrument.exportSpotPrice ? 
                                 instrument.exportSpotPrice.toFixed(6) : 
-                                   <span className="text-blue-400 italic">N/A</span>
+                                   <span className="text-primary/60 italic">N/A</span>
                               }
                             </div>
                           </TableCell>
@@ -3882,11 +3882,11 @@ const HedgingInstruments = () => {
                           
                                                      {/* Volatility - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="text-center bg-blue-50/80 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                               <div className="text-sm font-mono font-semibold text-blue-700">
+                             <TableCell className="text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                               <div className="text-sm font-mono font-semibold text-primary">
                               {instrument.exportVolatility ? 
                                 `${instrument.exportVolatility.toFixed(2)}%` : 
-                                   <span className="text-blue-400 italic">N/A</span>
+                                   <span className="text-primary/60 italic">N/A</span>
                               }
                             </div>
                           </TableCell>
@@ -3945,7 +3945,7 @@ const HedgingInstruments = () => {
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-4 w-4 p-0 text-blue-600 hover:text-blue-700"
+                                    className="h-4 w-4 p-0 text-primary hover:text-primary/80"
                                     onClick={async () => {
                                       const iv = await applyIvFromFuturesInsightsForInstrument(instrument);
                                       if (iv != null) {
@@ -3979,8 +3979,8 @@ const HedgingInstruments = () => {
                           
                                                      {/* Domestic Rate - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                            <div className="text-xs text-blue-600">
+                             <TableCell className="font-mono text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                            <div className="text-xs text-primary">
                               {instrument.exportDomesticRate ? 
                                 `${instrument.exportDomesticRate.toFixed(3)}%` : 
                                 'N/A'
@@ -4001,8 +4001,8 @@ const HedgingInstruments = () => {
                           
                                                      {/* Foreign Rate - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                                <div className="text-xs text-blue-600">
+                             <TableCell className="font-mono text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                                <div className="text-xs text-primary">
                               {instrument.exportForeignRate ? 
                                 `${instrument.exportForeignRate.toFixed(3)}%` : 
                                 'N/A'
@@ -4023,8 +4023,8 @@ const HedgingInstruments = () => {
                           
                                                      {/* Forward Price - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                            <div className="text-xs text-blue-600">
+                             <TableCell className="font-mono text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                            <div className="text-xs text-primary">
                               {instrument.exportForwardPrice ? 
                                 instrument.exportForwardPrice.toFixed(6) : 
                                 'N/A'
@@ -4058,8 +4058,8 @@ const HedgingInstruments = () => {
                           
                                                      {/* Strike - Export (conditional) */}
                            {showExportColumns && (
-                             <TableCell className="font-mono text-center bg-blue-50 dark:bg-blue-900/20 border-r border-slate-200 dark:border-slate-700">
-                            <div className="text-xs text-blue-600">
+                             <TableCell className="font-mono text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
+                            <div className="text-xs text-primary">
                               {(() => {
                                 // Calculer le strike d'export basé sur les paramètres d'export
                                 if (instrument.originalComponent && instrument.exportSpotPrice) {

@@ -1404,7 +1404,7 @@ function MultiDatasetManager({
                           <h3 className="font-medium">Variable Selection</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium mb-2 block text-blue-600">Variable X (Independent)</label>
+                <label className="text-sm font-medium mb-2 block text-primary">Variable X (Independent)</label>
                 <Select 
                   value={selectedVariables.x?.datasetId && selectedVariables.x?.column ? 
                     `${selectedVariables.x.datasetId}:${selectedVariables.x.column}` : ""} 
@@ -1510,12 +1510,12 @@ function MultiDatasetManager({
             </div>
 
             {selectedVariables.x!.datasetId !== selectedVariables.y!.datasetId && (
-              <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950/20 rounded border border-blue-200 dark:border-blue-800">
-                <div className="flex items-center gap-2 text-blue-800 dark:text-blue-200 text-sm">
+              <div className="mb-4 p-3 bg-primary/10 dark:bg-primary/10 rounded border border-primary/30 dark:border-primary/40">
+                <div className="flex items-center gap-2 text-primary dark:text-primary text-sm">
                   <Info className="h-4 w-4" />
                   <span className="font-medium">Cross-Dataset Analysis</span>
                 </div>
-                <div className="text-sm text-blue-700 dark:text-blue-300 mt-1">
+                <div className="text-sm text-primary/85 dark:text-primary/85 mt-1">
                   Data comes from different datasets. Alignment will be performed automatically.
                 </div>
               </div>
@@ -1718,12 +1718,12 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   const getModelColor = (type: RegressionType) => {
     switch (type) {
-      case 'linear': return 'text-blue-600';
-      case 'polynomial': return 'text-purple-600';
+      case 'linear': return 'text-primary';
+      case 'polynomial': return 'text-emerald-600';
       case 'exponential': return 'text-green-600';
       case 'logarithmic': return 'text-orange-600';
       case 'power': return 'text-red-600';
-      case 'logistic': return 'text-indigo-600';
+      case 'logistic': return 'text-primary';
       default: return 'text-gray-600';
     }
   };
@@ -1921,7 +1921,7 @@ const RegressionChart: React.FC<RegressionChartProps> = ({ data, regression, tit
               </div>
               <div className="flex justify-between items-center gap-4">
                                     <span className="text-gray-600 dark:text-gray-400 text-sm font-medium">{yLabel} (Actual):</span>
-                <span className="font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/30 px-3 py-1 rounded-lg text-sm">
+                <span className="font-bold text-primary bg-primary/10 dark:bg-primary/20 px-3 py-1 rounded-lg text-sm">
                   {Number(pointData.actual).toFixed(4)}
                 </span>
               </div>
@@ -1978,7 +1978,7 @@ const RegressionChart: React.FC<RegressionChartProps> = ({ data, regression, tit
   const getCorrelationColor = (r: number) => {
     const abs = Math.abs(r);
     if (abs >= 0.9) return 'text-green-600';
-    if (abs >= 0.7) return 'text-blue-600';
+    if (abs >= 0.7) return 'text-primary';
     if (abs >= 0.5) return 'text-yellow-600';
     if (abs >= 0.3) return 'text-orange-600';
     return 'text-red-600';
@@ -1987,7 +1987,7 @@ const RegressionChart: React.FC<RegressionChartProps> = ({ data, regression, tit
   const getCorrelationBg = (r: number) => {
     const abs = Math.abs(r);
     if (abs >= 0.9) return 'bg-green-50 border-green-200';
-    if (abs >= 0.7) return 'bg-blue-50 border-blue-200';
+    if (abs >= 0.7) return 'bg-primary/10 border-primary/30';
     if (abs >= 0.5) return 'bg-yellow-50 border-yellow-200';
     if (abs >= 0.3) return 'bg-orange-50 border-orange-200';
     return 'bg-red-50 border-red-200';
@@ -2023,9 +2023,9 @@ const RegressionChart: React.FC<RegressionChartProps> = ({ data, regression, tit
           {/* Equation and basic stats */}
           {regression && (
             <div className="space-y-4">
-              <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+              <div className="p-4 bg-gradient-to-r from-primary/10 to-emerald-50 dark:from-primary/15 dark:to-emerald-900/20 rounded-lg border border-primary/30 dark:border-primary/40">
                 <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">Regression Equation</h4>
-                <p className="font-mono text-lg text-blue-800 dark:text-blue-300">
+                <p className="font-mono text-lg text-primary dark:text-primary">
                   {regression.customString || regression.string}
                 </p>
               </div>
@@ -2033,11 +2033,11 @@ const RegressionChart: React.FC<RegressionChartProps> = ({ data, regression, tit
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border">
                   <div className="text-sm text-gray-600 dark:text-gray-400">R²</div>
-                  <div className="text-xl font-bold text-blue-600">{regression.r2.toFixed(4)}</div>
+                  <div className="text-xl font-bold text-primary">{regression.r2.toFixed(4)}</div>
                 </div>
                 <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border">
                   <div className="text-sm text-gray-600 dark:text-gray-400">Adjusted R²</div>
-                  <div className="text-xl font-bold text-blue-600">{regression.metrics.adjustedR2.toFixed(4)}</div>
+                  <div className="text-xl font-bold text-primary">{regression.metrics.adjustedR2.toFixed(4)}</div>
                 </div>
                 <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border">
                   <div className="text-sm text-gray-600 dark:text-gray-400">RMSE</div>

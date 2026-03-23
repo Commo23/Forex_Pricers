@@ -787,12 +787,12 @@ const Exposures = () => {
 
         {/* ✅ NOUVELLES ALERTES : Notifications pour nouvelles devises et échéances */}
         {showNewCurrencyAlert && newCurrencies.length > 0 && (
-          <Card className="border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950">
+          <Card className="border-primary/40 bg-primary/10 dark:border-primary/50 dark:bg-primary/10">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Globe className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                  <CardTitle className="text-lg text-blue-800 dark:text-blue-200">
+                  <Globe className="h-5 w-5 text-primary dark:text-primary" />
+                  <CardTitle className="text-lg text-primary dark:text-primary">
                     New Currencies Detected
                   </CardTitle>
                 </div>
@@ -800,7 +800,7 @@ const Exposures = () => {
                   variant="ghost"
                   size="sm"
                   onClick={() => setShowNewCurrencyAlert(false)}
-                  className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200"
+                  className="text-primary hover:text-primary/80 dark:text-primary dark:hover:text-primary/80"
                 >
                   ×
                 </Button>
@@ -808,17 +808,17 @@ const Exposures = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                <p className="text-sm text-blue-700 dark:text-blue-300">
+                <p className="text-sm text-primary dark:text-primary/90">
                   The following new currencies were detected during strategy import:
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {newCurrencies.map((currency) => (
-                    <Badge key={currency} variant="outline" className="border-blue-300 text-blue-700 dark:border-blue-600 dark:text-blue-300">
+                    <Badge key={currency} variant="outline" className="border-primary/40 text-primary dark:border-primary/50 dark:text-primary">
                       {currency}
                     </Badge>
                   ))}
                 </div>
-                <p className="text-xs text-blue-600 dark:text-blue-400 mt-2">
+                <p className="text-xs text-primary/80 dark:text-primary/80 mt-2">
                   Exposures have been automatically created for these currencies.
                 </p>
               </div>
@@ -880,8 +880,8 @@ const Exposures = () => {
                   <p className="text-sm font-medium text-muted-foreground">Total Exposures</p>
                   <p className="text-2xl font-bold">{exposures.length}</p>
                 </div>
-                <div className="h-8 w-8 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center">
-                  <Globe className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <div className="h-8 w-8 bg-primary/15 dark:bg-primary/25 rounded-full flex items-center justify-center">
+                  <Globe className="h-4 w-4 text-primary dark:text-primary" />
                 </div>
               </div>
           </CardContent>
@@ -949,8 +949,8 @@ const Exposures = () => {
                     }
                   </p>
                 </div>
-                <div className="h-8 w-8 bg-purple-100 dark:bg-purple-900 rounded-full flex items-center justify-center">
-                  <Shield className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                <div className="h-8 w-8 bg-emerald-100 dark:bg-emerald-900/40 rounded-full flex items-center justify-center">
+                  <Shield className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
                 </div>
               </div>
           </CardContent>
@@ -963,8 +963,8 @@ const Exposures = () => {
       <Card>
             <CardContent className="p-12 text-center">
               <div className="max-w-md mx-auto">
-                <div className="h-16 w-16 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Globe className="h-8 w-8 text-blue-600 dark:text-blue-400" />
+                <div className="h-16 w-16 bg-primary/15 dark:bg-primary/25 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Globe className="h-8 w-8 text-primary dark:text-primary" />
             </div>
                 <h3 className="text-xl font-semibold mb-2">No FX Exposures Found</h3>
                 <p className="text-muted-foreground mb-6">
@@ -974,7 +974,7 @@ const Exposures = () => {
                 <div className="space-y-4">
                   <div className="bg-muted/50 rounded-lg p-4 text-left">
                     <h4 className="font-medium mb-2 flex items-center gap-2">
-                      <ArrowRight className="h-4 w-4 text-blue-600" />
+                      <ArrowRight className="h-4 w-4 text-primary" />
                       Connected Workflow
                     </h4>
                     <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
@@ -1163,7 +1163,7 @@ const Exposures = () => {
                                   <TableCell className="font-mono text-red-600">
                                     {formatCurrency(currencyData.totalPayables, currencyData.currency)}
                                   </TableCell>
-                                  <TableCell className="font-mono text-blue-600">
+                                  <TableCell className="font-mono text-primary">
                                     {formatCurrency(currencyData.totalHedged, currencyData.currency)}
                                   </TableCell>
                                   <TableCell className="font-mono text-orange-600">
@@ -1214,7 +1214,7 @@ const Exposures = () => {
                                         maturityData.maturityRange === '≤ 30 days' ? 'border-red-200 text-red-700' :
                                         maturityData.maturityRange === '31-90 days' ? 'border-orange-200 text-orange-700' :
                                         maturityData.maturityRange === '91-180 days' ? 'border-yellow-200 text-yellow-700' :
-                                        maturityData.maturityRange === '181-365 days' ? 'border-blue-200 text-blue-700' :
+                                        maturityData.maturityRange === '181-365 days' ? 'border-primary/40 text-primary' :
                                         'border-green-200 text-green-700'
                                       }`}
                                     >
@@ -1230,7 +1230,7 @@ const Exposures = () => {
                                   <TableCell className="font-mono text-red-600">
                                     ${maturityData.totalPayables.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                                   </TableCell>
-                                  <TableCell className="font-mono text-blue-600">
+                                  <TableCell className="font-mono text-primary">
                                     ${maturityData.totalHedged.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                                   </TableCell>
                                   <TableCell className="font-mono text-orange-600">

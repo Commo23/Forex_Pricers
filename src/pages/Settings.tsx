@@ -1782,7 +1782,7 @@ const Settings = () => {
                       
                       <Button 
                         variant="outline" 
-                        className="w-full text-blue-600 border-blue-200 hover:bg-blue-50" 
+                        className="w-full text-primary border-primary/40 hover:bg-primary/10"
                         onClick={createTestExposures}
                       >
                         <Database className="h-4 w-4 mr-2" />
@@ -2138,7 +2138,7 @@ const Settings = () => {
                         variant="outline" 
                         size="sm" 
                         onClick={createTestExposures}
-                        className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                        className="text-primary border-primary/40 hover:bg-primary/10"
                       >
                         <Database className="h-4 w-4 mr-2" />
                         Create Test Exposures

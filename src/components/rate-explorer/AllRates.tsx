@@ -410,7 +410,7 @@ export function AllRates() {
                       <Badge 
                         variant="outline" 
                         className={rate.source === "irs_futures" 
-                          ? "bg-blue-500/10 text-blue-600 border-blue-500/30 text-xs" 
+                          ? "bg-primary/10 text-primary border-primary/30 text-xs"
                           : "bg-green-500/10 text-green-600 border-green-500/30 text-xs"
                         }
                       >
@@ -519,7 +519,7 @@ export function AllRates() {
                 <Badge 
                   variant="outline" 
                   className={selectedRate.source === "irs_futures" 
-                    ? "bg-blue-500/10 text-blue-600 border-blue-500/30" 
+                    ? "bg-primary/10 text-primary border-primary/30"
                     : "bg-green-500/10 text-green-600 border-green-500/30"
                   }
                 >

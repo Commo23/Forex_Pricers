@@ -340,7 +340,7 @@ export function AppSidebar() {
           {/* User Info */}
             <div className="space-y-3">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full flex items-center justify-center sidebar-user-avatar shadow-lg">
+                <div className="h-10 w-10 bg-gradient-to-r from-lime-500 to-emerald-500 rounded-full flex items-center justify-center sidebar-user-avatar shadow-lg">
                   <User className="h-5 w-5 text-white sidebar-icon" />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -384,20 +384,20 @@ export function AppSidebar() {
             
             <div className="grid grid-cols-2 gap-2 text-xs">
               {/* EUR/USD Card */}
-              <div className="relative overflow-hidden bg-gradient-to-br from-blue-900/40 to-blue-800/30 border border-blue-500/30 rounded-lg p-2 market-status-card hover:border-blue-400/50 hover:shadow-lg hover:shadow-blue-500/20 transition-all duration-300 group">
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+              <div className="relative overflow-hidden bg-gradient-to-br from-lime-900/30 to-lime-800/20 border border-lime-500/30 rounded-lg p-2 market-status-card hover:border-lime-400/50 hover:shadow-lg hover:shadow-lime-500/20 transition-all duration-300 group">
+                <div className="absolute inset-0 bg-gradient-to-br from-lime-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
-                  <div className="text-blue-300/80 market-status-label text-[10px] font-semibold uppercase tracking-wide">EUR/USD</div>
-                  <div className="font-mono font-bold text-sm market-status-content text-blue-100 group-hover:text-white transition-colors">{marketStatusData.EUR_USD.toFixed(4)}</div>
+                  <div className="text-lime-300/80 market-status-label text-[10px] font-semibold uppercase tracking-wide">EUR/USD</div>
+                  <div className="font-mono font-bold text-sm market-status-content text-lime-100 group-hover:text-white transition-colors">{marketStatusData.EUR_USD.toFixed(4)}</div>
                 </div>
               </div>
               
               {/* GBP/USD Card */}
-              <div className="relative overflow-hidden bg-gradient-to-br from-purple-900/40 to-purple-800/30 border border-purple-500/30 rounded-lg p-2 market-status-card hover:border-purple-400/50 hover:shadow-lg hover:shadow-purple-500/20 transition-all duration-300 group">
-                <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+              <div className="relative overflow-hidden bg-gradient-to-br from-emerald-900/30 to-emerald-800/20 border border-emerald-500/30 rounded-lg p-2 market-status-card hover:border-emerald-400/50 hover:shadow-lg hover:shadow-emerald-500/20 transition-all duration-300 group">
+                <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
                 <div className="relative">
-                  <div className="text-purple-300/80 market-status-label text-[10px] font-semibold uppercase tracking-wide">GBP/USD</div>
-                  <div className="font-mono font-bold text-sm market-status-content text-purple-100 group-hover:text-white transition-colors">{marketStatusData.GBP_USD.toFixed(4)}</div>
+                  <div className="text-emerald-300/80 market-status-label text-[10px] font-semibold uppercase tracking-wide">GBP/USD</div>
+                  <div className="font-mono font-bold text-sm market-status-content text-emerald-100 group-hover:text-white transition-colors">{marketStatusData.GBP_USD.toFixed(4)}</div>
                 </div>
               </div>
             </div>

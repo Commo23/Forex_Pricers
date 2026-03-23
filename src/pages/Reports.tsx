@@ -246,9 +246,9 @@ const Reports = () => {
 
   const getReportTypeColor = (type: string) => {
     switch (type) {
-      case 'scenario': return 'bg-blue-100 text-blue-800';
+      case 'scenario': return 'bg-primary/15 text-primary';
       case 'risk-matrix': return 'bg-green-100 text-green-800';
-      case 'backtest': return 'bg-purple-100 text-purple-800';
+      case 'backtest': return 'bg-emerald-100 text-emerald-800';
       default: return 'bg-gray-100 text-gray-800';
     }
   };
@@ -935,8 +935,8 @@ const Reports = () => {
       ctx.stroke();
       ctx.setLineDash([]);
       
-      // Hedged line (solid blue)
-      ctx.strokeStyle = '#3b82f6';
+      // Hedged line (solid primary/lime)
+      ctx.strokeStyle = '#c4d82e';
       ctx.lineWidth = 3;
       ctx.beginPath();
       
@@ -996,7 +996,7 @@ const Reports = () => {
       ctx.fillText('Unhedged Rate', legendX + 45, legendY + 29);
       
       // Hedged
-      ctx.strokeStyle = '#3b82f6';
+      ctx.strokeStyle = '#c4d82e';
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(legendX + 10, legendY + 45);
@@ -1688,7 +1688,7 @@ const Reports = () => {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-blue-600" />
+                <FileText className="h-5 w-5 text-primary" />
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Scenarios</p>
                   <p className="text-2xl font-bold">{reportStats.totalScenarios}</p>
@@ -1712,7 +1712,7 @@ const Reports = () => {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5 text-purple-600" />
+                <TrendingUp className="h-5 w-5 text-emerald-600" />
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Backtests</p>
                   <p className="text-2xl font-bold">{reportStats.totalBacktests}</p>
@@ -1974,7 +1974,7 @@ const Reports = () => {
                               variant="outline"
                               onClick={() => loadScenarioToBuilder(report)}
                               title="Load to Strategy Builder"
-                              className="text-blue-600 hover:text-blue-700"
+                              className="text-primary hover:text-primary/80"
                             >
                               <ArrowRight className="h-4 w-4" />
                             </Button>
