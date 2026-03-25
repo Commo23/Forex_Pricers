@@ -36,6 +36,17 @@ export interface HedgingCounterparty {
   name: string;
 }
 
+/** Hedging strategy: a user-visible container grouping 1..N instruments. */
+export interface HedgingStrategy {
+  id: string;
+  name: string;
+  source: 'manual' | 'import';
+  createdAt: number;
+  currencyPair?: string;
+  portfolioId?: string;
+  counterparty?: string;
+}
+
 export interface HedgingInstrument {
   id: string;
   type: string;
@@ -56,6 +67,8 @@ export interface HedgingInstrument {
   volatility?: number;
   quantity?: number;
   originalComponent?: StrategyComponent;
+  /** Stable link to a hedging strategy container (preferred over strategyName). */
+  strategyId?: string;
   strategyName?: string;
   importedAt?: number;
   // New fields for real data from Detailed Results
@@ -115,6 +128,7 @@ export interface HedgingInstrument {
 class StrategyImportService {
   private static instance: StrategyImportService;
   private importedStrategies: ImportedStrategy[] = [];
+  private hedgingStrategies: HedgingStrategy[] = [];
   private hedgingInstruments: HedgingInstrument[] = [];
   private hedgingPortfolios: HedgingPortfolio[] = [];
   private hedgingCounterparties: HedgingCounterparty[] = [];
@@ -135,6 +149,11 @@ class StrategyImportService {
       const savedStrategies = localStorage.getItem('importedStrategies');
       if (savedStrategies) {
         this.importedStrategies = JSON.parse(savedStrategies);
+      }
+
+      const savedHedgingStrategies = localStorage.getItem('hedgingStrategies');
+      if (savedHedgingStrategies) {
+        this.hedgingStrategies = JSON.parse(savedHedgingStrategies);
       }
 
       const savedInstruments = localStorage.getItem('hedgingInstruments');
@@ -158,22 +177,140 @@ class StrategyImportService {
           id: `CPTY-default-${i}-${Date.now()}`,
           name,
         }));
-        this.saveToStorage();
       }
+
+      // ✅ Migration: ensure hedgingStrategies exists + backfill instrument.strategyId for legacy data.
+      this.migrateHedgingStrategies();
+
+      this.saveToStorage();
     } catch (error) {
       console.error('Error loading from storage:', error);
+    }
+  }
+
+  private migrateHedgingStrategies(): void {
+    const UNASSIGNED_ID = 'HSTRAT-UNASSIGNED';
+    const ensureUnassigned = () => {
+      if (!this.hedgingStrategies.find(s => s.id === UNASSIGNED_ID)) {
+        this.hedgingStrategies.push({
+          id: UNASSIGNED_ID,
+          name: 'Unassigned',
+          source: 'manual',
+          createdAt: Date.now(),
+        });
+      }
+    };
+
+    ensureUnassigned();
+
+    // If imported strategies exist but no hedgingStrategies yet, create strategy containers for them.
+    for (const imp of this.importedStrategies) {
+      if (!this.hedgingStrategies.find(s => s.id === imp.id)) {
+        this.hedgingStrategies.push({
+          id: imp.id,
+          name: imp.name,
+          source: 'import',
+          createdAt: imp.timestamp,
+          currencyPair: imp.currencyPair,
+        });
+      }
+    }
+
+    // Backfill instrument.strategyId for legacy instruments.
+    const byNameToStrategyId = new Map<string, string>();
+    for (const s of this.hedgingStrategies) {
+      byNameToStrategyId.set(s.name.trim().toLowerCase(), s.id);
+    }
+
+    const baseStrategyName = (name: string) => name.replace(/\s*\[P\d+\]\s*$/i, '').trim();
+
+    for (let i = 0; i < this.hedgingInstruments.length; i++) {
+      const inst = this.hedgingInstruments[i];
+      if (inst.strategyId) continue;
+
+      // Prefer mapping importedAt -> importedStrategies.timestamp -> imported strategy id.
+      if (inst.importedAt) {
+        const imported = this.importedStrategies.find(s => s.timestamp === inst.importedAt);
+        if (imported) {
+          inst.strategyId = imported.id;
+          continue;
+        }
+      }
+
+      if (inst.strategyName && inst.strategyName.trim()) {
+        const base = baseStrategyName(inst.strategyName);
+        const key = base.toLowerCase();
+        const existingId = byNameToStrategyId.get(key);
+        if (existingId) {
+          inst.strategyId = existingId;
+          continue;
+        }
+        // Create a manual strategy container for this legacy name.
+        const newId = `HSTRAT-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const newStrat: HedgingStrategy = {
+          id: newId,
+          name: base,
+          source: 'manual',
+          createdAt: Date.now(),
+          currencyPair: inst.currency,
+          portfolioId: inst.portfolioId,
+          counterparty: inst.counterparty,
+        };
+        this.hedgingStrategies.push(newStrat);
+        byNameToStrategyId.set(key, newId);
+        inst.strategyId = newId;
+      } else {
+        inst.strategyId = UNASSIGNED_ID;
+      }
     }
   }
 
   private saveToStorage(): void {
     try {
       localStorage.setItem('importedStrategies', JSON.stringify(this.importedStrategies));
+      localStorage.setItem('hedgingStrategies', JSON.stringify(this.hedgingStrategies));
       localStorage.setItem('hedgingInstruments', JSON.stringify(this.hedgingInstruments));
       localStorage.setItem('hedgingPortfolios', JSON.stringify(this.hedgingPortfolios));
       localStorage.setItem('hedgingCounterparties', JSON.stringify(this.hedgingCounterparties));
     } catch (error) {
       console.error('Error saving to storage:', error);
     }
+  }
+
+  getHedgingStrategies(): HedgingStrategy[] {
+    return [...this.hedgingStrategies];
+  }
+
+  addHedgingStrategy(strategy: Omit<HedgingStrategy, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): HedgingStrategy {
+    const id = strategy.id ?? `HSTRAT-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const createdAt = strategy.createdAt ?? Date.now();
+    const newStrategy: HedgingStrategy = { ...strategy, id, createdAt };
+    this.hedgingStrategies.push(newStrategy);
+    this.saveToStorage();
+    return newStrategy;
+  }
+
+  updateHedgingStrategy(id: string, updates: Partial<Omit<HedgingStrategy, 'id'>>): void {
+    const idx = this.hedgingStrategies.findIndex(s => s.id === id);
+    if (idx !== -1) {
+      this.hedgingStrategies[idx] = { ...this.hedgingStrategies[idx], ...updates };
+      this.saveToStorage();
+    }
+  }
+
+  /** Delete a hedging strategy. By default, instruments are moved to Unassigned. */
+  deleteHedgingStrategy(id: string, opts?: { deleteInstruments?: boolean; moveToStrategyId?: string }): void {
+    const UNASSIGNED_ID = 'HSTRAT-UNASSIGNED';
+    const moveTo = opts?.moveToStrategyId ?? UNASSIGNED_ID;
+    if (!opts?.deleteInstruments) {
+      this.hedgingInstruments = this.hedgingInstruments.map(inst =>
+        inst.strategyId === id ? { ...inst, strategyId: moveTo } : inst
+      );
+    } else {
+      this.hedgingInstruments = this.hedgingInstruments.filter(inst => inst.strategyId !== id);
+    }
+    this.hedgingStrategies = this.hedgingStrategies.filter(s => s.id !== id);
+    this.saveToStorage();
   }
 
   getCounterparties(): HedgingCounterparty[] {
@@ -247,6 +384,17 @@ class StrategyImportService {
 
     this.importedStrategies.push(importedStrategy);
 
+    // Ensure a hedging strategy container exists for this import (use same id).
+    if (!this.hedgingStrategies.find(s => s.id === strategyId)) {
+      this.hedgingStrategies.push({
+        id: strategyId,
+        name: strategyName,
+        source: 'import',
+        createdAt: timestamp,
+        currencyPair: params.currencyPair.symbol,
+      });
+    }
+
     // Convert strategy components to hedging instruments
     const newInstruments = this.convertStrategyToInstruments(
       strategyName,
@@ -257,7 +405,8 @@ class StrategyImportService {
         foreignRate: params.foreignRate
       },
       timestamp,
-      detailedResults
+      detailedResults,
+      strategyId
     );
 
     this.hedgingInstruments.push(...newInstruments);
@@ -285,7 +434,8 @@ class StrategyImportService {
       useBootstrappedInterestRates?: boolean;
     },
     timestamp: number,
-    detailedResults?: any[]
+    detailedResults?: any[],
+    strategyId?: string
   ): HedgingInstrument[] {
     const instruments: HedgingInstrument[] = [];
     
@@ -325,6 +475,7 @@ class StrategyImportService {
           volatility: component.volatility,
           quantity: component.quantity,
           originalComponent: component,
+          strategyId,
           strategyName,
           importedAt: timestamp,
           optionIndex: index,
@@ -435,7 +586,9 @@ class StrategyImportService {
             volatility: effectiveVolatility, // ✅ CORRECTION : Utiliser la volatilité effective du tableau Detailed Results
             quantity: component.quantity,
             originalComponent: component,
-            strategyName: `${strategyName} [P${periodIndex + 1}]`,
+            // Keep a display-friendly name, but link via strategyId for grouping.
+            strategyId,
+            strategyName: strategyName,
             importedAt: timestamp,
             // Nouvelles informations enrichies
             realOptionPrice: realOptionPrice,
@@ -730,6 +883,10 @@ class StrategyImportService {
       mtm: 0,
       hedge_accounting: false,
     };
+    if (!newInstrument.strategyId) {
+      // Default to Unassigned if caller didn't provide a strategy link.
+      newInstrument.strategyId = 'HSTRAT-UNASSIGNED';
+    }
     this.hedgingInstruments.push(newInstrument);
     this.saveToStorage();
     return newInstrument;
@@ -748,6 +905,9 @@ class StrategyImportService {
         mtm: 0,
         hedge_accounting: false,
       };
+      if (!newInstrument.strategyId) {
+        newInstrument.strategyId = 'HSTRAT-UNASSIGNED';
+      }
       this.hedgingInstruments.push(newInstrument);
     }
     this.saveToStorage();

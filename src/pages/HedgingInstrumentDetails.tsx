@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, CalendarDays, Activity, Sigma } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import StrategyImportService, { HedgingInstrument } from "@/services/StrategyImportService";
+import StrategyImportService, { HedgingInstrument, HedgingStrategy } from "@/services/StrategyImportService";
 import { PricingService } from "@/services/PricingService";
 import PayoffChart from "@/components/PayoffChart";
 
@@ -103,6 +103,13 @@ const HedgingInstrumentDetails = () => {
   const portfolioName = useMemo(() => {
     if (!instrument?.portfolioId) return "N/A";
     return service.getPortfolios().find((p) => p.id === instrument.portfolioId)?.name ?? instrument.portfolioId;
+  }, [instrument, service]);
+
+  const strategyName = useMemo(() => {
+    const sid = instrument?.strategyId;
+    if (!sid) return instrument?.strategyName || "Unassigned";
+    const s: HedgingStrategy | undefined = service.getHedgingStrategies().find((x) => x.id === sid);
+    return s?.name ?? instrument?.strategyName ?? "Unassigned";
   }, [instrument, service]);
 
   const [valuationDate, setValuationDate] = useState(new Date().toISOString().split("T")[0]);
@@ -360,6 +367,7 @@ const HedgingInstrumentDetails = () => {
           <CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
             <DataField label="Counterparty" value={instrument.counterparty || "N/A"} />
             <DataField label="Portfolio" value={portfolioName} />
+            <DataField label="Strategy" value={strategyName} />
             <DataField label="Maturity" value={instrument.maturity} mono />
             <DataField label="Days to maturity" value={valuation?.daysRemaining ?? "N/A"} mono />
           </CardContent>

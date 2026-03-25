@@ -22,6 +22,7 @@ import Dashboard from "./pages/Dashboard";
 import Exposures from "./pages/Exposures";
 import HedgingInstruments from "./pages/HedgingInstruments";
 import HedgingInstrumentDetails from "./pages/HedgingInstrumentDetails";
+import HedgingStrategyDetails from "./pages/HedgingStrategyDetails";
 import RiskAnalysis from "./pages/RiskAnalysis";
 import PositionMonitor from "./pages/PositionMonitor";
 import Index from "./pages/Index";
@@ -87,6 +88,7 @@ const App = () => {
             <Route path="/exposures" element={<ProtectedRoute><Exposures /></ProtectedRoute>} />
             <Route path="/hedging" element={<ProtectedRoute><HedgingInstruments /></ProtectedRoute>} />
             <Route path="/hedging/:id" element={<ProtectedRoute><HedgingInstrumentDetails /></ProtectedRoute>} />
+            <Route path="/hedging-strategy/:id" element={<ProtectedRoute><HedgingStrategyDetails /></ProtectedRoute>} />
             <Route path="/risk-analysis" element={<ProtectedRoute><RiskAnalysis /></ProtectedRoute>} />
             
             {/* Strategy Builder and Advanced Features */}

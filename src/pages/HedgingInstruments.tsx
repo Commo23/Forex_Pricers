@@ -34,9 +34,11 @@ import {
   Calculator,
   RefreshCw,
   Percent,
-  Hash
+  Hash,
+  Lock,
+  Unlock
 } from "lucide-react";
-import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty } from "@/services/StrategyImportService";
+import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty, HedgingStrategy } from "@/services/StrategyImportService";
 import {
   parseCsvText,
   parseHedgingInstrumentRows,
@@ -64,6 +66,8 @@ import {
   FOREX_MARKET_RATE_SNAPSHOT_EVENT,
   type ForexMarketRateSnapshot,
 } from "@/lib/forexMarketSpotSync";
+import { ExcelColumnFilter } from "@/components/ExcelColumnFilter";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 // ✅ IMPORT EXACT DES FONCTIONS EXPORTÉES D'INDEX.TSX UTILISÉES PAR STRATEGY BUILDER
 import {
   calculateBarrierOptionPrice,
@@ -82,7 +86,7 @@ interface CurrencyMarketData {
   foreignRate: number;
 }
 
-const HedgingInstruments = () => {
+export default function HedgingInstruments() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
@@ -96,6 +100,7 @@ const HedgingInstruments = () => {
   const [selectedTab, setSelectedTab] = useState("all");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showExportColumns, setShowExportColumns] = useState(false);
+  const [viewMode, setViewMode] = useState<"instrument" | "strategy">("instrument");
   const [instruments, setInstruments] = useState<HedgingInstrument[]>(() => {
     try {
       const saved = localStorage.getItem('hedgingInstruments');
@@ -106,11 +111,21 @@ const HedgingInstruments = () => {
     }
   });
   const [importService] = useState(() => StrategyImportService.getInstance());
+  const [strategies, setStrategies] = useState<HedgingStrategy[]>(() => importService.getHedgingStrategies());
   const [portfolios, setPortfolios] = useState<HedgingPortfolio[]>(() => importService.getPortfolios());
   const [counterparties, setCounterparties] = useState<HedgingCounterparty[]>(() => importService.getCounterparties());
   const [selectedPortfolioFilter, setSelectedPortfolioFilter] = useState<string>("__all__"); // "__all__" | "__none__" | portfolioId
   const [selectedCounterpartyFilter, setSelectedCounterpartyFilter] = useState<string>("__all__"); // "__all__" | counterparty name
+  const [selectedStrategyFilter, setSelectedStrategyFilter] = useState<string>("__all__"); // "__all__" | strategyId
   const [instrumentSearchTerm, setInstrumentSearchTerm] = useState("");
+
+  const [columnFilters, setColumnFilters] = useState<{
+    type: string[];
+    pair: string[];
+    counterparty: string[];
+    portfolioId: string[];
+    status: string[];
+  }>({ type: [], pair: [], counterparty: [], portfolioId: [], status: [] });
 
   const csvInputRef = useRef<HTMLInputElement>(null);
   const [csvImportReportOpen, setCsvImportReportOpen] = useState(false);
@@ -207,11 +222,19 @@ const HedgingInstruments = () => {
     rebate: 100 as number | string,
     realPrice: "" as string | number, // optional: user-entered real traded price (overrides theoretical)
     portfolioId: undefined as string | undefined,
+    strategyMode: "existing" as "existing" | "new",
+    strategyId: "HSTRAT-UNASSIGNED" as string,
+    newStrategyName: "" as string,
   }));
   const [addFormRateOverrides, setAddFormRateOverrides] = useState<{ domestic: boolean; foreign: boolean }>({
     domestic: false,
     foreign: false,
   });
+
+  // Sync strategies from service (migration runs there).
+  useEffect(() => {
+    setStrategies(importService.getHedgingStrategies());
+  }, [importService]);
 
   // Local editing state for table inputs (avoids recalc on every keystroke → prevents crash)
   const [editingTableCells, setEditingTableCells] = useState<Record<string, { spot?: string; vol?: string }>>({});
@@ -396,6 +419,26 @@ const HedgingInstruments = () => {
     }
   });
 
+  // Manual spot override locks (simulation): when locked, auto-sync won't overwrite spot.
+  const [marketSpotLocks, setMarketSpotLocks] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("currencyMarketSpotLocks");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const setSpotLock = (currency: string, locked: boolean) => {
+    setMarketSpotLocks((prev) => {
+      const next = { ...prev, [currency]: locked };
+      try {
+        localStorage.setItem("currencyMarketSpotLocks", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
   const [interestRateSource, setInterestRateSource] = useState(() => readPricingInterestRateSource());
   useEffect(() => {
     const sync = () => setInterestRateSource(readPricingInterestRateSource());
@@ -530,7 +573,17 @@ const HedgingInstruments = () => {
                 currentData.foreignRate !== exportData.foreignRate) {
               
               console.log(`[DEBUG] Updating market data for ${currency} with export data:`, exportData);
-              newData[currency] = exportData;
+              const locks = (() => {
+                try {
+                  const saved = localStorage.getItem("currencyMarketSpotLocks");
+                  return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
+                } catch {
+                  return {};
+                }
+              })();
+              newData[currency] = locks[currency]
+                ? { ...exportData, spot: currentData?.spot ?? exportData.spot }
+                : exportData;
               hasUpdates = true;
             }
           }
@@ -632,6 +685,7 @@ const HedgingInstruments = () => {
         let changed = false;
         const next = { ...prev };
         for (const pair of uniqueCurrencies) {
+          if (marketSpotLocks[pair]) continue;
           const spot = computeSpotForCurrencyPair(pair, snap.base, snap.rates);
           if (spot == null || !(spot > 0) || isNaN(spot)) continue;
           const cur = next[pair] || getMarketDataFromInstruments(pair) || MARKET_DEFAULTS;
@@ -662,7 +716,7 @@ const HedgingInstruments = () => {
         return next;
       });
     },
-    [baseCurrency, instruments]
+    [baseCurrency, instruments, marketSpotLocks]
   );
 
   // Live sync with Forex Market snapshot + refresh if stale (Forex page refreshes every 30s)
@@ -770,7 +824,7 @@ const HedgingInstruments = () => {
           const updatedData = { ...currentData };
           let pairUpdated = false;
           
-          if (realTimeSpot !== null && !isNaN(realTimeSpot) && realTimeSpot > 0) {
+          if (!marketSpotLocks[currencyPair] && realTimeSpot !== null && !isNaN(realTimeSpot) && realTimeSpot > 0) {
             updatedData.spot = realTimeSpot;
             pairUpdated = true;
           }
@@ -1568,6 +1622,11 @@ const HedgingInstruments = () => {
     if (field === 'volatility' && (parsed < 0.01 || parsed > 200)) return;
     if (field === 'spot' && parsed <= 0) return;
 
+    if (field === "spot") {
+      // Manual simulation override: lock this spot against auto-sync.
+      setSpotLock(currency, true);
+    }
+
     setCurrencyMarketData(prev => {
       const base = prev[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
       const newData = {
@@ -1907,7 +1966,7 @@ const HedgingInstruments = () => {
   const refreshMarketDataForCurrency = (currency: string) => {
     const fromInstruments = getMarketDataFromInstruments(currency);
     const current = currencyMarketData[currency] || { spot: 1.0, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-    const spot = Number(fromInstruments?.spot ?? current.spot) || 1.0;
+    const spot = marketSpotLocks[currency] ? (Number(current.spot) || 1.0) : (Number(fromInstruments?.spot ?? current.spot) || 1.0);
     const volatility = Number(fromInstruments?.volatility ?? current.volatility) || 20;
     const domesticRate = Number(fromInstruments?.domesticRate ?? current.domesticRate) ?? 1.0;
     const foreignRate = Number(fromInstruments?.foreignRate ?? current.foreignRate) ?? 1.0;
@@ -1938,7 +1997,9 @@ const HedgingInstruments = () => {
         const exportData = getMarketDataFromInstruments(currency);
         if (exportData) {
           console.log(`[DEBUG] Refreshing ${currency} with export data:`, exportData);
-          newData[currency] = exportData;
+          newData[currency] = marketSpotLocks[currency]
+            ? { ...exportData, spot: (newData[currency]?.spot ?? exportData.spot) }
+            : exportData;
           updatedCount++;
         }
       });
@@ -2009,39 +2070,110 @@ const HedgingInstruments = () => {
     return currencyPair;
   };
 
-  // Calculate instrument status based on maturity date and valuation date
-  const calculateInstrumentStatus = (instrument: HedgingInstrument): string => {
-    // If manually set to cancelled, keep it
-    if (instrument.status && instrument.status.toLowerCase() === "cancelled") {
-      return instrument.status;
+  type RiskSeverity = "info" | "warning" | "critical";
+  type RiskAlert = { key: string; severity: RiskSeverity; short: string; detail: string };
+
+  const computeInstantBadges = (instrument: HedgingInstrument): { main: React.ReactNode; risks: RiskAlert[]; dte: number | null } => {
+    const statusRaw = String(instrument.status || "").toLowerCase();
+    const valuationDateObj = new Date(valuationDate);
+    const maturityDateObj = instrument.maturity ? new Date(instrument.maturity) : null;
+    const matured = maturityDateObj ? valuationDateObj >= maturityDateObj : false;
+    const cancelled = statusRaw === "cancelled";
+    const dte = maturityDateObj ? Math.max(0, Math.ceil((maturityDateObj.getTime() - valuationDateObj.getTime()) / (24 * 3600 * 1000))) : null;
+
+    const risks: RiskAlert[] = [];
+    if (!cancelled && !matured && dte != null) {
+      if (dte <= 2) risks.push({ key: "near-expiry-critical", severity: "critical", short: `EXP≤2d`, detail: `Expiry in ${dte} day(s)` });
+      else if (dte <= 7) risks.push({ key: "near-expiry-warning", severity: "warning", short: `EXP≤7d`, detail: `Expiry in ${dte} day(s)` });
     }
-    
-    // Check if instrument is expired based on maturity date
-    if (instrument.maturity) {
-      const valuationDateObj = new Date(valuationDate);
-      const maturityDateObj = new Date(instrument.maturity);
-      
-      if (valuationDateObj >= maturityDateObj) {
-        return "matured";
+
+    // Barrier proximity: only if instrument has barrier levels
+    const spot = currencyMarketData[instrument.currency]?.spot;
+    const barriers: number[] = [];
+    if (instrument.barrier != null && isFinite(Number(instrument.barrier))) barriers.push(Number(instrument.barrier));
+    if (instrument.secondBarrier != null && isFinite(Number(instrument.secondBarrier))) barriers.push(Number(instrument.secondBarrier));
+    if (!cancelled && !matured && spot != null && isFinite(spot) && spot > 0 && barriers.length > 0) {
+      const ds = barriers.map((b) => Math.abs(spot - b) / spot);
+      const d = Math.min(...ds);
+      const pct = d * 100;
+      if (d < 0.005) risks.push({ key: "barrier-critical", severity: "critical", short: `BARR<0.5%`, detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})` });
+      else if (d < 0.02) risks.push({ key: "barrier-warning", severity: "warning", short: `BARR<2%`, detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})` });
+
+      // Digital jump risk near trigger
+      const t = String(instrument.type || "").toLowerCase();
+      const isDigital = t.includes("touch") || t.includes("binary") || t.includes("digital");
+      if (isDigital && d < 0.02) {
+        risks.push({
+          key: "jumpy",
+          severity: d < 0.005 ? "critical" : "warning",
+          short: "JUMP",
+          detail: "Discontinuous payoff: near trigger",
+        });
       }
     }
-    
-    // Default to active if not expired
-    return "active";
+
+    const hasCritical = risks.some((r) => r.severity === "critical");
+    const mainLabel = cancelled ? "CANCELLED" : matured ? "MATURED" : hasCritical ? "ACTION REQUIRED" : "LIVE";
+    const mainBadge =
+      mainLabel === "CANCELLED" ? (
+        <Badge variant="destructive">CANCELLED</Badge>
+      ) : mainLabel === "MATURED" ? (
+        <Badge variant="secondary">MATURED</Badge>
+      ) : mainLabel === "ACTION REQUIRED" ? (
+        <Badge className="bg-red-600 text-white">ACTION REQUIRED</Badge>
+      ) : (
+        <Badge className="bg-emerald-600 text-white">LIVE</Badge>
+      );
+
+    return { main: mainBadge, risks, dte };
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status.toLowerCase()) {
-      case "active":
-        return <Badge className="bg-green-100 text-green-800 border-green-200">Active</Badge>;
-      case "matured":
-      case "expired":
-        return <Badge variant="secondary">Matured</Badge>;
-      case "cancelled":
-        return <Badge variant="destructive">Cancelled</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
+  const renderStatusCell = (instrument: HedgingInstrument) => {
+    const { main, risks } = computeInstantBadges(instrument);
+    const top = risks.slice().sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "critical" ? -1 : a.severity === "warning" && b.severity === "info" ? -1 : 1));
+    const shown = top.slice(0, 2);
+    const extra = Math.max(0, top.length - shown.length);
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {main}
+        {shown.map((r) => {
+          const cls =
+            r.severity === "critical"
+              ? "bg-red-100 text-red-800 border-red-200"
+              : r.severity === "warning"
+                ? "bg-yellow-100 text-yellow-800 border-yellow-200"
+                : "bg-slate-100 text-slate-800 border-slate-200";
+          return (
+            <Tooltip key={r.key}>
+              <TooltipTrigger asChild>
+                <span>
+                  <Badge variant="outline" className={cls}>{r.short}</Badge>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="text-xs">{r.detail}</div>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+        {extra > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Badge variant="outline">+{extra}</Badge>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="text-xs space-y-1">
+                {top.slice(2).map((r) => (
+                  <div key={r.key}>{r.detail}</div>
+                ))}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+    );
   };
 
   const getInstrumentIcon = (type: string) => {
@@ -2180,6 +2312,18 @@ const HedgingInstruments = () => {
     const matchesCounterparty = selectedCounterpartyFilter === "__all__" ||
       (instrument.counterparty === selectedCounterpartyFilter);
 
+    const matchesStrategy =
+      selectedStrategyFilter === "__all__" ||
+      (instrument.strategyId || "HSTRAT-UNASSIGNED") === selectedStrategyFilter;
+
+    const matchesColType = columnFilters.type.length === 0 || columnFilters.type.includes(instrument.type);
+    const matchesColPair = columnFilters.pair.length === 0 || columnFilters.pair.includes(instrument.currency);
+    const matchesColCounterparty = columnFilters.counterparty.length === 0 || columnFilters.counterparty.includes(instrument.counterparty);
+    const matchesColPortfolio =
+      columnFilters.portfolioId.length === 0 ||
+      columnFilters.portfolioId.includes(instrument.portfolioId ?? "__none__");
+    const matchesColStatus = columnFilters.status.length === 0 || columnFilters.status.includes(instrument.status);
+
     const search = instrumentSearchTerm.trim().toLowerCase();
     const matchesSearch =
       search.length === 0 ||
@@ -2189,8 +2333,38 @@ const HedgingInstruments = () => {
       (instrument.counterparty || "").toLowerCase().includes(search) ||
       (instrument.strategyName || "").toLowerCase().includes(search);
     
-    return matchesTab && matchesPortfolio && matchesCounterparty && matchesSearch;
+    return (
+      matchesTab &&
+      matchesPortfolio &&
+      matchesCounterparty &&
+      matchesStrategy &&
+      matchesColType &&
+      matchesColPair &&
+      matchesColCounterparty &&
+      matchesColPortfolio &&
+      matchesColStatus &&
+      matchesSearch
+    );
   });
+
+  const columnFilterOptions = useMemo(() => {
+    const uniq = <T,>(arr: T[]) => Array.from(new Set(arr));
+    const type = uniq(instruments.map((i) => i.type)).sort();
+    const pair = uniq(instruments.map((i) => i.currency)).sort();
+    const counterparty = uniq(instruments.map((i) => i.counterparty).filter(Boolean)).sort();
+    const status = uniq(instruments.map((i) => i.status).filter(Boolean)).sort();
+    const portfolioId = uniq(instruments.map((i) => i.portfolioId ?? "__none__")).sort();
+    const portfolioLabel = (id: string) =>
+      id === "__none__" ? "No portfolio" : portfolios.find((p) => p.id === id)?.name ?? id;
+
+    return {
+      type: type.map((v) => ({ value: v })),
+      pair: pair.map((v) => ({ value: v })),
+      counterparty: counterparty.map((v) => ({ value: v })),
+      status: status.map((v) => ({ value: v })),
+      portfolioId: portfolioId.map((v) => ({ value: v, label: portfolioLabel(v) })),
+    };
+  }, [instruments, portfolios]);
 
   // Counterparties for filter and Add form: from Counterparties list + any present on instruments (legacy)
   const counterpartyOptions = useMemo(() => {
@@ -2289,6 +2463,14 @@ const HedgingInstruments = () => {
         .filter((r): r is { ok: false; row: number; error: string } => !r.ok)
         .map((r) => ({ row: r.row, msg: r.error }));
 
+      // Always attach CSV batch to a strategy container (create one per import)
+      const importStrategyName = `CSV Import ${new Date().toLocaleDateString()}`;
+      const importStrategy = importService.addHedgingStrategy({
+        name: importStrategyName,
+        source: "manual",
+        currencyPair: undefined,
+      });
+
       const payloads: Omit<HedgingInstrument, "id">[] = [];
       for (const r of results) {
         if (!r.ok) continue;
@@ -2302,12 +2484,15 @@ const HedgingInstruments = () => {
           }
           portfolioId = p.id;
         }
-        payloads.push(
-          buildHedgingInstrumentPayload(r.data, {
-            valuationDate: valDate,
-            portfolioId,
-          })
-        );
+        const payload = buildHedgingInstrumentPayload(r.data, {
+          valuationDate: valDate,
+          portfolioId,
+        });
+        payloads.push({
+          ...payload,
+          strategyId: importStrategy.id,
+          strategyName: importStrategy.name,
+        });
       }
 
       if (payloads.length > 0) {
@@ -2315,6 +2500,7 @@ const HedgingInstruments = () => {
       }
       requestAnimationFrame(() => {
         setInstruments(importService.getHedgingInstruments());
+        setStrategies(importService.getHedgingStrategies());
         window.dispatchEvent(new CustomEvent("hedgingInstrumentsUpdated"));
       });
 
@@ -2671,16 +2857,37 @@ const HedgingInstruments = () => {
                           <span className="text-muted-foreground text-xs shrink-0">({count})</span>
                         </div>
                         <div className="min-w-0">
-                          <Input
-                            id={`spot-${currency}`}
-                            type="number"
-                            step="0.0001"
-                            value={editingMarketCells[currency]?.spot ?? data.spot}
-                            onChange={(e) => onMarketFieldChange(currency, 'spot', e.target.value)}
-                            onBlur={() => onMarketFieldBlur(currency, 'spot')}
-                            className="font-mono text-sm h-8 w-full"
-                            placeholder="1.0850"
-                          />
+                          <div className="flex items-center gap-1">
+                            <Input
+                              id={`spot-${currency}`}
+                              type="number"
+                              step="0.0001"
+                              value={editingMarketCells[currency]?.spot ?? data.spot}
+                              onChange={(e) => onMarketFieldChange(currency, 'spot', e.target.value)}
+                              onBlur={() => onMarketFieldBlur(currency, 'spot')}
+                              className="font-mono text-sm h-8 w-full"
+                              placeholder="1.0850"
+                            />
+                            <Button
+                              type="button"
+                              variant={marketSpotLocks[currency] ? "default" : "outline"}
+                              size="sm"
+                              className="h-8 px-2"
+                              onClick={() => {
+                                if (marketSpotLocks[currency]) {
+                                  setSpotLock(currency, false);
+                                  // trigger a refresh from snapshot/export next interval; keep current spot for now
+                                  toast({ title: "Spot unlocked", description: `${currency}: auto spot sync is enabled again.` });
+                                } else {
+                                  setSpotLock(currency, true);
+                                  toast({ title: "Spot locked", description: `${currency}: spot will stay manual for simulation.` });
+                                }
+                              }}
+                              title={marketSpotLocks[currency] ? "Unlock (allow auto-sync)" : "Lock (manual simulation)"}
+                            >
+                              {marketSpotLocks[currency] ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
                         </div>
                         <div className="flex justify-start shrink-0">
                           {mappable ? (
@@ -3038,6 +3245,23 @@ const HedgingInstruments = () => {
                       ? Number(addForm.realPrice)
                       : (addFormTheoreticalPrice ?? 0);
                     const ttm = addForm.maturity ? PricingService.calculateTimeToMaturity(addForm.maturity, valuationDate || new Date().toISOString().split("T")[0]) : 0;
+
+                    // Resolve strategy association (existing or create new)
+                    let strategyId = addForm.strategyId || "HSTRAT-UNASSIGNED";
+                    let strategyName = strategies.find((s) => s.id === strategyId)?.name ?? "Unassigned";
+                    if (addForm.strategyMode === "new") {
+                      const name = addForm.newStrategyName.trim();
+                      const created = importService.addHedgingStrategy({
+                        name: name || `New Strategy ${new Date().toLocaleDateString()}`,
+                        source: "manual",
+                        currencyPair: addForm.currencyPair || undefined,
+                        portfolioId: addForm.portfolioId || undefined,
+                        counterparty: addForm.counterparty,
+                      });
+                      strategyId = created.id;
+                      strategyName = created.name;
+                    }
+
                     importService.addHedgingInstrument({
                       type: displayType,
                       currency: addForm.currencyPair,
@@ -3061,6 +3285,8 @@ const HedgingInstruments = () => {
                       exportForeignRate: Number(addForm.foreignRate) || undefined,
                       exportVolatility: Number(addForm.volatility) || undefined,
                       exportTimeToMaturity: ttm > 0 ? ttm : undefined,
+                      strategyId,
+                      strategyName,
                     });
                     // Close dialog and show toast immediately so UI doesn't freeze
                     setIsAddDialogOpen(false);
@@ -3085,16 +3311,64 @@ const HedgingInstruments = () => {
                       rebate: 100,
                       realPrice: "",
                       portfolioId: undefined,
+                      strategyMode: "existing",
+                      strategyId: "HSTRAT-UNASSIGNED",
+                      newStrategyName: "",
                     });
                     toast({ title: "Instrument added", description: `${displayType} ${addForm.currencyPair} has been added.` });
                     // Defer heavy work (table recalc + useFinancialData sync) to next tick to avoid "Page not responding"
                     requestAnimationFrame(() => {
                       setInstruments(importService.getHedgingInstruments());
+                      setStrategies(importService.getHedgingStrategies());
                       window.dispatchEvent(new CustomEvent("hedgingInstrumentsUpdated"));
                     });
                   }}
                   className="flex flex-col gap-4 py-4 overflow-y-auto min-h-0"
                 >
+                  <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                    <Label className="text-right font-medium whitespace-nowrap">Strategy</Label>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Select
+                          value={addForm.strategyMode}
+                          onValueChange={(v) => setAddForm((f) => ({ ...f, strategyMode: v as "existing" | "new" }))}
+                        >
+                          <SelectTrigger className="w-full sm:w-[180px]">
+                            <SelectValue placeholder="Mode" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="existing">Use existing</SelectItem>
+                            <SelectItem value="new">Create new</SelectItem>
+                          </SelectContent>
+                        </Select>
+
+                        {addForm.strategyMode === "existing" ? (
+                          <Select value={addForm.strategyId} onValueChange={(v) => setAddForm((f) => ({ ...f, strategyId: v }))}>
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="Select strategy" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {strategies.map((s) => (
+                                <SelectItem key={s.id} value={s.id}>
+                                  {s.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input
+                            value={addForm.newStrategyName}
+                            onChange={(e) => setAddForm((f) => ({ ...f, newStrategyName: e.target.value }))}
+                            placeholder="New strategy name"
+                          />
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        A strategy groups one or more instruments. New instruments must be associated to a strategy.
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
                     <Label htmlFor="instrument-type" className="text-right font-medium whitespace-nowrap">Type</Label>
                     <Select
@@ -3575,19 +3849,43 @@ const HedgingInstruments = () => {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Display by strategy</Label>
+              <Select value={selectedStrategyFilter} onValueChange={setSelectedStrategyFilter}>
+                <SelectTrigger className="w-[240px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All strategies</SelectItem>
+                  {strategies.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           {/* Tabs */}
-          <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-            <TabsList className="grid w-full grid-cols-5">
-              <TabsTrigger value="all">All</TabsTrigger>
-              <TabsTrigger value="forwards">Forwards</TabsTrigger>
-              <TabsTrigger value="options">Options</TabsTrigger>
-              <TabsTrigger value="swaps">Swaps</TabsTrigger>
-              <TabsTrigger value="hedge-accounting">Hedge Accounting</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value={selectedTab} className="mt-4">
-              {filteredInstruments.length === 0 ? (
+          <div className="flex items-center justify-between gap-2">
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "instrument" | "strategy")}>
+              <TabsList>
+                <TabsTrigger value="instrument">By instrument</TabsTrigger>
+                <TabsTrigger value="strategy">By strategy</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+
+          {viewMode === "instrument" ? (
+            <Tabs value={selectedTab} onValueChange={setSelectedTab}>
+              <TabsList className="grid w-full grid-cols-5">
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="forwards">Forwards</TabsTrigger>
+                <TabsTrigger value="options">Options</TabsTrigger>
+                <TabsTrigger value="swaps">Swaps</TabsTrigger>
+                <TabsTrigger value="hedge-accounting">Hedge Accounting</TabsTrigger>
+              </TabsList>
+              
+              <TabsContent value={selectedTab} className="mt-4">
+                {filteredInstruments.length === 0 ? (
                 <div className="text-center py-12">
                   <AlertCircle className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                   <h3 className="text-lg font-semibold mb-2">No Hedging Instruments</h3>
@@ -3607,15 +3905,319 @@ const HedgingInstruments = () => {
                     </Button>
                   </div>
                 </div>
-              ) : (
-                                 <div className="overflow-x-auto" style={{ maxWidth: 'calc(100vw - 280px)' }}>
+                ) : (
+                  <>
+                    {/* Mobile-only layout: cards for readability */}
+                    <div className="md:hidden space-y-2">
+                      {filteredInstruments.map((instrument) => {
+                        const quantityToHedge = instrument.quantity || 0;
+                        const unitPrice = instrument.realOptionPrice || instrument.premium || 0;
+                        const todayPrice = calculateTodayPrice(instrument);
+
+                        const isShort = quantityToHedge < 0;
+                        const mtmUnit = isShort ? unitPrice - todayPrice : todayPrice - unitPrice;
+                        const volumeToHedge = instrument.notional;
+                        const quantityFactor = Math.abs(quantityToHedge) / 100;
+                        const mtmTotal = mtmUnit * Math.abs(instrument.notional) * quantityFactor;
+
+                        let timeToMaturity = 0;
+                        if (instrument.maturity) {
+                          const valuationDateObj = new Date(valuationDate);
+                          const maturityDateObj = new Date(instrument.maturity);
+                          timeToMaturity =
+                            valuationDateObj >= maturityDateObj
+                              ? 0
+                              : PricingService.calculateTimeToMaturity(instrument.maturity, valuationDate);
+                        }
+
+                        const marketData =
+                          currencyMarketData[instrument.currency] ||
+                          getMarketDataFromInstruments(instrument.currency) ||
+                          MARKET_DEFAULTS;
+                        const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
+                        const volatility = instrument.impliedVolatility || instrument.volatility || 0;
+
+                        const spotDisplayValue =
+                          editingTableCells[instrument.id]?.spot ??
+                          (instrument.impliedSpotPrice != null
+                            ? String(instrument.impliedSpotPrice)
+                            : currentSpot.toFixed(6));
+                        const volDisplayValue =
+                          editingTableCells[instrument.id]?.vol ??
+                          (instrument.impliedVolatility != null ? String(instrument.impliedVolatility) : "");
+
+                        return (
+                          <div
+                            key={instrument.id}
+                            className="rounded-lg border bg-background p-3 shadow-sm active:scale-[0.99] transition-transform"
+                            onClick={() => navigate(`/hedging/${instrument.id}`)}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="font-mono font-semibold text-sm truncate">{instrument.id}</div>
+                                  <Badge
+                                    variant="outline"
+                                    className="font-mono text-[11px] px-2 py-0.5 bg-primary/10 dark:bg-primary/15 text-primary border-primary/40"
+                                  >
+                                    {instrument.currency}
+                                  </Badge>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span className="truncate">{instrument.type}</span>
+                                  <span>•</span>
+                                  <span className={timeToMaturity === 0 ? "text-red-600" : ""}>
+                                    {instrument.maturity || "—"}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0"
+                                  title="View Details"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/hedging/${instrument.id}`);
+                                  }}
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0"
+                                  title="Edit"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    editInstrument(instrument);
+                                  }}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0"
+                                  title="Delete"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    deleteInstrument(instrument.id);
+                                  }}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              {renderStatusCell(instrument)}
+                              <Badge variant="secondary" className="font-mono text-xs">
+                                Qty {quantityToHedge.toFixed(1)}%
+                              </Badge>
+                              <Badge variant="outline" className="font-mono text-xs">
+                                Notional {formatCurrency(volumeToHedge, instrument.currency)}
+                              </Badge>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                              <div className="rounded-md border bg-muted/20 p-2">
+                                <div className="text-muted-foreground">Today</div>
+                                <div className="font-mono font-semibold">{todayPrice !== 0 ? todayPrice.toFixed(4) : "N/A"}</div>
+                              </div>
+                              <div className="rounded-md border bg-muted/20 p-2">
+                                <div className="text-muted-foreground">MTM</div>
+                                <div className={`font-mono font-semibold ${mtmTotal >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300"}`}>
+                                  {Math.abs(mtmTotal) > 0.0001 ? (mtmTotal >= 0 ? "+" : "") + formatCurrency(mtmTotal, instrument.currency) : formatCurrency(0, instrument.currency)}
+                                </div>
+                              </div>
+                              <div className="rounded-md border bg-muted/20 p-2">
+                                <div className="text-muted-foreground">TTM</div>
+                                <div className={`font-mono font-semibold ${timeToMaturity === 0 ? "text-red-600 dark:text-red-300" : ""}`}>
+                                  {timeToMaturity.toFixed(4)}y
+                                </div>
+                              </div>
+                              <div className="rounded-md border bg-muted/20 p-2">
+                                <div className="text-muted-foreground">Unit</div>
+                                <div className={`font-mono font-semibold ${mtmUnit >= 0 ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300"}`}>
+                                  {Math.abs(mtmUnit) > 0.0001 ? (mtmUnit >= 0 ? "+" : "") + mtmUnit.toFixed(4) : "0.0000"}
+                                </div>
+                              </div>
+                            </div>
+
+                            <details className="mt-3">
+                              <summary className="text-xs text-muted-foreground cursor-pointer select-none">
+                                Market inputs (spot / vol)
+                              </summary>
+                              <div className="mt-2 grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <div className="text-[11px] text-muted-foreground">Spot</div>
+                                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                    <Input
+                                      type="number"
+                                      value={spotDisplayValue}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        setEditingTableCells((prev) => ({ ...prev, [instrument.id]: { ...prev[instrument.id], spot: raw } }));
+                                        const id = instrument.id;
+                                        if (debounceTimeoutsRef.current.spot[id]) clearTimeout(debounceTimeoutsRef.current.spot[id]);
+                                        debounceTimeoutsRef.current.spot[id] = setTimeout(() => {
+                                          const value = parseFloat(raw);
+                                          if (!isNaN(value) && value > 0) {
+                                            updateInstrumentSpotPrice(id, value);
+                                            setEditingTableCells((prev) => {
+                                              const next = { ...prev };
+                                              if (next[id]) {
+                                                delete next[id].spot;
+                                                if (Object.keys(next[id] || {}).length === 0) delete next[id];
+                                              }
+                                              return next;
+                                            });
+                                          }
+                                          delete debounceTimeoutsRef.current.spot[id];
+                                        }, DEBOUNCE_MS);
+                                      }}
+                                      onBlur={() => {
+                                        const id = instrument.id;
+                                        if (debounceTimeoutsRef.current.spot[id]) {
+                                          clearTimeout(debounceTimeoutsRef.current.spot[id]);
+                                          delete debounceTimeoutsRef.current.spot[id];
+                                        }
+                                        const raw = editingTableCells[id]?.spot;
+                                        if (raw !== undefined && raw !== "") {
+                                          const value = parseFloat(raw);
+                                          if (!isNaN(value) && value > 0) updateInstrumentSpotPrice(id, value);
+                                        }
+                                        setEditingTableCells((prev) => {
+                                          const next = { ...prev };
+                                          if (next[id]) {
+                                            delete next[id].spot;
+                                            if (Object.keys(next[id] || {}).length === 0) delete next[id];
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                      placeholder={currentSpot.toFixed(6)}
+                                      className="h-8 text-xs font-mono"
+                                      step="0.0001"
+                                      min="0"
+                                    />
+                                    {instrument.impliedSpotPrice && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 w-8 p-0 text-gray-400 hover:text-red-500"
+                                        onClick={() => resetInstrumentSpotPrice(instrument.id)}
+                                        title="Reset to global spot price"
+                                      >
+                                        ×
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  <div className="text-[11px] text-muted-foreground">Vol (%)</div>
+                                  <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                    <Input
+                                      type="number"
+                                      value={volDisplayValue}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        setEditingTableCells((prev) => ({ ...prev, [instrument.id]: { ...prev[instrument.id], vol: raw } }));
+                                        const id = instrument.id;
+                                        if (debounceTimeoutsRef.current.vol[id]) clearTimeout(debounceTimeoutsRef.current.vol[id]);
+                                        debounceTimeoutsRef.current.vol[id] = setTimeout(() => {
+                                          const value = parseFloat(raw);
+                                          if (!isNaN(value) && value >= 0 && value <= 100) {
+                                            updateInstrumentVolatility(id, value);
+                                            setEditingTableCells((prev) => {
+                                              const next = { ...prev };
+                                              if (next[id]) {
+                                                delete next[id].vol;
+                                                if (Object.keys(next[id] || {}).length === 0) delete next[id];
+                                              }
+                                              return next;
+                                            });
+                                          }
+                                          delete debounceTimeoutsRef.current.vol[id];
+                                        }, DEBOUNCE_MS);
+                                      }}
+                                      onBlur={() => {
+                                        const id = instrument.id;
+                                        if (debounceTimeoutsRef.current.vol[id]) {
+                                          clearTimeout(debounceTimeoutsRef.current.vol[id]);
+                                          delete debounceTimeoutsRef.current.vol[id];
+                                        }
+                                        const raw = editingTableCells[id]?.vol;
+                                        if (raw !== undefined && raw !== "") {
+                                          const value = parseFloat(raw);
+                                          if (!isNaN(value) && value >= 0 && value <= 100) updateInstrumentVolatility(id, value);
+                                        }
+                                        setEditingTableCells((prev) => {
+                                          const next = { ...prev };
+                                          if (next[id]) {
+                                            delete next[id].vol;
+                                            if (Object.keys(next[id] || {}).length === 0) delete next[id];
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                      placeholder={Number(volatility || 0).toFixed(1)}
+                                      className="h-8 text-xs font-mono"
+                                      step="0.1"
+                                      min="0"
+                                      max="100"
+                                    />
+                                    {instrument.impliedVolatility != null && (
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 w-8 p-0 text-gray-400 hover:text-red-500"
+                                        onClick={() => resetInstrumentVolatility(instrument.id)}
+                                        title="Reset to global volatility"
+                                      >
+                                        ×
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </details>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Desktop/tablet layout (unchanged) */}
+                    <div className="hidden md:block overflow-x-auto" style={{ maxWidth: 'calc(100vw - 280px)' }}>
                    <Table className="min-w-full border-collapse bg-background shadow-sm rounded-lg overflow-hidden [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                      <TableHeader className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
                        <TableRow className="border-b-2 border-slate-200 dark:border-slate-700">
                          {/* Fixed columns */}
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[60px] sticky left-0 z-[5]">ID</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Type</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Currency Pair</TableHead>
+                        <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[140px]">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Type</span>
+                            <ExcelColumnFilter
+                              title="Type"
+                              options={columnFilterOptions.type}
+                              selected={columnFilters.type}
+                              onChange={(next) => setColumnFilters((p) => ({ ...p, type: next }))}
+                            />
+                          </div>
+                        </TableHead>
+                        <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[160px]">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Currency Pair</span>
+                            <ExcelColumnFilter
+                              title="Currency Pair"
+                              options={columnFilterOptions.pair}
+                              selected={columnFilters.pair}
+                              onChange={(next) => setColumnFilters((p) => ({ ...p, pair: next }))}
+                            />
+                          </div>
+                        </TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Quantity (%)</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Unit Price (Initial)</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Today Price</TableHead>
@@ -3638,7 +4240,17 @@ const HedgingInstruments = () => {
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Notional</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Total premium</TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[100px]">Maturity</TableHead>
-                         <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[80px]">Status</TableHead>
+                        <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center border-r border-slate-200 dark:border-slate-700 min-w-[140px]">
+                          <div className="flex items-center justify-center gap-1">
+                            <span>Status</span>
+                            <ExcelColumnFilter
+                              title="Status"
+                              options={columnFilterOptions.status}
+                              selected={columnFilters.status}
+                              onChange={(next) => setColumnFilters((p) => ({ ...p, status: next }))}
+                            />
+                          </div>
+                        </TableHead>
                          <TableHead rowSpan={2} className="bg-slate-50 dark:bg-slate-900 font-semibold text-center min-w-[120px]">Actions</TableHead>
                     </TableRow>
                        <TableRow className="border-b border-slate-200 dark:border-slate-700">
@@ -4096,7 +4708,7 @@ const HedgingInstruments = () => {
                             {calculatedNotional > 0 ? formatCurrency(calculatedNotional, instrument.currency) : formatCurrency(instrument.notional * quantityFactor, instrument.currency)}
                           </TableCell>
                           <TableCell>{instrument.maturity}</TableCell>
-                        <TableCell>{getStatusBadge(calculateInstrumentStatus(instrument))}</TableCell>
+                        <TableCell>{renderStatusCell(instrument)}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <Button 
@@ -4140,9 +4752,103 @@ const HedgingInstruments = () => {
                   </TableBody>
                 </Table>
                 </div>
-              )}
-            </TabsContent>
-          </Tabs>
+                  </>
+                )}
+              </TabsContent>
+            </Tabs>
+          ) : (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-base">Strategies</CardTitle>
+                <CardDescription>Group instruments by hedging strategy.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {(() => {
+                  const byStrategy = new Map<string, HedgingInstrument[]>();
+                  // Apply the same filters as the instrument view (search, portfolio, counterparty, strategy, column filters).
+                  for (const inst of filteredInstruments) {
+                    const sid = inst.strategyId || "HSTRAT-UNASSIGNED";
+                    const arr = byStrategy.get(sid) ?? [];
+                    arr.push(inst);
+                    byStrategy.set(sid, arr);
+                  }
+                  const list = strategies
+                    .filter((s) => byStrategy.has(s.id))
+                    .sort((a, b) => a.name.localeCompare(b.name));
+
+                  if (list.length === 0) {
+                    return <div className="text-sm text-muted-foreground">No strategies yet.</div>;
+                  }
+
+                  return list.map((s) => {
+                    const items = byStrategy.get(s.id) ?? [];
+                    const totalNotional = items.reduce((acc, x) => acc + Math.abs(Number(x.notional || 0)), 0);
+                    const totalMtm = items.reduce((acc, x) => acc + Number(x.mtm || 0), 0);
+                    const maturities = items.map((x) => x.maturity).filter(Boolean).sort();
+                    const minMat = maturities[0] ?? "—";
+                    const maxMat = maturities[maturities.length - 1] ?? "—";
+
+                    return (
+                      <div key={s.id} className="rounded-lg border p-3">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="space-y-0.5">
+                            <button
+                              className="text-left text-sm font-semibold hover:underline"
+                              onClick={() => navigate(`/hedging-strategy/${s.id}`)}
+                              title="Open strategy details"
+                            >
+                              {s.name}
+                            </button>
+                            <div className="text-xs text-muted-foreground">
+                              {items.length} instrument(s) • Maturity {minMat} → {maxMat}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <Badge variant="outline">Notional {totalNotional.toLocaleString()}</Badge>
+                            <Badge variant="secondary">MTM {Number.isFinite(totalMtm) ? totalMtm.toFixed(2) : "0.00"}</Badge>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 overflow-x-auto">
+                          <Table className="[&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>ID</TableHead>
+                                <TableHead>Type</TableHead>
+                                <TableHead>Pair</TableHead>
+                                <TableHead>Maturity</TableHead>
+                                <TableHead>Notional</TableHead>
+                                <TableHead>Counterparty</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {items
+                                .slice()
+                                .sort((a, b) => String(a.maturity).localeCompare(String(b.maturity)))
+                                .map((inst) => (
+                                  <TableRow
+                                    key={inst.id}
+                                    className="cursor-pointer"
+                                    onClick={() => navigate(`/hedging/${inst.id}`)}
+                                  >
+                                    <TableCell className="font-mono">{inst.id}</TableCell>
+                                    <TableCell>{inst.type}</TableCell>
+                                    <TableCell className="font-mono">{inst.currency}</TableCell>
+                                    <TableCell className="font-mono">{inst.maturity}</TableCell>
+                                    <TableCell className="font-mono">{Number(inst.notional || 0).toLocaleString()}</TableCell>
+                                    <TableCell>{inst.counterparty || "—"}</TableCell>
+                                  </TableRow>
+                                ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </CardContent>
+            </Card>
+          )}
         </CardContent>
       </Card>
 
@@ -4410,6 +5116,4 @@ const InstrumentEditForm: React.FC<{
       </DialogFooter>
     </div>
   );
-};
-
-export default HedgingInstruments; 
+}
