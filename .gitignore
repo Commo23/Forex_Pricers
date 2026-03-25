@@ -17,6 +17,8 @@ dist-ssr
 .env.local
 .env.production
 .env.development
+.env.*.local
+!.env.example
 
 # Editor directories and files
 .vscode/*
@@ -32,6 +34,41 @@ dist-ssr
 .cursor
 .cursorrules
 .cursorignore
+
+# Build outputs / caches (critical)
+build
+coverage
+.nyc_output
+
+# Vite / bundler caches
+.vite
+.parcel-cache
+.cache
+
+# Framework outputs
+.next
+.nuxt
+.svelte-kit
+.vercel
+
+# Task runner caches
+.turbo
+
+# Temporary files
+tmp
+temp
+*.tmp
+*.temp
+
+# Secrets / keys (never commit)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
 
 # Markdown files
 *.md
