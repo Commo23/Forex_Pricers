@@ -18,7 +18,9 @@ export interface MarketData {
 
 export interface ExposureData {
   id: string;
+  date?: Date;
   currency: string;
+  hedgeCurrency?: string;
   amount: number;
   type: 'receivable' | 'payable';
   maturity: Date;
@@ -137,11 +139,73 @@ class FinancialDataService {
   }
 
   /**
-   * Calculate real-time risk metrics based on current exposures and instruments
+   * Get the reference (base) currency from user settings
+   */
+  private getReferenceCurrency(): string {
+    try {
+      const saved = localStorage.getItem('fxRiskManagerSettings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return parsed?.company?.currency || 'USD';
+      }
+    } catch {
+      // ignore
+    }
+    return 'USD';
+  }
+
+  /**
+   * Convert an amount from a given currency to the reference currency.
+   * Uses spot rates stored in marketData. Falls back to 1:1 if no rate found.
+   */
+  convertToReferenceCurrency(amount: number, fromCurrency: string): number {
+    const refCcy = this.getReferenceCurrency();
+    if (fromCurrency === refCcy) return amount;
+
+    // Try direct pair: fromCurrency + refCcy  (e.g. EURUSD when ref=USD, from=EUR)
+    const directPair = `${fromCurrency}${refCcy}`;
+    if (this.marketData.spotRates[directPair]) {
+      return amount * this.marketData.spotRates[directPair];
+    }
+
+    // Try inverse pair: refCcy + fromCurrency  (e.g. USDEUR → invert)
+    const inversePair = `${refCcy}${fromCurrency}`;
+    if (this.marketData.spotRates[inversePair]) {
+      return amount / this.marketData.spotRates[inversePair];
+    }
+
+    // Try cross via USD as intermediate
+    if (refCcy !== 'USD' && fromCurrency !== 'USD') {
+      const fromUSD = `${fromCurrency}USD`;
+      const refUSD  = `${refCcy}USD`;
+      const invFromUSD = `USD${fromCurrency}`;
+      const invRefUSD  = `USD${refCcy}`;
+
+      let amountInUSD: number | null = null;
+      if (this.marketData.spotRates[fromUSD])    amountInUSD = amount * this.marketData.spotRates[fromUSD];
+      else if (this.marketData.spotRates[invFromUSD]) amountInUSD = amount / this.marketData.spotRates[invFromUSD];
+
+      if (amountInUSD !== null) {
+        if (this.marketData.spotRates[refUSD])    return amountInUSD / this.marketData.spotRates[refUSD];
+        if (this.marketData.spotRates[invRefUSD]) return amountInUSD * this.marketData.spotRates[invRefUSD];
+      }
+    }
+
+    // No rate found – return as-is (1:1 fallback)
+    return amount;
+  }
+
+  /**
+   * Calculate real-time risk metrics based on current exposures and instruments.
+   * All monetary values are converted to the reference currency before summing.
    */
   calculateRiskMetrics(): RiskMetrics {
-    const totalExposure = this.exposures.reduce((sum, exp) => sum + Math.abs(exp.amount), 0);
-    const hedgedAmount = this.exposures.reduce((sum, exp) => sum + Math.abs(exp.hedgedAmount), 0);
+    const totalExposure = this.exposures.reduce((sum, exp) =>
+      sum + Math.abs(this.convertToReferenceCurrency(exp.amount, exp.currency)), 0);
+
+    const hedgedAmount = this.exposures.reduce((sum, exp) =>
+      sum + Math.abs(this.convertToReferenceCurrency(exp.hedgedAmount, exp.currency)), 0);
+
     const unhedgedRisk = totalExposure - hedgedAmount;
     const hedgeRatio = totalExposure > 0 ? (hedgedAmount / totalExposure) * 100 : 0;
     
@@ -153,8 +217,11 @@ class FinancialDataService {
     const expectedShortfall95 = this.calculateExpectedShortfall(var95, 0.95);
     const expectedShortfall99 = this.calculateExpectedShortfall(var99, 0.99);
     
-    // Calculate MTM impact from instruments
-    const mtmImpact = this.instruments.reduce((sum, inst) => sum + inst.mtm, 0);
+    // MTM impact: convert each instrument's MTM to reference currency
+    const mtmImpact = this.instruments.reduce((sum, inst) => {
+      const instCcy = inst.currencyPair ? inst.currencyPair.substring(0, 3) : this.getReferenceCurrency();
+      return sum + this.convertToReferenceCurrency(inst.mtm, instCcy);
+    }, 0);
 
     return {
       var95,
@@ -258,7 +325,8 @@ class FinancialDataService {
   }
 
   /**
-   * Get currency exposures grouped by currency
+   * Get currency exposures grouped by currency.
+   * All monetary values are expressed in the reference currency.
    */
   getCurrencyExposures(): CurrencyExposure[] {
     const currencyMap = new Map<string, {
@@ -269,7 +337,7 @@ class FinancialDataService {
       payables: number;
     }>();
 
-    // Aggregate exposures by currency
+    // Aggregate exposures by currency, converting to reference currency
     this.exposures.forEach(exp => {
       const existing = currencyMap.get(exp.currency) || {
         grossExposure: 0,
@@ -279,15 +347,18 @@ class FinancialDataService {
         payables: 0
       };
 
-      existing.grossExposure += Math.abs(exp.amount);
-      existing.hedgedAmount += Math.abs(exp.hedgedAmount);
+      const absAmountRef    = Math.abs(this.convertToReferenceCurrency(exp.amount, exp.currency));
+      const hedgedAmountRef = Math.abs(this.convertToReferenceCurrency(exp.hedgedAmount, exp.currency));
+
+      existing.grossExposure += absAmountRef;
+      existing.hedgedAmount  += hedgedAmountRef;
       
       if (exp.type === 'receivable') {
-        existing.receivables += exp.amount;
-        existing.netExposure += exp.amount;
+        existing.receivables += absAmountRef;
+        existing.netExposure += absAmountRef;
       } else {
-        existing.payables += Math.abs(exp.amount);
-        existing.netExposure -= Math.abs(exp.amount);
+        existing.payables    += absAmountRef;
+        existing.netExposure -= absAmountRef;
       }
 
       currencyMap.set(exp.currency, existing);
@@ -984,6 +1055,12 @@ class FinancialDataService {
     this.exposures = data.map((exp) => ({
       ...exp,
       id: (exp as ExposureData).id ?? `EXP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date:
+        (exp as ExposureData).date instanceof Date
+          ? (exp as ExposureData).date
+          : (exp as any).date
+            ? new Date((exp as any).date as string)
+            : undefined,
       maturity: exp.maturity instanceof Date ? exp.maturity : new Date(exp.maturity as string)
     })) as ExposureData[];
   }

@@ -355,10 +355,11 @@ export default function HedgingStrategyDetails() {
         </Card>
 
         <Tabs defaultValue="payoff">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="payoff">Payoff</TabsTrigger>
             <TabsTrigger value="legs">Legs & Pricing</TabsTrigger>
             <TabsTrigger value="instruments">Instruments</TabsTrigger>
+            <TabsTrigger value="greeks">Greeks</TabsTrigger>
           </TabsList>
 
           <TabsContent value="payoff" className="mt-4 space-y-4">
@@ -452,6 +453,90 @@ export default function HedgingStrategyDetails() {
                       ))}
                     </TableBody>
                   </Table>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="greeks" className="mt-4 space-y-4">
+            {!valuation ? null : (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2"><Sigma className="h-4 w-4" />Strategy Greeks</CardTitle>
+                  <CardDescription>Unit greeks by leg and aggregated global greeks at valuation date.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {(() => {
+                    // Aggregate global greeks with sign (buy/sell) and notional weight
+                    const agg = valuation.legs.reduce(
+                      (acc, l) => {
+                        const notionalAbs = Math.abs(Number((l.inst as any).notional || 0));
+                        const qtySign = Number((l.inst as any).quantity || 0) >= 0 ? 1 : -1;
+                        const w = notionalAbs * qtySign;
+                        acc.delta += (Number.isFinite(l.greeks.delta) ? l.greeks.delta : 0) * w;
+                        acc.gamma += (Number.isFinite(l.greeks.gamma) ? l.greeks.gamma : 0) * w;
+                        acc.vega += (Number.isFinite(l.greeks.vega) ? l.greeks.vega : 0) * w;
+                        acc.theta += (Number.isFinite(l.greeks.theta) ? l.greeks.theta : 0) * w;
+                        acc.rho += (Number.isFinite(l.greeks.rho) ? l.greeks.rho : 0) * w;
+                        return acc;
+                      },
+                      { delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0 }
+                    );
+                    return (
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                        <div className="rounded-md border p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Delta</div>
+                          <div className="mt-1 font-mono text-sm">{agg.delta.toFixed(4)}</div>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Gamma</div>
+                          <div className="mt-1 font-mono text-sm">{agg.gamma.toFixed(6)}</div>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Vega</div>
+                          <div className="mt-1 font-mono text-sm">{agg.vega.toFixed(4)}</div>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Theta</div>
+                          <div className="mt-1 font-mono text-sm">{agg.theta.toFixed(4)}</div>
+                        </div>
+                        <div className="rounded-md border p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Rho</div>
+                          <div className="mt-1 font-mono text-sm">{agg.rho.toFixed(4)}</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  <div className="overflow-x-auto">
+                    <Table className="[&_th]:whitespace-nowrap [&_td]:whitespace-nowrap mt-2">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Leg</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Notional</TableHead>
+                          <TableHead>Delta</TableHead>
+                          <TableHead>Gamma</TableHead>
+                          <TableHead>Vega</TableHead>
+                          <TableHead>Theta</TableHead>
+                          <TableHead>Rho</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {valuation.legs.map((l, idx) => (
+                          <TableRow key={l.inst.id}>
+                            <TableCell className="font-mono">{l.inst.optionIndex ?? idx}</TableCell>
+                            <TableCell>{l.inst.type}</TableCell>
+                            <TableCell className="font-mono">{Number((l.inst as any).notional || 0).toLocaleString()}</TableCell>
+                            <TableCell className="font-mono">{Number(l.greeks.delta).toFixed(6)}</TableCell>
+                            <TableCell className="font-mono">{Number(l.greeks.gamma).toFixed(6)}</TableCell>
+                            <TableCell className="font-mono">{Number(l.greeks.vega).toFixed(6)}</TableCell>
+                            <TableCell className="font-mono">{Number(l.greeks.theta).toFixed(6)}</TableCell>
+                            <TableCell className="font-mono">{Number(l.greeks.rho).toFixed(6)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </CardContent>
               </Card>
             )}

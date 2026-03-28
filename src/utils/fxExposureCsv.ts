@@ -1,16 +1,16 @@
 /**
  * FX Exposures bulk CSV import — template & parsing.
  * Required columns: currency, type, amount, description, maturity
- * Optional: subsidiary, hedge_ratio (0–100, default 0)
+ * Optional: subsidiary, hedge_currency, hedge_ratio (0–100, default 0)
  */
 
 export const FX_EXPOSURE_CSV_TEMPLATE_HEADER =
-  "currency,type,amount,description,subsidiary,maturity,hedge_ratio";
+  "currency,type,amount,description,subsidiary,maturity,hedge_currency,hedge_ratio";
 
 export const FX_EXPOSURE_CSV_TEMPLATE_SAMPLE = `${FX_EXPOSURE_CSV_TEMPLATE_HEADER}
-EUR,receivable,1000000,Q1 export receivable,Paris Office,2026-12-31,0
-USD,payable,500000,Vendor payable USD,New York,2026-06-30,25
-GBP,receivable,250000,UK subsidiary revenue,London,2026-09-15,50`;
+EUR,receivable,1000000,Q1 export receivable,Paris Office,2026-12-31,USD,0
+USD,payable,500000,Vendor payable USD,New York,2026-06-30,EUR,25
+GBP,receivable,250000,UK subsidiary revenue,London,2026-09-15,EUR,50`;
 
 /** Parse CSV text into rows; handles double-quoted fields with commas */
 export function parseCsvText(text: string): string[][] {
@@ -77,6 +77,7 @@ export type ParsedExposureRow = {
   amount: number;
   description: string;
   subsidiary: string;
+  hedgeCurrency: string;
   maturity: Date;
   hedgeRatio: number;
   hedgedAmount: number;
@@ -88,7 +89,10 @@ export type ParseExposureRowResult =
 
 const REQUIRED = ["currency", "type", "amount", "description", "maturity"] as const;
 
-export function parseExposureRows(rows: string[][]): {
+export function parseExposureRows(
+  rows: string[][],
+  options?: { defaultHedgeCurrency?: string }
+): {
   headerErrors: string[];
   results: ParseExposureRowResult[];
 } {
@@ -159,6 +163,13 @@ export function parseExposureRows(rows: string[][]): {
       continue;
     }
 
+    const configuredDefaultHedgeCurrency = (options?.defaultHedgeCurrency || "USD").toUpperCase();
+    const hedgeCurrencyRaw = (get("hedge_currency") || get("hedgecurrency") || configuredDefaultHedgeCurrency).toUpperCase();
+    if (!/^[A-Z]{3}$/.test(hedgeCurrencyRaw)) {
+      results.push({ ok: false, row: rowNum, error: `Invalid hedge_currency "${get("hedge_currency")}" (use 3-letter ISO, e.g. USD)` });
+      continue;
+    }
+
     let hedgeRatio = 0;
     const hrCell = get("hedge_ratio") || get("hedgeratio");
     const hrRaw = hrCell.replace("%", "").replace(",", ".").trim();
@@ -183,6 +194,7 @@ export function parseExposureRows(rows: string[][]): {
         amount: signedAmount,
         description,
         subsidiary,
+        hedgeCurrency: hedgeCurrencyRaw,
         maturity,
         hedgeRatio,
         hedgedAmount,

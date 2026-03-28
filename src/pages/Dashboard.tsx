@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const { theme } = useTheme();
   const { 
     riskMetrics, 
@@ -36,6 +38,30 @@ const Dashboard = () => {
     updateMarketData,
     generateStressScenarios
   } = useFinancialData();
+
+  // Reference currency from settings
+  const [refCurrency, setRefCurrency] = useState<string>(() => {
+    try {
+      const s = localStorage.getItem('fxRiskManagerSettings');
+      if (s) return JSON.parse(s)?.company?.currency || 'USD';
+    } catch { /* ignore */ }
+    return 'USD';
+  });
+
+  useEffect(() => {
+    const update = () => {
+      try {
+        const s = localStorage.getItem('fxRiskManagerSettings');
+        if (s) setRefCurrency(JSON.parse(s)?.company?.currency || 'USD');
+      } catch { /* ignore */ }
+    };
+    window.addEventListener('baseCurrencyChanged', update);
+    window.addEventListener('storage', update);
+    return () => {
+      window.removeEventListener('baseCurrencyChanged', update);
+      window.removeEventListener('storage', update);
+    };
+  }, []);
 
   // State for market overview data - Only real data from API
   const [marketOverviewData, setMarketOverviewData] = useState<{
@@ -228,9 +254,10 @@ const Dashboard = () => {
 
     // Check VaR alerts
     if (riskMetrics.var95 > 500000) {
+      const varSym = refCurrency === "EUR" ? "€" : refCurrency === "GBP" ? "£" : refCurrency === "JPY" ? "¥" : "$";
       alerts.push({
         type: "high",
-        message: `VaR exceeds $${(riskMetrics.var95 / 1000).toFixed(0)}K threshold`,
+        message: `VaR exceeds ${varSym}${(riskMetrics.var95 / 1000).toFixed(0)}K threshold`,
         time: "Real-time"
       });
     }
@@ -244,7 +271,24 @@ const Dashboard = () => {
     if (currency === "JPY") {
       return `¥${(amount / 1000000).toFixed(1)}M`;
     }
-    return `${currency === "USD" ? "$" : currency === "EUR" ? "€" : "£"}${(amount / 1000000).toFixed(1)}M`;
+    const sym = currency === "USD" ? "$" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : `${currency} `;
+    return `${sym}${(amount / 1000000).toFixed(1)}M`;
+  };
+
+  /**
+   * Format an amount in the reference currency.
+   * useK: if true, show in K instead of M (for MTM which can be small).
+   */
+  const formatRefAmount = (amount: number, ccy: string, useK = false) => {
+    const absAmt = Math.abs(amount);
+    const sym = ccy === "USD" ? "$" : ccy === "EUR" ? "€" : ccy === "GBP" ? "£" : ccy === "JPY" ? "¥" : `${ccy} `;
+    if (useK) {
+      return `${sym}${(absAmt / 1000).toFixed(0)}K`;
+    }
+    if (absAmt >= 1_000_000) {
+      return `${sym}${(absAmt / 1_000_000).toFixed(1)}M`;
+    }
+    return `${sym}${(absAmt / 1000).toFixed(0)}K`;
   };
 
   const getTrendIcon = (trend: string) => {
@@ -310,7 +354,9 @@ const Dashboard = () => {
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${(riskMetrics.totalExposure / 1000000).toFixed(1)}M</div>
+            <div className="text-2xl font-bold">
+              {formatRefAmount(riskMetrics.totalExposure, refCurrency)}
+            </div>
             <p className="text-xs text-muted-foreground">
               <span className="text-green-600 flex items-center gap-1">
                 <ArrowUpRight className="h-3 w-3" />
@@ -326,7 +372,9 @@ const Dashboard = () => {
             <Shield className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${(riskMetrics.hedgedAmount / 1000000).toFixed(1)}M</div>
+            <div className="text-2xl font-bold">
+              {formatRefAmount(riskMetrics.hedgedAmount, refCurrency)}
+            </div>
             <p className="text-xs text-muted-foreground">
               <span className={`flex items-center gap-1 ${riskMetrics.hedgeRatio > 70 ? 'text-green-600' : 'text-yellow-600'}`}>
                 {riskMetrics.hedgeRatio > 70 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
@@ -342,7 +390,9 @@ const Dashboard = () => {
             <AlertTriangle className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${(riskMetrics.unhedgedRisk / 1000000).toFixed(1)}M</div>
+            <div className="text-2xl font-bold">
+              {formatRefAmount(riskMetrics.unhedgedRisk, refCurrency)}
+            </div>
             <p className="text-xs text-muted-foreground">
               <span className={`flex items-center gap-1 ${riskMetrics.unhedgedRisk > 2000000 ? 'text-red-600' : 'text-yellow-600'}`}>
                 <AlertTriangle className="h-3 w-3" />
@@ -359,7 +409,7 @@ const Dashboard = () => {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${riskMetrics.mtmImpact >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {riskMetrics.mtmImpact >= 0 ? '+' : ''}${(riskMetrics.mtmImpact / 1000).toFixed(0)}K
+              {riskMetrics.mtmImpact >= 0 ? '+' : ''}{formatRefAmount(riskMetrics.mtmImpact, refCurrency, true)}
             </div>
             <p className="text-xs text-muted-foreground">
               <span className={`flex items-center gap-1 ${riskMetrics.mtmImpact >= 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -395,12 +445,12 @@ const Dashboard = () => {
                       {getTrendIcon(item.trend)}
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      {formatCurrency(item.grossExposure, item.currency)} exposure
+                      {formatRefAmount(item.grossExposure, refCurrency)} exposure
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-sm font-medium">
-                      {formatCurrency(item.hedgedAmount, item.currency)} hedged
+                      {formatRefAmount(item.hedgedAmount, refCurrency)} hedged
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {item.hedgeRatio.toFixed(1)}% ratio
@@ -437,7 +487,7 @@ const Dashboard = () => {
                 </div>
               </div>
             ))}
-            <Button variant="outline" className="w-full" size="sm">
+            <Button variant="outline" className="w-full" size="sm" onClick={() => navigate('/risk-analysis')}>
               View All Alerts
             </Button>
           </CardContent>
@@ -446,7 +496,10 @@ const Dashboard = () => {
 
       {/* Quick Actions */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <Card className="hover:shadow-md transition-shadow cursor-pointer">
+        <Card
+          className="hover:shadow-md transition-shadow cursor-pointer"
+          onClick={() => navigate('/strategy-builder')}
+        >
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Target className="h-5 w-5 text-primary" />
@@ -457,13 +510,16 @@ const Dashboard = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button className="w-full">
+            <Button className="w-full" onClick={(e) => { e.stopPropagation(); navigate('/strategy-builder'); }}>
               Create New Strategy
             </Button>
           </CardContent>
         </Card>
 
-        <Card className="hover:shadow-md transition-shadow cursor-pointer">
+        <Card
+          className="hover:shadow-md transition-shadow cursor-pointer"
+          onClick={() => navigate('/risk-analysis')}
+        >
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <BarChart3 className="h-5 w-5 text-primary" />
@@ -474,13 +530,16 @@ const Dashboard = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" className="w-full">
+            <Button variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); navigate('/risk-analysis'); }}>
               Run Analysis
             </Button>
           </CardContent>
         </Card>
 
-        <Card className="hover:shadow-md transition-shadow cursor-pointer">
+        <Card
+          className="hover:shadow-md transition-shadow cursor-pointer"
+          onClick={() => navigate('/positions')}
+        >
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Activity className="h-5 w-5 text-primary" />
@@ -491,7 +550,7 @@ const Dashboard = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" className="w-full">
+            <Button variant="outline" className="w-full" onClick={(e) => { e.stopPropagation(); navigate('/positions'); }}>
               View Positions
             </Button>
           </CardContent>

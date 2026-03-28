@@ -17,6 +17,11 @@ const formatMoney = (v: number | undefined) =>
     ? "N/A"
     : new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
 
+const signClass = (v: number | undefined) =>
+  v === undefined || !isFinite(v) || v === 0 ? "text-foreground" : v > 0 ? "text-emerald-600" : "text-red-600";
+
+const mono = (v: React.ReactNode) => <span className="font-mono">{v}</span>;
+
 const DataField = ({
   label,
   value,
@@ -173,8 +178,13 @@ const HedgingInstrumentDetails = () => {
     }
 
     const mtmUnit = currentPrice - exportPrice;
-    const quantityPct = Math.abs(Number(instrument.quantity ?? 100)) / 100;
-    const mtmTotal = mtmUnit * Math.abs(Number(instrument.notional || 0)) * quantityPct;
+    const quantityRaw = Number(instrument.quantity ?? 100);
+    const quantityPct = Math.abs(quantityRaw) / 100;
+    const qtySign = quantityRaw >= 0 ? 1 : -1; // buy (long) = positive sign
+    const notionalVal = Number(instrument.notional || 0);
+    const notionalAbs = Math.abs(notionalVal);
+    const notionalSign = notionalVal >= 0 ? 1 : -1;
+    const mtmTotal = mtmUnit * notionalAbs * quantityPct;
 
     const greeksType =
       mapBarrierPricingType(instrument.type) ||
@@ -183,7 +193,39 @@ const HedgingInstrumentDetails = () => {
       ? PricingService.calculateGreeks(greeksType, spot, K, r_d, r_f, t, sigma, instrument.barrier, instrument.secondBarrier, rebate)
       : { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 };
 
-    return { spot, r_d, r_f, sigma, t, daysRemaining, K, exportPrice, currentPrice, mtmUnit, mtmTotal, greeks };
+    // Total premiums (signed: long = outflow)
+    // Cashflow sign: long (qtySign=+1) pays premium (negative); short receives (positive).
+    // If notional itself is signed, incorporate it as well.
+    const cashflowSign = -(qtySign * notionalSign);
+    const exportPremiumQuote = cashflowSign * exportPrice * notionalAbs * quantityPct;
+    const currentPremiumQuote = cashflowSign * currentPrice * notionalAbs * quantityPct;
+    const exportPremiumBase = spot > 0 ? exportPremiumQuote / spot : exportPremiumQuote;
+    const currentPremiumBase = spot > 0 ? currentPremiumQuote / spot : currentPremiumQuote;
+
+    // Greeks signed by position (long/short and notional sign)
+    const directionSign = qtySign * notionalSign;
+    const unitGreeksSigned = {
+      delta: (greeks.delta ?? 0) * directionSign,
+      gamma: (greeks.gamma ?? 0) * directionSign,
+      theta: (greeks.theta ?? 0) * directionSign,
+      vega: (greeks.vega ?? 0) * directionSign,
+      rho: (greeks.rho ?? 0) * directionSign,
+    };
+    const exposureScale = notionalAbs * quantityPct;
+    const positionGreeks = {
+      delta: unitGreeksSigned.delta * exposureScale,
+      gamma: unitGreeksSigned.gamma * exposureScale,
+      theta: unitGreeksSigned.theta * exposureScale,
+      vega: unitGreeksSigned.vega * exposureScale,
+      rho: unitGreeksSigned.rho * exposureScale,
+    };
+
+    return {
+      spot, r_d, r_f, sigma, t, daysRemaining, K,
+      exportPrice, currentPrice, mtmUnit, mtmTotal,
+      greeks, unitGreeksSigned, positionGreeks,
+      exportPremiumQuote, currentPremiumQuote, exportPremiumBase, currentPremiumBase
+    };
   }, [instrument, valuationDate]);
 
   const chartCurrencyPair = useMemo(() => {
@@ -195,6 +237,9 @@ const HedgingInstrumentDetails = () => {
     }
     return { base: "BASE", quote: "QUOTE", symbol: instrument.currency };
   }, [instrument?.currency]);
+
+  const baseCcy = chartCurrencyPair.base;
+  const quoteCcy = chartCurrencyPair.quote;
 
   const payoffContext = useMemo(() => {
     if (!instrument || !valuation) return null;
@@ -374,15 +419,87 @@ const HedgingInstrumentDetails = () => {
         </Card>
 
         <div className="grid gap-4 lg:grid-cols-4">
+          {/* Pricing Results - inspired by Pricers layout */}
           <Card className="lg:col-span-2">
             <CardHeader className="pb-3">
-              <CardTitle className="text-lg flex items-center gap-2"><Activity className="h-4 w-4" />Pricing snapshot</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2"><Activity className="h-4 w-4" />Pricing Results</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-3 sm:grid-cols-2">
-              <DataField label="Export price" value={formatNum(valuation?.exportPrice, 6)} mono />
-              <DataField label="Current price" value={formatNum(valuation?.currentPrice, 6)} mono />
-              <DataField label="MTM (unit)" value={formatNum(valuation?.mtmUnit, 6)} mono />
-              <DataField label="MTM (total)" value={formatMoney(valuation?.mtmTotal)} mono />
+            <CardContent className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <DataField label={`Price (${quoteCcy})`} value={formatNum(valuation?.currentPrice, 6)} mono />
+                <DataField
+                  label={`Price (${baseCcy})`}
+                  value={
+                    valuation && valuation.spot
+                      ? formatNum((valuation.currentPrice || 0) / (valuation.spot || 1), 6)
+                      : "N/A"
+                  }
+                  mono
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-md border bg-emerald-50/50 dark:bg-emerald-900/20 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total premium (current, {quoteCcy})</div>
+                  <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.currentPremiumQuote)}`}>
+                    {valuation ? `${formatMoney(valuation.currentPremiumQuote)} ${quoteCcy}` : "N/A"}
+                  </div>
+                </div>
+                <div className="rounded-md border bg-emerald-50/50 dark:bg-emerald-900/20 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total premium (current, {baseCcy})</div>
+                  <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.currentPremiumBase)}`}>
+                    {valuation ? `${formatMoney(valuation.currentPremiumBase)} ${baseCcy}` : "N/A"}
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-md border bg-primary/10 dark:bg-primary/15 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total premium (export, {quoteCcy})</div>
+                  <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.exportPremiumQuote)}`}>
+                    {valuation ? `${formatMoney(valuation.exportPremiumQuote)} ${quoteCcy}` : "N/A"}
+                  </div>
+                </div>
+                <div className="rounded-md border bg-primary/10 dark:bg-primary/15 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total premium (export, {baseCcy})</div>
+                  <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.exportPremiumBase)}`}>
+                    {valuation ? `${formatMoney(valuation.exportPremiumBase)} ${baseCcy}` : "N/A"}
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <DataField label="Export price" value={formatNum(valuation?.exportPrice, 6)} mono />
+                <div className="rounded-md border bg-background/60 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">MTM (unit)</div>
+                  <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.mtmUnit)}`}>
+                    {formatNum(valuation?.mtmUnit, 6)}
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-md border bg-background/60 p-3">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">MTM (total)</div>
+                <div className={`mt-1 text-sm font-medium font-mono ${signClass(valuation?.mtmTotal)}`}>
+                  {formatMoney(valuation?.mtmTotal)} {quoteCcy}
+                </div>
+              </div>
+              <div className="mt-1">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Analytical Greeks</div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className={`rounded-md border p-3 ${signClass(valuation?.greeks.delta)}`}>
+                    Δ Delta: {mono(formatNum(valuation?.greeks.delta, 6))}
+                  </div>
+                  <div className={`rounded-md border p-3 ${signClass(valuation?.greeks.gamma)}`}>
+                    Γ Gamma: {mono(formatNum(valuation?.greeks.gamma, 6))}
+                  </div>
+                  <div className={`rounded-md border p-3 ${signClass(valuation?.greeks.theta)}`}>
+                    Θ Theta: {mono(formatNum(valuation?.greeks.theta, 6))}
+                  </div>
+                  <div className={`rounded-md border p-3 ${signClass(valuation?.greeks.vega)}`}>
+                    Vega: {mono(formatNum(valuation?.greeks.vega, 6))}
+                  </div>
+                  <div className={`rounded-md border p-3 ${signClass(valuation?.greeks.rho)}`}>
+                    ρ Rho: {mono(formatNum(valuation?.greeks.rho, 6))}
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -390,33 +507,64 @@ const HedgingInstrumentDetails = () => {
             <CardHeader className="pb-3">
               <CardTitle className="text-lg flex items-center gap-2"><Sigma className="h-4 w-4" />Greeks</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <DataField label="Delta" value={formatNum(valuation?.greeks.delta, 6)} mono />
-              <DataField label="Gamma" value={formatNum(valuation?.greeks.gamma, 6)} mono />
-              <DataField label="Vega" value={formatNum(valuation?.greeks.vega, 6)} mono />
-              <DataField label="Theta" value={formatNum(valuation?.greeks.theta, 6)} mono />
-              <DataField label="Rho" value={formatNum(valuation?.greeks.rho, 6)} mono />
+            <CardContent className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <DataField label="Unit Δ (signed)" value={formatNum(valuation?.unitGreeksSigned.delta, 6)} mono />
+                <DataField label="Unit Γ (signed)" value={formatNum(valuation?.unitGreeksSigned.gamma, 6)} mono />
+                <DataField label="Unit Vega (signed)" value={formatNum(valuation?.unitGreeksSigned.vega, 6)} mono />
+                <DataField label="Unit Θ (signed)" value={formatNum(valuation?.unitGreeksSigned.theta, 6)} mono />
+                <DataField label="Unit ρ (signed)" value={formatNum(valuation?.unitGreeksSigned.rho, 6)} mono />
+              </div>
+              <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground">
+                Position = Unit × |Notional| × |Quantity|%
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div className={`rounded-md border p-3 ${signClass(valuation?.positionGreeks.delta)}`}>
+                  Δ Position: {mono(formatNum(valuation?.positionGreeks.delta, 4))}
+                </div>
+                <div className={`rounded-md border p-3 ${signClass(valuation?.positionGreeks.gamma)}`}>
+                  Γ Position: {mono(formatNum(valuation?.positionGreeks.gamma, 6))}
+                </div>
+                <div className={`rounded-md border p-3 ${signClass(valuation?.positionGreeks.vega)}`}>
+                  Vega Position: {mono(formatNum(valuation?.positionGreeks.vega, 4))}
+                </div>
+                <div className={`rounded-md border p-3 ${signClass(valuation?.positionGreeks.theta)}`}>
+                  Θ Position: {mono(formatNum(valuation?.positionGreeks.theta, 4))}
+                </div>
+                <div className={`rounded-md border p-3 ${signClass(valuation?.positionGreeks.rho)}`}>
+                  ρ Position: {mono(formatNum(valuation?.positionGreeks.rho, 4))}
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
 
+        {/* Transaction Summary - current inputs with currency explicit */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Current inputs used</CardTitle>
-            <CardDescription>Inputs used for the live valuation and Greeks at selected date.</CardDescription>
+            <CardTitle className="text-lg">Transaction Summary</CardTitle>
+            <CardDescription>Current sizing and parameters for the live valuation.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <DataField label="Spot" value={formatNum(valuation?.spot, 6)} mono />
-            <DataField label="Domestic rate (%)" value={formatNum((valuation?.r_d ?? 0) * 100, 4)} mono />
-            <DataField label="Foreign rate (%)" value={formatNum((valuation?.r_f ?? 0) * 100, 4)} mono />
-            <DataField label="Volatility (%)" value={formatNum((valuation?.sigma ?? 0) * 100, 4)} mono />
-            <DataField label="Strike" value={formatNum(valuation?.K, 6)} mono />
+            <DataField label={`Notional ${baseCcy}`} value={`${formatMoney(instrument.notional)} ${baseCcy}`} />
+            <DataField
+              label={`Notional ${quoteCcy}`}
+              value={
+                valuation?.spot ? `${formatMoney((instrument.notional || 0) * (valuation.spot || 1))} ${quoteCcy}` : "N/A"
+              }
+            />
+            <DataField label="Spot" value={`${formatNum(valuation?.spot, 6)} ${quoteCcy}/${baseCcy}`} />
+            <DataField label="Absolute strike" value={`${formatNum(valuation?.K, 6)} ${quoteCcy}`} />
+            <DataField label={`${quoteCcy} rate (%)`} value={formatNum((valuation?.r_d ?? 0) * 100, 6)} mono />
+            <DataField label={`${baseCcy} rate (%)`} value={formatNum((valuation?.r_f ?? 0) * 100, 6)} mono />
+            <DataField label="Volatility" value={`${formatNum((valuation?.sigma ?? 0) * 100, 2)}%`} />
             <DataField label="TTM (years)" value={formatNum(valuation?.t, 6)} mono />
             <DataField label="Barrier 1" value={formatNum(instrument.barrier, 6)} mono />
             <DataField label="Barrier 2" value={formatNum(instrument.secondBarrier, 6)} mono />
           </CardContent>
         </Card>
 
+        {/* Export / import metadata - improved labels */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Export / import metadata</CardTitle>
@@ -424,8 +572,8 @@ const HedgingInstrumentDetails = () => {
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <DataField label="Export spot" value={formatNum(instrument.exportSpotPrice, 6)} mono />
-            <DataField label="Export domestic rate (%)" value={formatNum(instrument.exportDomesticRate, 4)} mono />
-            <DataField label="Export foreign rate (%)" value={formatNum(instrument.exportForeignRate, 4)} mono />
+            <DataField label={`Export ${quoteCcy} rate (%)`} value={formatNum(instrument.exportDomesticRate, 6)} mono />
+            <DataField label={`Export ${baseCcy} rate (%)`} value={formatNum(instrument.exportForeignRate, 6)} mono />
             <DataField label="Export volatility (%)" value={formatNum(instrument.exportVolatility, 4)} mono />
             <DataField label="Export TTM (years)" value={formatNum(instrument.exportTimeToMaturity, 6)} mono />
             <DataField label="Export forward" value={formatNum(instrument.exportForwardPrice, 6)} mono />
@@ -434,7 +582,16 @@ const HedgingInstrumentDetails = () => {
             <DataField label="Imported at" value={instrument.importedAt ? new Date(instrument.importedAt).toLocaleString() : "N/A"} />
             <DataField label="Strategy name" value={instrument.strategyName || "N/A"} />
             <DataField label="Quantity (%)" value={formatNum(instrument.quantity, 2)} mono />
-            <DataField label="Notional" value={formatMoney(instrument.notional)} mono />
+              <DataField label={`Notional (${chartCurrencyPair.base})`} value={formatMoney(instrument.notional)} mono />
+              <DataField
+                label={`Notional (${chartCurrencyPair.quote})`}
+                value={
+                  valuation && valuation.spot && isFinite(valuation.spot)
+                    ? formatMoney((instrument.notional || 0) * valuation.spot)
+                    : "N/A"
+                }
+                mono
+              />
           </CardContent>
         </Card>
 

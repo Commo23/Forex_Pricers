@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { getAvailableCurrencies, getCurrencyOptionLabel } from "@/utils/currencyList";
+import { useBaseCurrency } from "@/hooks/useBaseCurrency";
 import {
   parseCsvText,
   parseExposureRows,
@@ -45,7 +46,9 @@ import {
 } from "@/utils/fxExposureCsv";
 
 interface ExposureFormData {
+  exposureDate: string;
   currency: string;
+  hedgeCurrency: string;
   amount: number;
   type: "receivable" | "payable";
   description: string;
@@ -56,6 +59,8 @@ interface ExposureFormData {
 }
 
 const Exposures = () => {
+  const baseCurrency = useBaseCurrency();
+  const todayYmd = new Date().toISOString().split("T")[0];
   const [selectedTab, setSelectedTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -81,7 +86,9 @@ const Exposures = () => {
   const [showNewMaturityAlert, setShowNewMaturityAlert] = useState(false);
   
   const [newExposure, setNewExposure] = useState<ExposureFormData>({
+    exposureDate: todayYmd,
     currency: "",
+    hedgeCurrency: baseCurrency || "USD",
     amount: 0,
     type: "receivable",
     description: "",
@@ -90,6 +97,13 @@ const Exposures = () => {
     hedgedAmount: 0,
     maturityDays: 30
   });
+
+  useEffect(() => {
+    setNewExposure((prev) => ({
+      ...prev,
+      hedgeCurrency: prev.hedgeCurrency || baseCurrency || "USD",
+    }));
+  }, [baseCurrency]);
 
   const {
     exposures,
@@ -189,8 +203,9 @@ const Exposures = () => {
     
     return {
     id: exp.id,
-    date: new Date().toISOString().split('T')[0],
+    date: exp.date ? new Date(exp.date).toISOString().split('T')[0] : todayYmd,
     currency: exp.currency,
+    hedgeCurrency: exp.hedgeCurrency || baseCurrency || "USD",
       type: isReceivable ? 'Receivable' : 'Payable',
       amount: displayAmount,
     description: exp.description,
@@ -416,7 +431,9 @@ const Exposures = () => {
 
   const resetForm = () => {
     setNewExposure({
+      exposureDate: todayYmd,
       currency: "",
+      hedgeCurrency: baseCurrency || "USD",
       amount: 0,
       type: "receivable",
       description: "",
@@ -450,7 +467,9 @@ const Exposures = () => {
       const maturityDate = new Date(Date.now() + newExposure.maturityDays * 24 * 60 * 60 * 1000);
       
       addExposure({
+        date: new Date(`${newExposure.exposureDate || todayYmd}T00:00:00`),
         currency: newExposure.currency,
+        hedgeCurrency: newExposure.hedgeCurrency || baseCurrency || "USD",
         amount: newExposure.type === 'payable' ? -Math.abs(newExposure.amount) : Math.abs(newExposure.amount),
         type: newExposure.type,
         maturity: maturityDate,
@@ -490,7 +509,9 @@ const Exposures = () => {
     if (exposure) {
       const maturityDays = Math.ceil((new Date(exposure.maturity).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
       setNewExposure({
+        exposureDate: exposure.date || todayYmd,
         currency: exposure.currency,
+        hedgeCurrency: exposure.hedgeCurrency || baseCurrency || "USD",
         amount: Math.abs(exposure.amount),
         type: exposure.type === 'Receivable' ? 'receivable' : 'payable',
         description: exposure.description,
@@ -521,7 +542,9 @@ const Exposures = () => {
       const maturityDate = new Date(Date.now() + newExposure.maturityDays * 24 * 60 * 60 * 1000);
       
       const success = updateExposure(editingExposure, {
+        date: new Date(`${newExposure.exposureDate || todayYmd}T00:00:00`),
         currency: newExposure.currency,
+        hedgeCurrency: newExposure.hedgeCurrency || baseCurrency || "USD",
         amount: newExposure.type === 'payable' ? -Math.abs(newExposure.amount) : Math.abs(newExposure.amount),
         type: newExposure.type,
         maturity: maturityDate,
@@ -590,10 +613,11 @@ const Exposures = () => {
 
   const handleExportData = () => {
     const csvContent = [
-      ['ID', 'Currency', 'Type', 'Amount', 'Description', 'Subsidiary', 'Maturity', 'Hedge Ratio', 'Hedged Amount', 'Unhedged Amount'].join(','),
+      ['ID', 'Currency', 'Hedge Currency', 'Type', 'Amount', 'Description', 'Subsidiary', 'Maturity', 'Hedge Ratio', 'Hedged Amount', 'Unhedged Amount'].join(','),
       ...filteredExposures.map(exp => [
         exp.id,
         exp.currency,
+        exp.hedgeCurrency,
         exp.type,
         exp.amount,
         `"${exp.description}"`,
@@ -629,7 +653,7 @@ const Exposures = () => {
     window.URL.revokeObjectURL(url);
     toast({
       title: "Template downloaded",
-      description: "Required columns: currency, type, amount, description, maturity. Optional: subsidiary, hedge_ratio.",
+      description: "Required columns: currency, type, amount, description, maturity. Optional: subsidiary, hedge_currency, hedge_ratio (defaults to Settings base currency).",
     });
   };
 
@@ -645,7 +669,9 @@ const Exposures = () => {
     reader.onload = () => {
       const text = String(reader.result ?? "");
       const rows = parseCsvText(text);
-      const { headerErrors, results } = parseExposureRows(rows);
+      const { headerErrors, results } = parseExposureRows(rows, {
+        defaultHedgeCurrency: baseCurrency || "USD",
+      });
 
       if (headerErrors.length > 0) {
         setImportReport({ imported: 0, headerErrors, rowErrors: [] });
@@ -667,6 +693,7 @@ const Exposures = () => {
           maturity: r.data.maturity,
           description: r.data.description,
           subsidiary: r.data.subsidiary,
+          hedgeCurrency: r.data.hedgeCurrency,
           hedgeRatio: r.data.hedgeRatio,
           hedgedAmount: r.data.hedgedAmount,
         }));
@@ -1258,6 +1285,7 @@ const Exposures = () => {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Currency</TableHead>
+                              <TableHead>Hedge Currency</TableHead>
                               <TableHead>Amount</TableHead>
                               <TableHead>Type</TableHead>
                               <TableHead>Maturity</TableHead>
@@ -1275,6 +1303,11 @@ const Exposures = () => {
                                 <TableCell>
                                   <Badge variant="outline" className="font-mono">
                                     {exposure.currency}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="secondary" className="font-mono">
+                                    {exposure.hedgeCurrency}
                                   </Badge>
                                 </TableCell>
                                 <TableCell className="font-mono">
@@ -1354,7 +1387,7 @@ const Exposures = () => {
             }
           }}
         >
-          <DialogContent className="sm:max-w-md">
+          <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>
                 {editingExposure ? 'Edit Exposure' : 'Add New Exposure'}
@@ -1408,6 +1441,28 @@ const Exposures = () => {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="hedgeCurrency">Hedge Currency</Label>
+                <Select
+                  value={newExposure.hedgeCurrency}
+                  onValueChange={(value) => setNewExposure({ ...newExposure, hedgeCurrency: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select hedge currency" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[300px]">
+                    {getAvailableCurrencies().map((currency) => (
+                      <SelectItem key={currency.code} value={currency.code}>
+                        {currency.code}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Default from Settings base currency ({baseCurrency || "USD"}).
+                </p>
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="amount">Amount</Label>
                 <Input
                   id="amount"
@@ -1416,6 +1471,17 @@ const Exposures = () => {
                   value={newExposure.amount || ''}
                   onChange={(e) => setNewExposure({...newExposure, amount: parseFloat(e.target.value) || 0})}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="exposureDate">Date (Trade Date)</Label>
+                <Input
+                  id="exposureDate"
+                  type="date"
+                  value={newExposure.exposureDate}
+                  onChange={(e) => setNewExposure({ ...newExposure, exposureDate: e.target.value || todayYmd })}
+                />
+                <p className="text-xs text-muted-foreground">This date is different from the maturity date below.</p>
               </div>
 
               <div className="space-y-2">

@@ -1317,6 +1317,16 @@ interface MonthlyStats {
   calculationMethod?: string;
 }
 
+interface FxExposureRecord {
+  id: string;
+  currency: string;
+  hedgeCurrency: string;
+  amount: number;
+  type: 'receivable' | 'payable';
+  maturity: string | Date;
+  description?: string;
+}
+
 interface PriceRange {
   min: number;
   max: number;
@@ -1640,9 +1650,13 @@ const Index = () => {
 
   // Basic parameters state
   const [params, setParams] = useState(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const initialPeriodDateObj = new Date(today);
+    initialPeriodDateObj.setMonth(initialPeriodDateObj.getMonth() + 1);
+    const initialPeriodDate = initialPeriodDateObj.toISOString().split('T')[0];
     const defaultParams = {
-      startDate: new Date().toISOString().split('T')[0],           // Hedging Start Date
-      strategyStartDate: new Date().toISOString().split('T')[0],   // Strategy Start Date (same as hedging start by default)
+      startDate: today,           // Hedging Start Date
+      strategyStartDate: today,   // Strategy Start Date (same as hedging start by default)
       monthsToHedge: 12,
       interestRate: 2.0, // Domestic rate for backward compatibility
       domesticRate: 1.0, // EUR rate
@@ -1652,8 +1666,13 @@ const Index = () => {
       quoteVolume: 10000000 * CURRENCY_PAIRS[0].defaultSpotRate, // Calculated quote volume
       spotPrice: CURRENCY_PAIRS[0].defaultSpotRate, // Default to EUR/USD spot rate
       currencyPair: CURRENCY_PAIRS[0], // Default to EUR/USD
-      useCustomPeriods: false,
-      customPeriods: [],
+      useCustomPeriods: true,
+      customPeriods: [
+        {
+          maturityDate: initialPeriodDate,
+          volume: 10000000,
+        }
+      ],
       volumeType: 'receivable' // Default to receivable
     };
     
@@ -1676,6 +1695,22 @@ const Index = () => {
       if (!savedParams.volumeType) {
         savedParams.volumeType = 'receivable'; // Default to receivable
       }
+      if (typeof savedParams.useCustomPeriods !== 'boolean') {
+        savedParams.useCustomPeriods = true;
+      }
+      if (!Array.isArray(savedParams.customPeriods)) {
+        savedParams.customPeriods = [];
+      }
+      if (savedParams.useCustomPeriods && savedParams.customPeriods.length === 0) {
+        const strategyStart = new Date(savedParams.strategyStartDate || savedParams.startDate || today);
+        strategyStart.setMonth(strategyStart.getMonth() + 1);
+        savedParams.customPeriods = [
+          {
+            maturityDate: formatDateLocalYmd(getPricingMaturityForDate(strategyStart)),
+            volume: savedParams.baseVolume || savedParams.totalVolume || 10000000,
+          }
+        ];
+      }
       return savedParams;
       }
     } catch (error) {
@@ -1693,11 +1728,52 @@ const Index = () => {
 
   // Keep track of initial spot price
   const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
+  const [availableExposures, setAvailableExposures] = useState<FxExposureRecord[]>([]);
+  const [selectedExposureId, setSelectedExposureId] = useState<string>("");
 
   const strategyBuilderQuoteCcy = params.currencyPair?.quote ?? 'USD';
   const strategyBuilderBaseCcy = params.currencyPair?.base ?? 'EUR';
   const sbDomesticCurve = useRateExplorerDiscountFactors(strategyBuilderQuoteCcy, 'cubic_spline');
   const sbForeignCurve = useRateExplorerDiscountFactors(strategyBuilderBaseCcy, 'cubic_spline');
+
+  const loadAvailableExposures = useCallback(() => {
+    try {
+      const raw = localStorage.getItem('fxExposures');
+      if (!raw) {
+        setAvailableExposures([]);
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setAvailableExposures([]);
+        return;
+      }
+
+      const normalized = parsed
+        .filter((item: any) => item && item.id && item.currency && item.maturity)
+        .map((item: any) => ({
+          id: String(item.id),
+          currency: String(item.currency),
+          hedgeCurrency: String(item.hedgeCurrency || item.hedge_currency || baseCurrency || "USD"),
+          amount: Number(item.amount ?? 0),
+          type: item.type === 'payable' ? 'payable' : 'receivable',
+          maturity: item.maturity,
+          description: item.description ? String(item.description) : undefined,
+        })) as FxExposureRecord[];
+
+      normalized.sort((a, b) => {
+        const ma = new Date(a.maturity).getTime();
+        const mb = new Date(b.maturity).getTime();
+        return ma - mb;
+      });
+
+      setAvailableExposures(normalized);
+    } catch (error) {
+      console.error('Failed to load FX exposures for Strategy Builder:', error);
+      setAvailableExposures([]);
+    }
+  }, [baseCurrency]);
 
   // Synchronize spot price and rates with market data on initial load
   const hasSyncedOnMount = React.useRef(false);
@@ -1749,6 +1825,25 @@ const Index = () => {
     
     return () => clearTimeout(timeoutId);
   }, []); // Only run once on mount
+
+  useEffect(() => {
+    loadAvailableExposures();
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'fxExposures') {
+        loadAvailableExposures();
+      }
+    };
+
+    const handleWindowFocus = () => loadAvailableExposures();
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [loadAvailableExposures]);
 
   // Strategy components state
   const [strategy, setStrategy] = useState(() => {
@@ -4400,6 +4495,13 @@ const Index = () => {
     if (!strategyName) return;
 
     try {
+      const usedLoadExposure = localStorage.getItem('strategyBuilderUsedLoadExposure') === '1';
+      let userWantsExportExposure = false;
+      if (usedLoadExposure) {
+        userWantsExportExposure = confirm(
+          "This strategy was built using 'Load Exposure'.\n\nDo you want to ADD the exposure again to 'FX Exposures' when exporting?\n\nOK = Yes, add the exposure\nCancel = No, export instruments only"
+        );
+      }
       const importService = StrategyImportService.getInstance();
       
       // ✅ Utiliser tous les résultats calculés (tous les mois à hedger)
@@ -4562,6 +4664,39 @@ const Index = () => {
         useBootstrappedInterestRates,
       }, enrichedDetailedResults); // Passer TOUS les résultats enrichis
 
+      // Ne jamais exporter l'exposure si la stratégie vient de "Load Exposure"
+      if (usedLoadExposure) {
+        // Optionnel: ajouter l'exposition si l'utilisateur l'a demandé
+        if (userWantsExportExposure) {
+          try {
+            const pair = params.currencyPair;
+            const period = (params.customPeriods && params.customPeriods[0]) || null;
+            const maturityStr = period?.maturityDate || new Date().toISOString().split('T')[0];
+            const exposure = {
+              id: `EXP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              date: new Date().toISOString(),
+              currency: pair.base,
+              hedgeCurrency: pair.quote,
+              amount: params.volumeType === 'payable' ? -Math.abs(Number(params.baseVolume || 0)) : Math.abs(Number(params.baseVolume || 0)),
+              type: params.volumeType || 'receivable',
+              maturity: new Date(`${maturityStr}T00:00:00`).toISOString(),
+              description: 'Strategy Export (from Load Exposure)',
+              subsidiary: 'Main Office',
+              hedgeRatio: 0,
+              hedgedAmount: 0,
+            };
+            const raw = localStorage.getItem('fxExposures');
+            const list = raw ? JSON.parse(raw) : [];
+            list.push(exposure);
+            localStorage.setItem('fxExposures', JSON.stringify(list));
+            localStorage.setItem('fxExposuresLastModified', new Date().toISOString());
+          } catch (e) {
+            console.warn('Could not append exposure to fxExposures:', e);
+          }
+        }
+        try { localStorage.removeItem('strategyBuilderUsedLoadExposure'); } catch {}
+      }
+
       // Dispatch custom event to notify HedgingInstruments page
       window.dispatchEvent(new CustomEvent('hedgingInstrumentsUpdated'));
 
@@ -4678,8 +4813,13 @@ const Index = () => {
       quoteVolume: 1000000 * CURRENCY_PAIRS[0].defaultSpotRate,
       spotPrice: CURRENCY_PAIRS[0].defaultSpotRate,
       currencyPair: CURRENCY_PAIRS[0],
-      useCustomPeriods: false,
-      customPeriods: [],
+      useCustomPeriods: true,
+      customPeriods: [
+        {
+          maturityDate: formatDateLocalYmd(getPricingMaturityForDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))),
+          volume: 1000000
+        }
+      ],
       volumeType: 'receivable'
     });
     setStrategy([]);
@@ -4803,8 +4943,13 @@ const Index = () => {
         quoteVolume: 1000000 * CURRENCY_PAIRS[0].defaultSpotRate,
         spotPrice: CURRENCY_PAIRS[0].defaultSpotRate,
         currencyPair: CURRENCY_PAIRS[0],
-        useCustomPeriods: false,
-        customPeriods: [],
+        useCustomPeriods: true,
+        customPeriods: [
+          {
+            maturityDate: formatDateLocalYmd(getPricingMaturityForDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))),
+            volume: 1000000
+          }
+        ],
         volumeType: 'receivable'
       },
       strategy: [],
@@ -6170,36 +6315,213 @@ const Index = () => {
       customPeriods: updatedPeriods
     });
   };
-  
-  // Function to toggle between using standard months or custom periods
-  const toggleCustomPeriods = () => {
-    // If switching to custom periods for the first time, initialize with one period
-    if (!params.useCustomPeriods && params.customPeriods.length === 0) {
-      const startDate = new Date(params.strategyStartDate);
-      startDate.setMonth(startDate.getMonth() + 1);
-      
-      setParams({
-        ...params,
-        useCustomPeriods: !params.useCustomPeriods,
-        customPeriods: [
-          {
-            maturityDate: formatDateLocalYmd(getPricingMaturityForDate(startDate)),
-            volume: params.baseVolume
-          }
-        ]
+
+  const getOrCreatePairForExposure = (
+    exposureCurrency: string,
+    hedgeCurrency: string,
+    currentPair: CurrencyPair,
+  ): CurrencyPair => {
+    const expCcy = exposureCurrency.toUpperCase();
+    const hedgeCcy = hedgeCurrency.toUpperCase();
+    const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+
+    if (expCcy === hedgeCcy) {
+      return currentPair;
+    }
+
+    const directSymbol = `${expCcy}/${hedgeCcy}`;
+    const direct = allPairs.find((pair) => pair.symbol === directSymbol);
+    if (direct) return direct;
+
+    const reverseSymbol = `${hedgeCcy}/${expCcy}`;
+    const reverse = allPairs.find((pair) => pair.symbol === reverseSymbol);
+    const inferredSpot = reverse?.defaultSpotRate && reverse.defaultSpotRate > 0
+      ? 1 / reverse.defaultSpotRate
+      : currentPair.defaultSpotRate;
+
+    const syntheticPair: CurrencyPair = {
+      symbol: directSymbol,
+      name: `${expCcy}/${hedgeCcy}`,
+      base: expCcy,
+      quote: hedgeCcy,
+      category: 'others',
+      defaultSpotRate: inferredSpot > 0 ? inferredSpot : 1,
+    };
+
+    saveCustomCurrencyPairs([...customCurrencyPairs, syntheticPair]);
+    return syntheticPair;
+  };
+
+  const handleLoadExposureAsCustomPeriod = async () => {
+    if (!selectedExposureId) {
+      toast({
+        title: "Select an exposure",
+        description: "Choose one exposure from FX Exposures first.",
+        variant: "destructive",
       });
+      return;
+    }
+
+    const selectedExposure = availableExposures.find((exp) => exp.id === selectedExposureId);
+    if (!selectedExposure) {
+      toast({
+        title: "Exposure not found",
+        description: "Refresh and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const maturityDate = new Date(selectedExposure.maturity);
+    if (Number.isNaN(maturityDate.getTime())) {
+      toast({
+        title: "Invalid maturity",
+        description: "This exposure has an invalid maturity date.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const nextPair = getOrCreatePairForExposure(
+      selectedExposure.currency,
+      selectedExposure.hedgeCurrency,
+      params.currencyPair
+    );
+    const liveSpot = await fetchRealTimeRate(nextPair);
+    const nextSpot =
+      liveSpot !== null && Number.isFinite(liveSpot) && liveSpot > 0
+        ? liveSpot
+        : nextPair.symbol === params.currencyPair.symbol
+          ? params.spotPrice
+          : nextPair.defaultSpotRate;
+    const safeSpot = nextSpot > 0 ? nextSpot : 1;
+    const rawAmount = Math.abs(Number(selectedExposure.amount) || 0);
+
+    const exposureInBaseCcy =
+      selectedExposure.currency === nextPair.base
+        ? rawAmount
+        : selectedExposure.currency === nextPair.quote
+          ? rawAmount / safeSpot
+          : rawAmount;
+    const normalizedBaseVolume = Number(exposureInBaseCcy.toFixed(6));
+
+    const normalizedPeriodDate = formatDateLocalYmd(getPricingMaturityForDate(maturityDate));
+    const loadedPeriod: CustomPeriod = {
+      maturityDate: normalizedPeriodDate,
+      volume: normalizedBaseVolume,
+    };
+
+    setParams((prev) => {
+      // In "Load Exposure" flow, start fresh each time:
+      // replace previously loaded custom periods with the latest loaded exposure.
+      const updatedPeriods = [loadedPeriod];
+      const updatedBaseVolume = updatedPeriods.reduce((sum, period) => sum + (Number(period.volume) || 0), 0);
+      const updatedQuoteVolume = Number((updatedBaseVolume * safeSpot).toFixed(6));
+      return {
+        ...prev,
+        currencyPair: nextPair,
+        spotPrice: nextSpot,
+        useCustomPeriods: true,
+        volumeType: selectedExposure.type,
+        customPeriods: updatedPeriods,
+        baseVolume: updatedBaseVolume,
+        totalVolume: updatedBaseVolume,
+        quoteVolume: updatedQuoteVolume,
+      };
+    });
+    // Treat "Load Exposure" exactly like adding a custom period row:
+    // append period + volume, then keep user on Custom Periods for review/edit.
+    setCustomScheduleMode('custom');
+
+    // Bring user to the custom periods table where maturity/volume were added.
+    requestAnimationFrame(() => {
+      const anchor = document.getElementById('custom-hedging-periods');
+      anchor?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    setSelectedExposureId("");
+    toast({
+      title: "Exposure loaded",
+      description: `${selectedExposure.currency}/${selectedExposure.hedgeCurrency} (${selectedExposure.type}) added as custom period (${normalizedPeriodDate}).`,
+    });
+    try {
+      localStorage.setItem('strategyBuilderUsedLoadExposure', '1');
+    } catch {}
+  };
+  
+  // Scheduling source of truth:
+  // - params.useCustomPeriods controls calculation behavior
+  // - customScheduleMode only controls which custom UI the user sees (manual vs load)
+  const [customScheduleMode, setCustomScheduleMode] = useState<'custom' | 'load'>('custom');
+  const hedgingMode: 'custom' | 'monthly' | 'load' = params.useCustomPeriods ? customScheduleMode : 'monthly';
+  const isMonthlyHedging = hedgingMode === 'monthly';
+  const setHedgingMode = (mode: 'custom' | 'monthly' | 'load') => {
+    if (mode === 'monthly') {
+      setParams((prev) => ({
+        ...prev,
+        useCustomPeriods: false
+      }));
     } else {
-      setParams({
-        ...params,
-        useCustomPeriods: !params.useCustomPeriods
+      setCustomScheduleMode(mode === 'load' ? 'load' : 'custom');
+      setParams((prev) => {
+        if (mode === 'custom' && prev.customPeriods.length === 0) {
+          const startDate = new Date(prev.strategyStartDate);
+          startDate.setMonth(startDate.getMonth() + 1);
+          return {
+            ...prev,
+            useCustomPeriods: true,
+            customPeriods: [
+              {
+                maturityDate: formatDateLocalYmd(getPricingMaturityForDate(startDate)),
+                volume: prev.baseVolume
+              }
+            ]
+          };
+        }
+        return {
+          ...prev,
+          useCustomPeriods: true
+        };
       });
     }
-    
-    // Recalculate results if they exist
+
     if (results) {
       recalculateResults();
     }
   };
+
+  // Preview details when in Load mode (or show last added period when nothing selected)
+  const loadPreview = React.useMemo(() => {
+    if (hedgingMode !== 'load') return null;
+    const selected = availableExposures.find(e => e.id === selectedExposureId);
+    if (selected) {
+      // Compute base-volume preview using current pair/spot if currencies match
+      const pair = params.currencyPair;
+      let volumeInBase = Math.abs(Number(selected.amount) || 0);
+      if (pair) {
+        if (selected.currency === pair.base) {
+          volumeInBase = Math.abs(Number(selected.amount) || 0);
+        } else if (selected.currency === pair.quote && params.spotPrice > 0) {
+          volumeInBase = Math.abs(Number(selected.amount) || 0) / params.spotPrice;
+        }
+      }
+      return {
+        source: 'selected' as const,
+        maturity: new Date(selected.maturity).toISOString().split('T')[0],
+        volume: Math.round(volumeInBase),
+      };
+    }
+    // Fallback to last custom period just loaded
+    if (params.customPeriods && params.customPeriods.length > 0) {
+      const last = params.customPeriods[params.customPeriods.length - 1];
+      return {
+        source: 'loaded' as const,
+        maturity: last.maturityDate,
+        volume: Math.round(Number(last.volume) || 0),
+      };
+    }
+    return null;
+  }, [hedgingMode, selectedExposureId, availableExposures, params.currencyPair, params.spotPrice, params.customPeriods]);
 
   // Fonction pour calculer le prix des options à barrière avec formules fermées
   const _legacyCalculateBarrierOptionClosedForm = (
@@ -7499,25 +7821,27 @@ const pricingFunctions = {
                     className="compact-input"
                   />
                 </div>
-                <div className="compact-form-group">
-                  <label className="compact-label">Months to Hedge</label>
-                  <div className="flex items-center gap-2">
-                    <Slider 
-                      value={[params.monthsToHedge]} 
-                      min={1} 
-                      max={36} 
-                      step={1}
-                      onValueChange={(value) => setParams({...params, monthsToHedge: value[0]})}
-                      className="flex-1"
+                {isMonthlyHedging && (
+                  <div className="compact-form-group">
+                    <label className="compact-label">Months to Hedge</label>
+                    <div className="flex items-center gap-2">
+                      <Slider 
+                        value={[params.monthsToHedge]} 
+                        min={1} 
+                        max={36} 
+                        step={1}
+                        onValueChange={(value) => setParams({...params, monthsToHedge: value[0]})}
+                        className="flex-1"
+                      />
+                    <Input
+                      type="number"
+                      value={params.monthsToHedge}
+                      onChange={(e) => setParams({...params, monthsToHedge: Number(e.target.value)})}
+                        className="compact-input w-16 text-center"
                     />
-                  <Input
-                    type="number"
-                    value={params.monthsToHedge}
-                    onChange={(e) => setParams({...params, monthsToHedge: Number(e.target.value)})}
-                      className="compact-input w-16 text-center"
-                  />
-                </div>
-                </div>
+                  </div>
+                  </div>
+                )}
                 <div className="compact-form-group">
                   <label className="compact-label">Domestic Rate (%) - {params.currencyPair?.quote || 'USD'}</label>
                   <div className="flex items-center gap-2">
@@ -7556,8 +7880,8 @@ const pricingFunctions = {
                     />
                   </div>
                 </div>
-                {/* Volume & Spot Rate - Compact Grid Layout */}
-                <div className="bg-muted/20 p-2 rounded-lg space-y-2">
+                {/* Volume & Spot Rate - Full width to remove large empty gaps */}
+                <div className="bg-muted/20 p-2 rounded-lg space-y-2 md:col-span-2 lg:col-span-3">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                     {/* Base Volume */}
                     <div className="space-y-1">
@@ -7670,24 +7994,120 @@ const pricingFunctions = {
                 </div>
               </div>
 
-              {/* Custom Periods - Compact Toggle */}
+              {/* Hedging mode + custom periods loader */}
               <div className="mt-3">
                 <div className="bg-muted/20 p-3 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={params.useCustomPeriods}
-                    onCheckedChange={toggleCustomPeriods}
-                    id="useCustomPeriods"
-                  />
-                    <label htmlFor="useCustomPeriods" className="text-sm font-medium cursor-pointer flex items-center gap-2">
-                      <Calendar size={16} />
-                    Use Custom Periods Instead of Monthly Hedging
-                  </label>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Calendar size={16} />
+                        Hedging Mode
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 w-full md:w-auto">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={hedgingMode === 'custom' ? "default" : "outline"}
+                          className="h-8 text-xs"
+                          onClick={() => setHedgingMode('custom')}
+                        >
+                          Custom Periods
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={isMonthlyHedging ? "default" : "outline"}
+                          className="h-8 text-xs"
+                          onClick={() => setHedgingMode('monthly')}
+                        >
+                          Monthly Hedging
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={hedgingMode === 'load' ? "default" : "outline"}
+                          className="h-8 text-xs"
+                          onClick={() => setHedgingMode('load')}
+                        >
+                          Load Exposure
+                        </Button>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {hedgingMode === 'monthly'
+                        ? `Monthly mode active: schedule generated from Months to Hedge (${params.monthsToHedge}).`
+                        : hedgingMode === 'load'
+                          ? "Load mode active: import periods directly from FX Exposures."
+                          : "Custom mode active: define maturities and volumes manually."}
+                    </p>
                   </div>
                 </div>
                 
-                {params.useCustomPeriods && (
-                  <div className="mt-4 pl-8">
+                {hedgingMode === 'load' && (
+                  <div className="mt-2">
+                    <div className="flex flex-col gap-2 mb-3">
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2">
+                        <Select value={selectedExposureId} onValueChange={setSelectedExposureId}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Load an FX Exposure as custom period" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableExposures.length === 0 ? (
+                              <SelectItem value="__no_exposure__" disabled>
+                                No exposure available
+                              </SelectItem>
+                            ) : (
+                              availableExposures.map((exp) => (
+                                <SelectItem key={exp.id} value={exp.id}>
+                                  {`${exp.currency}/${exp.hedgeCurrency} • ${exp.type} • ${Math.abs(exp.amount).toLocaleString()} • ${new Date(exp.maturity).toLocaleDateString()}${exp.description ? ` • ${exp.description}` : ''}`}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={loadAvailableExposures}
+                          className="h-8 px-2 text-xs"
+                        >
+                          <RefreshCw size={14} className="mr-1" />
+                          Refresh
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleLoadExposureAsCustomPeriod}
+                          disabled={!selectedExposureId}
+                          className="h-8 px-2 text-xs"
+                        >
+                          Load Exposure
+                        </Button>
+                      </div>
+                    </div>
+                    {loadPreview && (
+                      <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-4">
+                          <div>
+                            <span className="font-medium text-foreground">Maturity: </span>
+                            <span className="font-mono">{loadPreview.maturity}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-foreground">Volume (base): </span>
+                            <span className="font-mono">{loadPreview.volume.toLocaleString()}</span>
+                          </div>
+                          <div className="text-[10px]">
+                            {loadPreview.source === 'selected' ? '(preview from selected exposure)' : '(last loaded period)'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {hedgingMode === 'custom' && (
+                  <div className="mt-3" id="custom-hedging-periods">
                     <div className="flex justify-between items-center mb-3">
                       <h4 className="text-sm font-medium text-foreground/90">Custom Hedging Periods</h4>
                       <Button 
@@ -7750,6 +8170,13 @@ const pricingFunctions = {
                         )}
                       </div>
                     )}
+                  </div>
+                )}
+                {hedgingMode === 'monthly' && (
+                  <div className="mt-2">
+                    <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                      Monthly hedging is active. Use the <span className="font-medium">Months to Hedge</span> control above.
+                    </div>
                   </div>
                 )}
               </div>
