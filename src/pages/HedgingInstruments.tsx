@@ -2839,6 +2839,19 @@ export default function HedgingInstruments() {
     
     convertTotal();
   }, [mtmByCurrency, referenceCurrency, currencyMarketData]);
+
+  // Persist the converted MTM total to localStorage so the Dashboard can read it
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('hedgingMTMTotal', JSON.stringify({
+        value: convertedTotalMTM,
+        currency: referenceCurrency,
+        updatedAt: Date.now()
+      }));
+      // Notify other components (e.g. Dashboard)
+      window.dispatchEvent(new CustomEvent('hedgingMTMUpdated'));
+    } catch (_) { /* ignore */ }
+  }, [convertedTotalMTM, referenceCurrency]);
   
   const hedgeAccountingCount = filteredInstruments.filter(inst => inst.hedge_accounting).length;
 

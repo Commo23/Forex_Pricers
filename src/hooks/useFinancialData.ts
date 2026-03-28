@@ -51,6 +51,20 @@ interface UseFinancialDataReturn {
   setLiveMode: (enabled: boolean) => void;
 }
 
+  /** Read the real MTM total persisted by HedgingInstruments */
+  const readPersistedMTM = (): number | null => {
+    try {
+      const raw = localStorage.getItem('hedgingMTMTotal');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      // Ignore stale values older than 1 hour
+      if (Date.now() - (parsed.updatedAt || 0) > 3_600_000) return null;
+      return typeof parsed.value === 'number' ? parsed.value : null;
+    } catch {
+      return null;
+    }
+  };
+
 export const useFinancialData = (): UseFinancialDataReturn => {
   const serviceRef = useRef<FinancialDataService>(new FinancialDataService());
   const strategyImportServiceRef = useRef<StrategyImportService>(StrategyImportService.getInstance());
@@ -68,9 +82,11 @@ export const useFinancialData = (): UseFinancialDataReturn => {
   const [instruments, setInstruments] = useState<HedgingInstrument[]>(() => 
     serviceRef.current.getInstruments()
   );
-  const [riskMetrics, setRiskMetrics] = useState<RiskMetrics>(() => 
-    serviceRef.current.calculateRiskMetrics()
-  );
+  const [riskMetrics, setRiskMetrics] = useState<RiskMetrics>(() => {
+    const base = serviceRef.current.calculateRiskMetrics();
+    const persistedMTM = readPersistedMTM();
+    return persistedMTM !== null ? { ...base, mtmImpact: persistedMTM } : base;
+  });
   const [currencyExposures, setCurrencyExposures] = useState<CurrencyExposure[]>(() => 
     serviceRef.current.getCurrencyExposures()
   );
@@ -116,14 +132,25 @@ export const useFinancialData = (): UseFinancialDataReturn => {
       if (e.key === 'hedgingInstruments' || e.key === 'fxExposures') {
         loadDataFromStorage();
       }
+      // When HedgingInstruments persists a new MTM total, refresh metrics
+      if (e.key === 'hedgingMTMTotal') {
+        refreshAllData();
+      }
+    };
+
+    // Listen for MTM updates dispatched by HedgingInstruments (same-tab)
+    const handleMTMUpdate = () => {
+      refreshAllData();
     };
 
     // Add event listeners
     window.addEventListener('hedgingInstrumentsUpdated', handleHedgingInstrumentsUpdate);
+    window.addEventListener('hedgingMTMUpdated', handleMTMUpdate);
     window.addEventListener('storage', handleStorageChange);
 
     return () => {
       window.removeEventListener('hedgingInstrumentsUpdated', handleHedgingInstrumentsUpdate);
+      window.removeEventListener('hedgingMTMUpdated', handleMTMUpdate);
       window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
@@ -542,7 +569,10 @@ export const useFinancialData = (): UseFinancialDataReturn => {
     setMarketData(serviceRef.current.getMarketData());
     setExposures(serviceRef.current.getExposures());
     setInstruments(serviceRef.current.getInstruments());
-    setRiskMetrics(serviceRef.current.calculateRiskMetrics());
+    // Override mtmImpact with the real value computed by HedgingInstruments if available
+    const baseMetrics = serviceRef.current.calculateRiskMetrics();
+    const persistedMTM = readPersistedMTM();
+    setRiskMetrics(persistedMTM !== null ? { ...baseMetrics, mtmImpact: persistedMTM } : baseMetrics);
     setCurrencyExposures(serviceRef.current.getCurrencyExposures());
     setLastUpdate(new Date());
   }, []);
