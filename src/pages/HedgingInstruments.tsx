@@ -3635,48 +3635,64 @@ export default function HedgingInstruments() {
                       <Select
                       value={addForm.currencyPair || undefined}
                       onValueChange={async (value) => {
-                        const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p) => p.symbol === value) as { symbol: string; base?: string; quote?: string; defaultSpotRate: number } | undefined;
-                        const spot = pair?.defaultSpotRate ?? addForm.spotPrice;
-                        const base = pair?.base || value?.split("/")[0];
-                        const quote = pair?.quote || value?.split("/")[1];
-                        const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
-                        const domesticRate = fromBootstrapSettings
-                          ? undefined
-                          : base && quote
-                            ? (bankRates[quote as keyof typeof bankRates] ?? addForm.domesticRate)
-                            : addForm.domesticRate;
-                        const foreignRate = fromBootstrapSettings
-                          ? undefined
-                          : base && quote
-                            ? (bankRates[base as keyof typeof bankRates] ?? addForm.foreignRate)
-                            : addForm.foreignRate;
-                        setAddForm((f) => ({
-                          ...f,
-                          currencyPair: value,
-                          spotPrice: spot,
-                          strike: spot,
-                          ...(fromBootstrapSettings
-                            ? {}
-                            : {
-                                domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate,
-                                foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate,
-                              }),
-                          notionalQuote: Math.round((f.notionalBase || 0) * spot * 100) / 100,
-                        }));
-                        setAddFormRateOverrides({ domestic: false, foreign: false });
-                        if (pair) {
-                          try {
-                            const realTimeRate = await fetchRealTimeRate(pair);
-                            if (realTimeRate != null && !isNaN(realTimeRate) && realTimeRate > 0) {
-                              setAddForm((f) => ({
-                                ...f,
-                                spotPrice: realTimeRate,
-                                strike: f.strikeType === "absolute" ? f.strike : realTimeRate * (Number(f.strike) || 0) / 100,
-                                notionalQuote: Math.round((f.notionalBase || 0) * realTimeRate * 100) / 100,
-                              }));
-                              toast({ title: "Rate updated", description: `${pair.symbol}: ${realTimeRate.toFixed(4)}` });
+                        try {
+                          const safeValue = String(value || "");
+                          const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p) => p.symbol === safeValue) as { symbol: string; base?: string; quote?: string; defaultSpotRate: number } | undefined;
+                          const initialSpot = Number(pair?.defaultSpotRate ?? addForm.spotPrice ?? 1);
+                          const [base, quote] = (pair?.base && pair?.quote)
+                            ? [pair.base, pair.quote]
+                            : safeValue.includes("/") ? safeValue.split("/") : ["", ""];
+                          const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
+                          // bankRates can be an empty object while loading; guard all accesses
+                          const domesticRate = fromBootstrapSettings
+                            ? undefined
+                            : (quote ? (bankRates?.[quote as keyof typeof bankRates] as number | null | undefined) : undefined) ?? addForm.domesticRate;
+                          const foreignRate = fromBootstrapSettings
+                            ? undefined
+                            : (base ? (bankRates?.[base as keyof typeof bankRates] as number | null | undefined) : undefined) ?? addForm.foreignRate;
+
+                          // Prime UI with known/default spot
+                          setAddForm((f) => {
+                            const safeSpot = isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1);
+                            return {
+                              ...f,
+                              currencyPair: safeValue,
+                              spotPrice: safeSpot,
+                              strike: safeSpot,
+                              ...(fromBootstrapSettings
+                                ? {}
+                                : {
+                                    domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate,
+                                    foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate,
+                                  }),
+                              notionalQuote: Math.round((f.notionalBase || 0) * safeSpot * 100) / 100,
+                            };
+                          });
+                          setAddFormRateOverrides({ domestic: false, foreign: false });
+
+                          // Try to upgrade with live rate (non-blocking)
+                          if (pair) {
+                            try {
+                              const realTimeRate = await fetchRealTimeRate(pair);
+                              if (realTimeRate != null && isFinite(realTimeRate) && realTimeRate > 0) {
+                                setAddForm((f) => ({
+                                  ...f,
+                                  spotPrice: realTimeRate,
+                                  strike: f.strikeType === "absolute" ? f.strike : realTimeRate * ((Number(f.strike) || 0) / 100),
+                                  notionalQuote: Math.round((f.notionalBase || 0) * realTimeRate * 100) / 100,
+                                }));
+                                // Use safe formatting
+                                const formatted = (Math.abs(realTimeRate) > 10 ? realTimeRate.toFixed(3) : realTimeRate.toFixed(4));
+                                toast({ title: "Rate updated", description: `${pair.symbol}: ${formatted}` });
+                              }
+                            } catch (err) {
+                              // Silent fallback to default spot
+                              console.warn("Live rate fetch failed:", err);
                             }
-                          } catch (_) {}
+                          }
+                        } catch (err) {
+                          console.error("Error while applying live rates to form:", err);
+                          toast({ title: "Live rates unavailable", description: "Using default rates for now.", variant: "destructive" as any });
                         }
                       }}
                     >
