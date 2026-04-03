@@ -12,14 +12,14 @@
  * - Barrier options adapted for FX trading
  * - Comprehensive risk matrix analysis for FX strategies
  * 
- * Calculation Models:
+ * Calculation Models: 2
  * - FX Forward: S * exp((r_d - r_f) * t)
  * - FX Options: Garman-Kohlhagen model with domestic/foreign rates
  * - Monte Carlo Drift: (r_d - r_f - 0.5 * σ²) for FX price dynamics
  */
 
 // ===========================
-// EXPORTED PRICING FUNCTIONS
+// EXPORTED PRICING 2 FUNCTIONS
 // ===========================
 
 // Fonction d'erreur pour les calculs statistiques
@@ -4471,7 +4471,7 @@ const Index = () => {
 
     toast({
       title: "Scenario Saved",
-      description: "Your strategy scenario has been saved successfully!",
+      description: "Your strategy scenario has been saved successfully !",
     });
   };
 
@@ -4503,38 +4503,6 @@ const Index = () => {
         );
       }
       const importService = StrategyImportService.getInstance();
-
-      // If Strategy Builder used "Load Exposure", link exported instruments to that exposure via a HedgeRequest.
-      let hedgeRequestId: string | undefined = undefined;
-      try {
-        const exposureId = localStorage.getItem('strategyBuilderLoadedExposureId') || '';
-        if (usedLoadExposure && exposureId) {
-          // Try to snapshot current exposure fields for robustness
-          let snap: any = undefined;
-          try {
-            const raw = localStorage.getItem('fxExposures');
-            const list = raw ? JSON.parse(raw) : [];
-            const ex = list.find((e: any) => String(e.id || '') === String(exposureId));
-            if (ex) {
-              snap = {
-                currency: ex.currency,
-                hedgeCurrency: ex.hedgeCurrency,
-                amount: ex.amount,
-                type: ex.type,
-                maturity: typeof ex.maturity === 'string' ? ex.maturity : new Date(ex.maturity).toISOString(),
-                date: ex.date ? (typeof ex.date === 'string' ? ex.date : new Date(ex.date).toISOString()) : undefined,
-                description: ex.description,
-              };
-            }
-          } catch {}
-          const req = importService.getOrCreateHedgeRequest({
-            exposureId,
-            source: 'strategy-builder',
-            exposureSnapshot: snap,
-          });
-          hedgeRequestId = req.id;
-        }
-      } catch {}
       
       // ✅ Utiliser tous les résultats calculés (tous les mois à hedger)
       // Les périodes sont maintenant générées directement à partir de la Hedging Start Date
