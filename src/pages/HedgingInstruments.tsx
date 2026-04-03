@@ -38,7 +38,7 @@ import {
   Lock,
   Unlock
 } from "lucide-react";
-import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty, HedgingStrategy } from "@/services/StrategyImportService";
+import StrategyImportService, { HedgingInstrument, HedgingPortfolio, HedgingCounterparty, HedgingStrategy, type HedgeRequest } from "@/services/StrategyImportService";
 import {
   parseCsvText,
   parseHedgingInstrumentRows,
@@ -150,6 +150,7 @@ export default function HedgingInstruments() {
   });
   const [importService] = useState(() => StrategyImportService.getInstance());
   const [strategies, setStrategies] = useState<HedgingStrategy[]>(() => importService.getHedgingStrategies());
+  const [hedgeRequests, setHedgeRequests] = useState<HedgeRequest[]>(() => importService.getHedgeRequests());
   const [portfolios, setPortfolios] = useState<HedgingPortfolio[]>(() => importService.getPortfolios());
   const [counterparties, setCounterparties] = useState<HedgingCounterparty[]>(() => importService.getCounterparties());
   const [selectedPortfolioFilter, setSelectedPortfolioFilter] = useState<string>("__all__"); // "__all__" | "__none__" | portfolioId
@@ -270,6 +271,60 @@ export default function HedgingInstruments() {
     };
   }, []);
 
+  // Keep HedgeRequests in sync (used by "By exposure" view)
+  useEffect(() => {
+    const sync = () => {
+      try {
+        setHedgeRequests(importService.getHedgeRequests());
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("storage", sync);
+    window.addEventListener("hedgingInstrumentsUpdated", sync as EventListener);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("hedgingInstrumentsUpdated", sync as EventListener);
+    };
+  }, [importService]);
+
+  // Helper to persist custom currency pairs
+  const saveCustomPairs = React.useCallback((
+    pairs: Array<{ symbol: string; name: string; base?: string; quote?: string; defaultSpotRate?: number }>
+  ) => {
+    setCustomCurrencyPairs(pairs);
+    try {
+      localStorage.setItem("customCurrencyPairs", JSON.stringify(pairs));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Ensure a pair exists (create custom if missing), infer spot from reverse when available
+  const ensurePairExists = React.useCallback((
+    base: string,
+    quote: string,
+    fallbackSpot: number
+  ): { symbol: string; name: string; base?: string; quote?: string; defaultSpotRate: number } => {
+    const b = String(base || "").toUpperCase();
+    const q = String(quote || "").toUpperCase();
+    const all = [...CURRENCY_PAIRS, ...customCurrencyPairs];
+    const directSymbol = `${b}/${q}`;
+    const direct = all.find(p => p.symbol === directSymbol) as any;
+    if (direct) {
+      const ds = Number((direct as any).defaultSpotRate ?? fallbackSpot ?? 1);
+      return { ...direct, defaultSpotRate: isFinite(ds) && ds > 0 ? ds : 1 };
+    }
+    const reverseSymbol = `${q}/${b}`;
+    const reverse = all.find(p => p.symbol === reverseSymbol) as any;
+    const inferred = reverse?.defaultSpotRate && reverse.defaultSpotRate > 0
+      ? 1 / reverse.defaultSpotRate
+      : (isFinite(fallbackSpot) && fallbackSpot > 0 ? fallbackSpot : 1);
+    const synthetic = { symbol: directSymbol, name: `${b}/${q}`, base: b, quote: q, defaultSpotRate: inferred, category: "others" as const };
+    saveCustomPairs([...customCurrencyPairs, synthetic]);
+    return synthetic as any;
+  }, [customCurrencyPairs, saveCustomPairs]);
+
   // Instrument types: exact same list as Pricers (value = internal, label = display)
   const INSTRUMENT_TYPES = useMemo(() => [
     { value: "call", label: "Vanilla Call", category: "vanilla" },
@@ -336,6 +391,9 @@ export default function HedgingInstruments() {
     strategyMode: "new" as "existing" | "new",
     strategyId: "HSTRAT-UNASSIGNED" as string,
     newStrategyName: "" as string,
+    // Link to exposure hedge campaign (HedgeRequest)
+    exposureId: "" as string,
+    hedgeRequestId: "" as string,
   }));
   const [addFormRateOverrides, setAddFormRateOverrides] = useState<{ domestic: boolean; foreign: boolean }>({
     domestic: false,
@@ -345,6 +403,7 @@ export default function HedgingInstruments() {
   // Sync strategies from service (migration runs there).
   useEffect(() => {
     setStrategies(importService.getHedgingStrategies());
+    setHedgeRequests(importService.getHedgeRequests());
   }, [importService]);
 
   // Local editing state for table inputs (avoids recalc on every keystroke → prevents crash)
@@ -2182,6 +2241,155 @@ export default function HedgingInstruments() {
     return Number.isFinite(n) ? n.toFixed(digits) : fallback;
   };
 
+  /**
+   * Compute MTM total for a list of instruments using the same logic as the table:
+   * MTM(unit) = (today - original) for long, (original - today) for short
+   * MTM(total) = MTM(unit) * |notional| * (|quantity|/100)
+   *
+   * Returns amount in QUOTE currency of the pair (e.g. USD for EUR/USD).
+   */
+  const computeMtmTotalQuote = (items: HedgingInstrument[]): number => {
+    let total = 0;
+    for (const inst of items) {
+      const status = String((inst as any).status || "").toLowerCase();
+      if (status === "cancelled") continue;
+      // ignore matured instruments for "today" effective rate
+      const mat = (inst as any).maturity ? new Date(String((inst as any).maturity)) : null;
+      if (mat && !isNaN(mat.getTime()) && mat <= new Date()) continue;
+
+      const originalPrice = Number((inst as any).realOptionPrice ?? (inst as any).premium ?? 0) || 0;
+      const todayPrice = Number(calculateTodayPrice(inst)) || 0;
+      const quantity = Number((inst as any).quantity ?? 0) || 0;
+      const isShort = quantity < 0;
+      const mtmUnit = isShort ? (originalPrice - todayPrice) : (todayPrice - originalPrice);
+
+      // Avoid double counting quantity: for exported instruments, notional may already be scaled.
+      // Prefer rawVolume * hedgeQuantity% when available; otherwise use notional * quantity%.
+      const rawVol = Number((inst as any).rawVolume ?? (inst as any).exposureVolume ?? NaN);
+      const hedgeQty = Number((inst as any).hedgeQuantity ?? NaN);
+      const effectiveNotionalBase =
+        Number.isFinite(rawVol) && rawVol > 0 && Number.isFinite(hedgeQty)
+          ? Math.abs(rawVol) * (Math.abs(hedgeQty) / 100)
+          : Math.abs(Number((inst as any).notional || 0)) * (Math.abs(quantity) / 100);
+
+      total += mtmUnit * effectiveNotionalBase;
+    }
+    return Number.isFinite(total) ? total : 0;
+  };
+
+  /** Effective base notional for a leg (avoids double counting). */
+  const getEffectiveNotionalBase = (inst: HedgingInstrument): number => {
+    const qty = Number((inst as any).quantity ?? 0) || 0;
+    const rawVol = Number((inst as any).rawVolume ?? (inst as any).exposureVolume ?? NaN);
+    const hedgeQty = Number((inst as any).hedgeQuantity ?? NaN);
+    if (Number.isFinite(rawVol) && rawVol > 0 && Number.isFinite(hedgeQty)) {
+      return Math.abs(rawVol) * (Math.abs(hedgeQty) / 100);
+    }
+    return Math.abs(Number((inst as any).notional || 0)) * (Math.abs(qty) / 100);
+  };
+
+  /** Payoff per 1 base unit in QUOTE currency at a given spot (intrinsic-style, Strategy Builder style). */
+  const payoffUnitQuoteAtSpot = (inst: HedgingInstrument, spot: number, refSpot: number): number => {
+    const t = String((inst as any).type || "").toLowerCase();
+    // Try to use originalComponent.type for internal mapping
+    const compType = String((inst as any).originalComponent?.type || "").toLowerCase();
+    const kind =
+      compType ||
+      (t.includes("put") ? "put" : t.includes("forward") ? "forward" : t.includes("swap") ? "swap" : t.includes("call") ? "call" : "");
+    const strikeType = (inst as any).originalComponent?.strikeType || "absolute";
+    const strikeRaw = Number((inst as any).originalComponent?.strike ?? (inst as any).strike ?? spot) || spot;
+    const strike = strikeType === "percent" ? refSpot * (strikeRaw / 100) : strikeRaw;
+
+    // Barrier/digital fields are already absolute in instruments; but originalComponent may be percent.
+    const barrierType = (inst as any).originalComponent?.barrierType || "absolute";
+    const barrierRaw = Number((inst as any).originalComponent?.barrier ?? (inst as any).barrier ?? 0) || 0;
+    const secondBarrierRaw = Number((inst as any).originalComponent?.secondBarrier ?? (inst as any).secondBarrier ?? 0) || 0;
+    const barrier = barrierType === "percent" ? refSpot * (barrierRaw / 100) : barrierRaw;
+    const secondBarrier = barrierType === "percent" ? refSpot * (secondBarrierRaw / 100) : secondBarrierRaw;
+    const rebate = Number((inst as any).originalComponent?.rebate ?? (inst as any).rebate ?? 0) || 0;
+    const rebateUnit = rebate / 100;
+
+    // Barrier & digital detection similar to Strategy Builder
+    const isBarrier = kind.includes("knockout") || kind.includes("knockin") || t.includes("knock") || t.includes("barrier");
+    const isDigital = t.includes("touch") || t.includes("binary") || t.includes("digital") || ["one-touch","no-touch","double-touch","double-no-touch","range-binary","outside-binary"].includes(kind);
+
+    if (kind === "swap") return spot - strike;
+    if (kind === "forward") return spot - strike;
+    if (kind === "call") return Math.max(0, spot - strike);
+    if (kind === "put") return Math.max(0, strike - spot);
+
+    // Best-effort for digitals (if type is a known digital label)
+    const digitalKey = kind || compType || "";
+    if (isDigital) {
+      let conditionMet = false;
+      switch (digitalKey) {
+        case "one-touch":
+          conditionMet = spot >= barrier;
+          break;
+        case "no-touch":
+          conditionMet = spot < barrier;
+          break;
+        case "double-touch":
+          conditionMet = spot >= barrier || spot <= secondBarrier;
+          break;
+        case "double-no-touch":
+          conditionMet = spot < barrier && spot > secondBarrier;
+          break;
+        case "range-binary":
+          conditionMet = spot <= barrier && spot >= strike;
+          break;
+        case "outside-binary":
+          conditionMet = spot > barrier || spot < strike;
+          break;
+        default:
+          // fallback: treat as one-touch style
+          conditionMet = spot >= barrier;
+      }
+      return conditionMet ? rebateUnit : 0;
+    }
+
+    // Best-effort barrier: use Strategy Builder knockout/knockin logic if original type exists
+    if (isBarrier) {
+      const basePayoff = kind.includes("put") ? Math.max(0, strike - spot) : Math.max(0, spot - strike);
+      // Can't reliably infer barrier direction for all variants here; fall back to base payoff when unknown.
+      return basePayoff;
+    }
+
+    return 0;
+  };
+
+  /** Net hedge value in QUOTE currency at a given spot, including premiums, scaled by effective notional. */
+  const computeNetHedgeValueQuoteAtSpot = (items: HedgingInstrument[], spot: number, refSpot: number): number => {
+    let total = 0;
+    for (const inst of items) {
+      const qty = Number((inst as any).quantity ?? 0) || 0;
+      if (!Number.isFinite(qty) || qty === 0) continue;
+      const sign = qty >= 0 ? 1 : -1; // long vs short
+      const effectiveNotionalBase = getEffectiveNotionalBase(inst);
+      if (!Number.isFinite(effectiveNotionalBase) || effectiveNotionalBase <= 0) continue;
+
+      const payoffUnit = payoffUnitQuoteAtSpot(inst, spot, refSpot);
+      const premiumUnit = Number((inst as any).realOptionPrice ?? (inst as any).premium ?? 0) || 0;
+      total += sign * (payoffUnit - premiumUnit) * effectiveNotionalBase;
+    }
+    return Number.isFinite(total) ? total : 0;
+  };
+
+  /**
+   * Effective FX rate / "target strike" for an exposure given spot and MTM (quote currency).
+   * Payable (buy base): S_eff = S - MTM/N
+   * Receivable (sell base): S_eff = S + MTM/N
+   */
+  const computeEffectiveRate = (args: { spot: number; mtmQuote: number; exposureNotionalBase: number; exposureType: "receivable" | "payable" }): number | null => {
+    const S = Number(args.spot);
+    const MTM = Number(args.mtmQuote);
+    const N = Math.abs(Number(args.exposureNotionalBase));
+    if (!Number.isFinite(S) || S <= 0 || !Number.isFinite(MTM) || !Number.isFinite(N) || N <= 0) return null;
+    const adj = MTM / N;
+    const eff = args.exposureType === "payable" ? (S - adj) : (S + adj);
+    return Number.isFinite(eff) ? eff : null;
+  };
+
   // Get base currency from currency pair
   const getBaseCurrency = (currencyPair: string): string => {
     if (currencyPair.includes('/')) {
@@ -3444,6 +3652,7 @@ export default function HedgingInstruments() {
                       exportTimeToMaturity: ttm > 0 ? ttm : undefined,
                       strategyId,
                       strategyName,
+                      hedgeRequestId: addForm.hedgeRequestId || undefined,
                     });
                     // Close dialog and show toast immediately so UI doesn't freeze
                     setIsAddDialogOpen(false);
@@ -3471,6 +3680,8 @@ export default function HedgingInstruments() {
                         strategyMode: "new",
                         strategyId: "HSTRAT-UNASSIGNED",
                         newStrategyName: "",
+                        exposureId: "",
+                        hedgeRequestId: "",
                     });
                     toast({ title: "Instrument added", description: `${displayType} ${addForm.currencyPair} has been added.` });
                     // Defer heavy work (table recalc + useFinancialData sync) to next tick to avoid "Page not responding"
@@ -3534,14 +3745,16 @@ export default function HedgingInstruments() {
                           if (val === "__none__") return;
                           const exp = exposures.find((e) => (e.id || "") === val) || exposures[Number(val)] || undefined;
                           if (!exp) return;
+                          const exposureId = String(exp.id || "");
                           const base = String(exp.currency || "").toUpperCase();
                           const hedge = String(exp.hedgeCurrency || (base === "USD" ? "EUR" : "USD")).toUpperCase();
                           const pairSymbol = `${base}/${hedge}`;
-                          const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p) => p.symbol === pairSymbol) || { symbol: pairSymbol, base, quote: hedge, defaultSpotRate: Number(addForm.spotPrice) || 1 };
+                          // Create custom pair if missing (aligned with Strategy Builder behavior)
+                          const ensuredPair = ensurePairExists(base, hedge, Number(addForm.spotPrice) || 1);
                           // Try live rate
-                          let spot = pair && "defaultSpotRate" in pair ? (pair as any).defaultSpotRate : (Number(addForm.spotPrice) || 1);
+                          let spot = ensuredPair && "defaultSpotRate" in ensuredPair ? (ensuredPair as any).defaultSpotRate : (Number(addForm.spotPrice) || 1);
                           try {
-                            const live = await fetchRealTimeRate(pair as any);
+                            const live = await fetchRealTimeRate(ensuredPair as any);
                             if (live && isFinite(live) && live > 0) spot = live;
                           } catch {}
                           const amountAbs = Math.abs(Number(exp.amount || 0));
@@ -3552,9 +3765,35 @@ export default function HedgingInstruments() {
                           const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
                           const domesticRate = fromBootstrapSettings ? undefined : (bankRates[hedge as keyof typeof bankRates] ?? addForm.domesticRate);
                           const foreignRate = fromBootstrapSettings ? undefined : (bankRates[base as keyof typeof bankRates] ?? addForm.foreignRate);
+
+                          // Create or reuse a hedge request linked to this exposure
+                          let hedgeRequestId = "";
+                          if (exposureId) {
+                            try {
+                              const req = importService.getOrCreateHedgeRequest({
+                                exposureId,
+                                source: "manual",
+                                exposureSnapshot: {
+                                  currency: base,
+                                  hedgeCurrency: hedge,
+                                  amount: Number(exp.amount || 0),
+                                  type: exp.type,
+                                  maturity: typeof exp.maturity === "string" ? exp.maturity : new Date(exp.maturity as any).toISOString(),
+                                  date: (exp as any).date
+                                    ? (typeof (exp as any).date === "string" ? (exp as any).date : new Date((exp as any).date).toISOString())
+                                    : undefined,
+                                  description: exp.description,
+                                },
+                              });
+                              hedgeRequestId = req.id;
+                            } catch {}
+                          }
+
                           setAddForm((f) => ({
                             ...f,
-                            currencyPair: pairSymbol,
+                            exposureId,
+                            hedgeRequestId,
+                            currencyPair: ensuredPair.symbol,
                             spotPrice: spot,
                             strike: f.strikeType === "absolute" ? spot : (Number(f.strike) || 0),
                             maturity: maturityYmd || f.maturity,
@@ -5040,62 +5279,82 @@ export default function HedgingInstruments() {
                     const minMat = maturities[0] ?? "—";
                     const maxMat = maturities[maturities.length - 1] ?? "—";
                     const isExpanded = !!expandedStrategies[s.id];
-                    const totalPayoff = items.reduce((acc, inst) => {
-                      const unitPrice = calculateTodayPrice(inst);
-                      const notionalAbs = Math.abs(Number(inst.notional || 0));
-                      const qtySign = Number(inst.quantity || 0) >= 0 ? 1 : -1;
-                      return acc + (Number.isFinite(unitPrice) ? unitPrice : 0) * notionalAbs * qtySign;
-                    }, 0);
-                    const strategyGreeks = items.reduce(
-                      (acc, inst) => {
-                        const notionalAbs = Math.abs(Number(inst.notional || 0));
-                        const qtySign = Number(inst.quantity || 0) >= 0 ? 1 : -1;
-                        const weight = notionalAbs * qtySign;
-                        const t = PricingService.calculateTimeToMaturity(inst.maturity, valuationDate);
-                        if (!Number.isFinite(t) || t <= 0) return acc;
-
-                        const marketData = currencyMarketData[inst.currency] || getMarketDataFromInstruments(inst.currency) || MARKET_DEFAULTS;
-                        const spot = Number(inst.impliedSpotPrice || marketData.spot) || 1;
-                        const K = Number(inst.strike || spot) || spot;
-                        const eff = getEffectiveRatesForInstrument(inst);
-                        const sigma =
-                          Number(inst.impliedVolatility ?? inst.volatility ?? marketData.volatility) > 0
-                            ? Number(inst.impliedVolatility ?? inst.volatility ?? marketData.volatility) / 100
-                            : 0;
-                        if (!Number.isFinite(sigma) || sigma <= 0) return acc;
-
-                        const barrierType = mapBarrierGreeksType(inst.type);
-                        const vanillaType = mapVanillaGreeksType(inst.type);
-                        const digitalType = isDigitalOptionType(inst.type);
-                        const greekType = barrierType || (digitalType ? normalizeOptionType(inst.type) : vanillaType || "call");
-                        const rebate = Number(inst.rebate ?? 100);
-                        const g = PricingService.calculateGreeks(
-                          greekType,
-                          spot,
-                          K,
-                          eff.r_d,
-                          eff.r_f,
-                          t,
-                          sigma,
-                          inst.barrier,
-                          inst.secondBarrier,
-                          rebate
-                        );
-                        return {
-                          delta: acc.delta + (Number.isFinite(g.delta) ? g.delta : 0) * weight,
-                          gamma: acc.gamma + (Number.isFinite(g.gamma) ? g.gamma : 0) * weight,
-                          vega: acc.vega + (Number.isFinite(g.vega) ? g.vega : 0) * weight,
-                          theta: acc.theta + (Number.isFinite(g.theta) ? g.theta : 0) * weight,
-                          rho: acc.rho + (Number.isFinite(g.rho) ? g.rho : 0) * weight,
-                        };
-                      },
-                      { delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0 }
-                    );
                     const refSpot = (() => {
                       const first = items[0];
                       if (!first) return 1;
                       const marketData = currencyMarketData[first.currency] || getMarketDataFromInstruments(first.currency) || MARKET_DEFAULTS;
                       return Number(first.impliedSpotPrice || marketData.spot) || 1;
+                    })();
+
+                    // Payoff (incl. premium) evaluated at today's spot (refSpot) for global readability.
+                    // IMPORTANT: This is the REAL payoff/cashflow in QUOTE currency for the full hedged notional
+                    // (avoids double counting quantity using rawVolume/hedgeQuantity when available).
+                    const totalPayoff = computeNetHedgeValueQuoteAtSpot(items, refSpot, refSpot);
+                    // Exposure label (via hedgeRequest -> exposure). If multiple exposures, show a generic label.
+                    const exposureLabel = (() => {
+                      const ids = Array.from(
+                        new Set(items.map((i) => String((i as any).hedgeRequestId || "")).filter(Boolean))
+                      );
+                      if (ids.length === 0) return "Exposure —";
+                      const expIds = Array.from(
+                        new Set(
+                          ids
+                            .map((rid) => hedgeRequests.find((r) => r.id === rid)?.exposureId)
+                            .filter(Boolean)
+                            .map(String)
+                        )
+                      );
+                      if (expIds.length !== 1) return "Exposure: multiple";
+                      const expId = expIds[0];
+                      const exp = exposures.find((e: any) => String(e.id || "") === expId);
+                      if (!exp) {
+                        const snap = hedgeRequests.find((r) => r.exposureId === expId)?.exposureSnapshot;
+                        if (snap?.currency && snap?.hedgeCurrency && snap?.maturity) {
+                          const ymd = String(snap.maturity).split("T")[0];
+                          return `Exposure ${snap.currency}/${snap.hedgeCurrency} • ${ymd} • ${(snap.type || "").toUpperCase() || "—"}`;
+                        }
+                        return `Exposure ${expId}`;
+                      }
+                      const base = String(exp.currency || "").toUpperCase();
+                      const hedge = String(exp.hedgeCurrency || (base === "USD" ? "EUR" : "USD")).toUpperCase();
+                      const ymd = (() => {
+                        const d = typeof exp.maturity === "string" ? new Date(exp.maturity) : (exp.maturity as Date);
+                        return isNaN(d.getTime()) ? "—" : d.toISOString().split("T")[0];
+                      })();
+                      return `Exposure ${base}/${hedge} • ${ymd} • ${(exp.type || "").toUpperCase()}`;
+                    })();
+                    const targetRateLabel = (() => {
+                      // Derive target rate only when we can resolve a single linked exposure
+                      const reqIds = Array.from(new Set(items.map((i) => String((i as any).hedgeRequestId || "")).filter(Boolean)));
+                      if (reqIds.length === 0) return null;
+                      const expIds = Array.from(new Set(reqIds.map((rid) => hedgeRequests.find((r) => r.id === rid)?.exposureId).filter(Boolean).map(String)));
+                      if (expIds.length !== 1) return null;
+                      const expId = expIds[0];
+                      const exp = exposures.find((e: any) => String(e.id || "") === expId);
+                      const expType = (exp?.type || hedgeRequests.find((r) => r.exposureId === expId)?.exposureSnapshot?.type) as ("receivable" | "payable" | undefined);
+                      const expAmount = Number(exp?.amount ?? hedgeRequests.find((r) => r.exposureId === expId)?.exposureSnapshot?.amount ?? 0);
+                      if (!expType || !Number.isFinite(expAmount) || Math.abs(expAmount) <= 0) return null;
+                      const mtmQuote = computeMtmTotalQuote(items);
+                      const eff = computeEffectiveRate({
+                        spot: refSpot,
+                        mtmQuote,
+                        exposureNotionalBase: Math.abs(expAmount),
+                        exposureType: expType,
+                      });
+                      if (eff == null) return null;
+                      const payoffNow = computeNetHedgeValueQuoteAtSpot(items, refSpot, refSpot);
+                      const effPayoff =
+                        Number.isFinite(payoffNow) && Math.abs(Number(expAmount)) > 0
+                          ? computeEffectiveRate({
+                              spot: refSpot,
+                              mtmQuote: payoffNow,
+                              exposureNotionalBase: Math.abs(expAmount),
+                              exposureType: expType,
+                            })
+                          : null;
+                      return effPayoff != null
+                        ? `Target ${formatSafeNumber(eff, 4)} • P&L-rate ${formatSafeNumber(effPayoff, 4)} (S ${formatSafeNumber(refSpot, 4)})`
+                        : `Target ${formatSafeNumber(eff, 4)} (S ${formatSafeNumber(refSpot, 4)} • MTM ${formatSafeNumber(mtmQuote, 0)})`;
                     })();
                     const showPayoff = !!showPayoffByStrategy[s.id];
                     const payoffCurve = (() => {
@@ -5104,48 +5363,9 @@ export default function HedgingInstruments() {
                       const maxSpot = refSpot * 1.3;
                       const points = 100;
                       const step = (maxSpot - minSpot) / points;
-                      const strategyComponents = items
-                        .slice()
-                        .sort((a, b) => (a.optionIndex ?? 0) - (b.optionIndex ?? 0))
-                        .map((inst) => {
-                          const fallbackType =
-                            String(inst.type || "").toLowerCase().includes("put")
-                              ? "put"
-                              : String(inst.type || "").toLowerCase().includes("forward")
-                                ? "forward"
-                                : String(inst.type || "").toLowerCase().includes("swap")
-                                  ? "swap"
-                                  : "call";
-                          return {
-                            ...(inst.originalComponent || {}),
-                            type: inst.originalComponent?.type || fallbackType,
-                            quantity: Number(inst.quantity ?? inst.originalComponent?.quantity ?? 0),
-                            strikeType: inst.originalComponent?.strikeType || "absolute",
-                            strike: Number(inst.originalComponent?.strike ?? inst.strike ?? refSpot),
-                            barrierType: inst.originalComponent?.barrierType || "absolute",
-                            barrier: Number(inst.originalComponent?.barrier ?? inst.barrier ?? 0),
-                            secondBarrier: Number(inst.originalComponent?.secondBarrier ?? inst.secondBarrier ?? 0),
-                            rebate: Number(inst.originalComponent?.rebate ?? inst.rebate ?? 0),
-                          };
-                        });
-                      const premiumByLeg = new Map<number, number>();
-                      items.forEach((inst, idx) => {
-                        const key = inst.optionIndex ?? idx;
-                        const unitPremium = Number(inst.realOptionPrice ?? inst.premium ?? 0);
-                        if (!premiumByLeg.has(key)) {
-                          premiumByLeg.set(key, Number.isFinite(unitPremium) ? unitPremium : 0);
-                        }
-                      });
                       const rows: Array<{ spot: number; payoff: number }> = [];
                       for (let spot = minSpot; spot <= maxSpot + step / 2; spot += step) {
-                        let total = calculateStrategyPayoffAtPrice(strategyComponents as any[], spot, refSpot);
-                        strategyComponents.forEach((leg, legIndex) => {
-                          const qty = Number(leg.quantity || 0) / 100;
-                          const premium = premiumByLeg.get(legIndex) ?? 0;
-                          if (premium !== 0 && qty !== 0) {
-                            total += qty > 0 ? -premium : premium;
-                          }
-                        });
+                        const total = computeNetHedgeValueQuoteAtSpot(items, spot, refSpot);
                         rows.push({ spot, payoff: Number.isFinite(total) ? total : 0 });
                       }
                       return rows;
@@ -5160,7 +5380,17 @@ export default function HedgingInstruments() {
                               onClick={() => navigate(`/hedging-strategy/${s.id}`)}
                               title="Open strategy details"
                             >
-                              {s.name}
+                              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <span>{s.name}</span>
+                                <Badge variant="outline" className="font-mono text-[11px]">
+                                  {exposureLabel}
+                                </Badge>
+                                {targetRateLabel && (
+                                  <Badge variant="secondary" className="font-mono text-[11px]">
+                                    {targetRateLabel}
+                                  </Badge>
+                                )}
+                              </span>
                             </button>
                             <div className="text-xs text-muted-foreground">
                               {items.length} instrument(s) • Maturity {minMat} → {maxMat}
@@ -5170,11 +5400,6 @@ export default function HedgingInstruments() {
                             <Badge variant="outline">Notional {totalNotional.toLocaleString()}</Badge>
                             <Badge variant="secondary">MTM {Number.isFinite(totalMtm) ? totalMtm.toFixed(2) : "0.00"}</Badge>
                             <Badge variant="outline">Payoff global {Number.isFinite(totalPayoff) ? totalPayoff.toFixed(2) : "0.00"}</Badge>
-                            <Badge variant="secondary">Δ {formatSafeNumber(strategyGreeks.delta, 2)}</Badge>
-                            <Badge variant="secondary">Γ {formatSafeNumber(strategyGreeks.gamma, 4)}</Badge>
-                            <Badge variant="secondary">Vega {formatSafeNumber(strategyGreeks.vega, 2)}</Badge>
-                            <Badge variant="secondary">Θ {formatSafeNumber(strategyGreeks.theta, 2)}</Badge>
-                            <Badge variant="secondary">Rho {formatSafeNumber(strategyGreeks.rho, 2)}</Badge>
                             <Button
                               variant="outline"
                               size="sm"
@@ -5240,11 +5465,6 @@ export default function HedgingInstruments() {
                                 <TableHead>Maturity</TableHead>
                                 <TableHead>Notional</TableHead>
                                 <TableHead>Payoff</TableHead>
-                                <TableHead>Δ</TableHead>
-                                <TableHead>Γ</TableHead>
-                                <TableHead>Vega</TableHead>
-                                <TableHead>Θ</TableHead>
-                                <TableHead>Rho</TableHead>
                                 <TableHead>Counterparty</TableHead>
                               </TableRow>
                             </TableHeader>
@@ -5257,24 +5477,6 @@ export default function HedgingInstruments() {
                                   const notionalAbs = Math.abs(Number(inst.notional || 0));
                                   const qtySign = Number(inst.quantity || 0) >= 0 ? 1 : -1;
                                   const legPayoff = (Number.isFinite(unitPrice) ? unitPrice : 0) * notionalAbs * qtySign;
-                                  const t = PricingService.calculateTimeToMaturity(inst.maturity, valuationDate);
-                                  const marketData = currencyMarketData[inst.currency] || getMarketDataFromInstruments(inst.currency) || MARKET_DEFAULTS;
-                                  const spot = Number(inst.impliedSpotPrice || marketData.spot) || 1;
-                                  const K = Number(inst.strike || spot) || spot;
-                                  const eff = getEffectiveRatesForInstrument(inst);
-                                  const sigma =
-                                    Number(inst.impliedVolatility ?? inst.volatility ?? marketData.volatility) > 0
-                                      ? Number(inst.impliedVolatility ?? inst.volatility ?? marketData.volatility) / 100
-                                      : 0;
-                                  const barrierType = mapBarrierGreeksType(inst.type);
-                                  const vanillaType = mapVanillaGreeksType(inst.type);
-                                  const digitalType = isDigitalOptionType(inst.type);
-                                  const greekType = barrierType || (digitalType ? normalizeOptionType(inst.type) : vanillaType || "call");
-                                  const rebate = Number(inst.rebate ?? 100);
-                                  const g =
-                                    Number.isFinite(t) && t > 0 && Number.isFinite(sigma) && sigma > 0
-                                      ? PricingService.calculateGreeks(greekType, spot, K, eff.r_d, eff.r_f, t, sigma, inst.barrier, inst.secondBarrier, rebate)
-                                      : { delta: 0, gamma: 0, vega: 0, theta: 0, rho: 0 };
                                   return (
                                     <TableRow
                                       key={inst.id}
@@ -5289,11 +5491,6 @@ export default function HedgingInstruments() {
                                       <TableCell className={`font-mono ${legPayoff >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                                         {Number.isFinite(legPayoff) ? legPayoff.toFixed(2) : "0.00"}
                                       </TableCell>
-                                      <TableCell className="font-mono">{formatSafeNumber(g.delta, 3)}</TableCell>
-                                      <TableCell className="font-mono">{formatSafeNumber(g.gamma, 5)}</TableCell>
-                                      <TableCell className="font-mono">{formatSafeNumber(g.vega, 3)}</TableCell>
-                                      <TableCell className="font-mono">{formatSafeNumber(g.theta, 3)}</TableCell>
-                                      <TableCell className="font-mono">{formatSafeNumber(g.rho, 3)}</TableCell>
                                       <TableCell>{inst.counterparty || "—"}</TableCell>
                                     </TableRow>
                                   );
@@ -5316,15 +5513,25 @@ export default function HedgingInstruments() {
                     return isNaN(dt.getTime()) ? "N/A" : dt.toISOString().split("T")[0];
                   };
                   const exposureCards = exposures.map((exp, idx) => {
+                    const exposureId = String((exp as any).id || "");
                     const base = String(exp.currency || "").toUpperCase();
                     const hedge = String(exp.hedgeCurrency || base === "USD" ? "EUR" : "USD").toUpperCase();
                     const pair = `${base}/${hedge}`;
                     const maturityYmd = parseYmd(exp.maturity);
-                    const matched = filteredInstruments.filter(inst => {
+                    // Preferred: link via HedgeRequest -> exposureId
+                    const reqIds = new Set(
+                      hedgeRequests
+                        .filter((r) => exposureId && r.exposureId === exposureId)
+                        .map((r) => r.id)
+                    );
+                    const matchedLinked = filteredInstruments.filter((inst) => inst.hedgeRequestId && reqIds.has(inst.hedgeRequestId));
+                    // Fallback for legacy instruments (no hedgeRequestId yet): old heuristic match by pair+maturity
+                    const matchedLegacy = filteredInstruments.filter(inst => {
                       if (inst.currency !== pair) return false;
                       const instMat = String(inst.maturity || "").split("T")[0];
                       return instMat === maturityYmd;
                     });
+                    const matched = matchedLinked.length > 0 ? matchedLinked : matchedLegacy;
                     const byStrat = new Map<string, HedgingInstrument[]>();
                     matched.forEach(m => {
                       const sid = m.strategyId || "HSTRAT-UNASSIGNED";
@@ -5334,6 +5541,27 @@ export default function HedgingInstruments() {
                     });
                     const totalNotional = matched.reduce((s, m) => s + Math.abs(Number(m.notional || 0)), 0);
                     const strategyCount = byStrat.size;
+                    const reqCount = exposureId ? hedgeRequests.filter(r => r.exposureId === exposureId).length : 0;
+                    const spot = (() => {
+                      const md = currencyMarketData[pair] || getMarketDataFromInstruments(pair) || MARKET_DEFAULTS;
+                      return Number(md.spot) || 0;
+                    })();
+                    const mtmQuote = computeMtmTotalQuote(matched);
+                    const eff = computeEffectiveRate({
+                      spot,
+                      mtmQuote,
+                      exposureNotionalBase: Math.abs(Number(exp.amount || 0)),
+                      exposureType: exp.type,
+                    });
+                    const payoffNow = computeNetHedgeValueQuoteAtSpot(matched, spot, spot);
+                    const effPayoff = eff != null
+                      ? computeEffectiveRate({
+                          spot,
+                          mtmQuote: payoffNow,
+                          exposureNotionalBase: Math.abs(Number(exp.amount || 0)),
+                          exposureType: exp.type,
+                        })
+                      : null;
                     return (
                       <div key={`${pair}-${maturityYmd}-${idx}`} className="rounded-lg border p-3">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -5342,11 +5570,21 @@ export default function HedgingInstruments() {
                               Exposure {pair} • {maturityYmd} • {exp.type?.toUpperCase()}
                             </div>
                             <div className="text-xs text-muted-foreground">
-                              Amount {Math.abs(Number(exp.amount || 0)).toLocaleString()} {base} • Strategies {strategyCount}
+                              Amount {Math.abs(Number(exp.amount || 0)).toLocaleString()} {base} • Hedge requests {reqCount} • Strategies {strategyCount}
+                              {matchedLinked.length === 0 && matchedLegacy.length > 0 && (
+                                <span className="ml-2 text-amber-600">• Legacy match (no link)</span>
+                              )}
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-2 text-xs">
                             <Badge variant="outline">Notional {totalNotional.toLocaleString()}</Badge>
+                            {eff != null && spot > 0 && (
+                              <Badge variant="secondary" className="font-mono">
+                                {effPayoff != null
+                                  ? `Target ${formatSafeNumber(eff, 4)} • P&L-rate ${formatSafeNumber(effPayoff, 4)} (S ${formatSafeNumber(spot, 4)})`
+                                  : `Target ${formatSafeNumber(eff, 4)} (S ${formatSafeNumber(spot, 4)} • MTM ${formatSafeNumber(mtmQuote, 0)})`}
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         {matched.length > 0 ? (
@@ -5354,6 +5592,7 @@ export default function HedgingInstruments() {
                             <Table className="[&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                               <TableHeader>
                                 <TableRow>
+                                  <TableHead>Hedge Request</TableHead>
                                   <TableHead>Strategy</TableHead>
                                   <TableHead>ID</TableHead>
                                   <TableHead>Type</TableHead>
@@ -5369,6 +5608,7 @@ export default function HedgingInstruments() {
                                     .sort((a, b) => String(a.maturity).localeCompare(String(b.maturity)))
                                     .map(inst => (
                                       <TableRow key={inst.id} className="cursor-pointer" onClick={() => navigate(`/hedging/${inst.id}`)}>
+                                        <TableCell className="font-mono text-xs">{inst.hedgeRequestId || "—"}</TableCell>
                                         <TableCell className="font-mono">{strategies.find(s => s.id === sid)?.name || "Unassigned"}</TableCell>
                                         <TableCell className="font-mono">{inst.id}</TableCell>
                                         <TableCell>{inst.type}</TableCell>

@@ -122,6 +122,8 @@ interface AppSettings {
   // FX Exposures settings
   fxExposures: {
     autoDetection: boolean;
+    /** When true, user can manually edit hedge ratio/hedged amount on exposures. Default: false (auto-calculated). */
+    manualHedgeEditing: boolean;
     defaultMaturity: string;
     riskClassification: string;
     consolidationLevel: string;
@@ -225,6 +227,7 @@ const Settings = () => {
     },
     fxExposures: {
       autoDetection: true,
+      manualHedgeEditing: false,
       defaultMaturity: "1M",
       riskClassification: "medium",
       consolidationLevel: "entity",
@@ -1880,6 +1883,19 @@ const Settings = () => {
                     onCheckedChange={(checked) => updateSettings('fxExposures', { autoDetection: checked })}
                   />
                   <Label htmlFor="auto-detection">Auto-detect FX Exposures</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id="manual-hedge-editing"
+                    checked={settings.fxExposures.manualHedgeEditing}
+                    onCheckedChange={(checked) => updateSettings('fxExposures', { manualHedgeEditing: checked })}
+                  />
+                  <div className="space-y-0.5">
+                    <Label htmlFor="manual-hedge-editing">Manual hedge ratio editing</Label>
+                    <div className="text-xs text-muted-foreground">
+                      Off = hedge ratio is auto-calculated from hedges (recommended). On = allow manual override.
+                    </div>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="default-maturity">Default Maturity</Label>

@@ -47,6 +47,28 @@ export interface HedgingStrategy {
   counterparty?: string;
 }
 
+/** Hedge request: a logical hedge "campaign" linked to exactly one FX exposure. */
+export interface HedgeRequest {
+  id: string;
+  exposureId: string;
+  createdAt: number;
+  source: 'strategy-builder' | 'manual' | 'import';
+  /** Optional: the strategy container that initiated this hedge request */
+  strategyId?: string;
+  /** Optional: for robustness if exposure is edited/deleted later */
+  exposureSnapshot?: {
+    currency?: string;
+    hedgeCurrency?: string;
+    amount?: number;
+    type?: 'receivable' | 'payable';
+    maturity?: string;
+    date?: string;
+    description?: string;
+  };
+  status?: 'open' | 'closed';
+  notes?: string;
+}
+
 export interface HedgingInstrument {
   id: string;
   type: string;
@@ -70,6 +92,8 @@ export interface HedgingInstrument {
   /** Stable link to a hedging strategy container (preferred over strategyName). */
   strategyId?: string;
   strategyName?: string;
+  /** Link to a hedge request (campaign) which itself links to an exposure. */
+  hedgeRequestId?: string;
   importedAt?: number;
   // New fields for real data from Detailed Results
   realOptionPrice?: number;  // Actual option price from calculations (Call Price 1, Put Price 2, etc.)
@@ -130,6 +154,7 @@ class StrategyImportService {
   private importedStrategies: ImportedStrategy[] = [];
   private hedgingStrategies: HedgingStrategy[] = [];
   private hedgingInstruments: HedgingInstrument[] = [];
+  private hedgeRequests: HedgeRequest[] = [];
   private hedgingPortfolios: HedgingPortfolio[] = [];
   private hedgingCounterparties: HedgingCounterparty[] = [];
 
@@ -161,6 +186,11 @@ class StrategyImportService {
         this.hedgingInstruments = JSON.parse(savedInstruments);
       }
 
+      const savedHedgeRequests = localStorage.getItem('hedgeRequests');
+      if (savedHedgeRequests) {
+        this.hedgeRequests = JSON.parse(savedHedgeRequests);
+      }
+
       const savedPortfolios = localStorage.getItem('hedgingPortfolios');
       if (savedPortfolios) {
         this.hedgingPortfolios = JSON.parse(savedPortfolios);
@@ -181,11 +211,19 @@ class StrategyImportService {
 
       // ✅ Migration: ensure hedgingStrategies exists + backfill instrument.strategyId for legacy data.
       this.migrateHedgingStrategies();
+      this.migrateHedgeRequests();
 
       this.saveToStorage();
     } catch (error) {
       console.error('Error loading from storage:', error);
     }
+  }
+
+  /** Migration: ensure hedgeRequests exists; backfill from legacy instruments if possible. */
+  private migrateHedgeRequests(): void {
+    // Nothing to do if already present
+    if (!Array.isArray(this.hedgeRequests)) this.hedgeRequests = [];
+    // Legacy instruments might have exposureId in the future; currently none. Keep as-is.
   }
 
   private migrateHedgingStrategies(): void {
@@ -270,11 +308,53 @@ class StrategyImportService {
       localStorage.setItem('importedStrategies', JSON.stringify(this.importedStrategies));
       localStorage.setItem('hedgingStrategies', JSON.stringify(this.hedgingStrategies));
       localStorage.setItem('hedgingInstruments', JSON.stringify(this.hedgingInstruments));
+      localStorage.setItem('hedgeRequests', JSON.stringify(this.hedgeRequests));
       localStorage.setItem('hedgingPortfolios', JSON.stringify(this.hedgingPortfolios));
       localStorage.setItem('hedgingCounterparties', JSON.stringify(this.hedgingCounterparties));
     } catch (error) {
       console.error('Error saving to storage:', error);
     }
+  }
+
+  getHedgeRequests(): HedgeRequest[] {
+    return [...this.hedgeRequests];
+  }
+
+  updateHedgeRequest(id: string, updates: Partial<Omit<HedgeRequest, 'id' | 'createdAt'>>): void {
+    const idx = this.hedgeRequests.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      this.hedgeRequests[idx] = { ...this.hedgeRequests[idx], ...updates };
+      this.saveToStorage();
+    }
+  }
+
+  /** Create a new hedge request (campaign) linked to an exposure. */
+  addHedgeRequest(req: Omit<HedgeRequest, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): HedgeRequest {
+    const id = req.id ?? `HREQ-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const createdAt = req.createdAt ?? Date.now();
+    const newReq: HedgeRequest = { ...req, id, createdAt };
+    this.hedgeRequests.push(newReq);
+    this.saveToStorage();
+    return newReq;
+  }
+
+  /** Get-or-create a hedge request for an exposure (optionally scoped to a strategy). */
+  getOrCreateHedgeRequest(args: {
+    exposureId: string;
+    source: HedgeRequest['source'];
+    strategyId?: string;
+    exposureSnapshot?: HedgeRequest['exposureSnapshot'];
+  }): HedgeRequest {
+    const { exposureId, strategyId } = args;
+    const existing = this.hedgeRequests.find(r => r.exposureId === exposureId && (strategyId ? r.strategyId === strategyId : true));
+    if (existing) return existing;
+    return this.addHedgeRequest({
+      exposureId,
+      source: args.source,
+      strategyId,
+      exposureSnapshot: args.exposureSnapshot,
+      status: 'open',
+    });
   }
 
   getHedgingStrategies(): HedgingStrategy[] {
@@ -357,7 +437,8 @@ class StrategyImportService {
       /** When true, per-period export rates come from bootstrap curves (Strategy Builder) */
       useBootstrappedInterestRates?: boolean;
     },
-    detailedResults?: any[] // Optional: results from the Detailed Results table
+    detailedResults?: any[], // Optional: results from the Detailed Results table
+    link?: { hedgeRequestId?: string } // Optional: link instruments to a hedge request
   ): string {
     const strategyId = `STRAT-${Date.now()}`;
     const timestamp = Date.now();
@@ -406,7 +487,8 @@ class StrategyImportService {
       },
       timestamp,
       detailedResults,
-      strategyId
+      strategyId,
+      link?.hedgeRequestId
     );
 
     this.hedgingInstruments.push(...newInstruments);
@@ -435,7 +517,8 @@ class StrategyImportService {
     },
     timestamp: number,
     detailedResults?: any[],
-    strategyId?: string
+    strategyId?: string,
+    hedgeRequestId?: string
   ): HedgingInstrument[] {
     const instruments: HedgingInstrument[] = [];
     
@@ -477,6 +560,7 @@ class StrategyImportService {
           originalComponent: component,
           strategyId,
           strategyName,
+          hedgeRequestId,
           importedAt: timestamp,
           optionIndex: index,
           // ✅ NOUVEAUX CHAMPS : Quantité de couverture et volumes
@@ -589,6 +673,7 @@ class StrategyImportService {
             // Keep a display-friendly name, but link via strategyId for grouping.
             strategyId,
             strategyName: strategyName,
+            hedgeRequestId,
             importedAt: timestamp,
             // Nouvelles informations enrichies
             realOptionPrice: realOptionPrice,
@@ -944,6 +1029,7 @@ class StrategyImportService {
   clearAllData(): void {
     this.importedStrategies = [];
     this.hedgingInstruments = [];
+    this.hedgeRequests = [];
     this.hedgingPortfolios = [];
     this.hedgingCounterparties = [];
     this.saveToStorage();

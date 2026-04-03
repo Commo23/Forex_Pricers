@@ -71,6 +71,79 @@ export const useFinancialData = (): UseFinancialDataReturn => {
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [isLiveMode, setIsLiveMode] = useState(false);
+
+  const isManualExposureHedgeEditingEnabled = (): boolean => {
+    try {
+      const raw = localStorage.getItem('fxRiskManagerSettings');
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return !!parsed?.fxExposures?.manualHedgeEditing;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Auto-compute hedgedAmount + hedgeRatio for exposures from HedgeRequests -> hedging instruments (Solution B). */
+  const applyAutoExposureHedges = (): void => {
+    if (isManualExposureHedgeEditingEnabled()) return;
+    try {
+      const exposures = serviceRef.current.getExposures();
+      if (!exposures || exposures.length === 0) return;
+
+      const rawReq = localStorage.getItem('hedgeRequests');
+      const rawInst = localStorage.getItem('hedgingInstruments');
+      const reqs: Array<{ id: string; exposureId: string }> = rawReq ? JSON.parse(rawReq) : [];
+      const insts: Array<{ hedgeRequestId?: string; notional?: number; status?: string; maturity?: string }> =
+        rawInst ? JSON.parse(rawInst) : [];
+
+      const reqIdsByExposure = new Map<string, Set<string>>();
+      for (const r of reqs) {
+        const exId = String((r as any).exposureId || '');
+        const id = String((r as any).id || '');
+        if (!exId || !id) continue;
+        const set = reqIdsByExposure.get(exId) || new Set<string>();
+        set.add(id);
+        reqIdsByExposure.set(exId, set);
+      }
+
+      const today = new Date();
+      const hedgedAbsByExposure = new Map<string, number>();
+      exposures.forEach((ex) => {
+        const exId = String((ex as any).id || '');
+        const reqIds = reqIdsByExposure.get(exId);
+        if (!exId || !reqIds || reqIds.size === 0) {
+          hedgedAbsByExposure.set(exId, 0);
+          return;
+        }
+        let sum = 0;
+        for (const inst of insts) {
+          const rid = String((inst as any).hedgeRequestId || '');
+          if (!rid || !reqIds.has(rid)) continue;
+          const status = String((inst as any).status || '').toLowerCase();
+          if (status === 'cancelled') continue;
+          // ignore matured instruments
+          const mat = (inst as any).maturity ? new Date(String((inst as any).maturity)) : null;
+          if (mat && !isNaN(mat.getTime()) && mat <= today) continue;
+          sum += Math.abs(Number((inst as any).notional || 0));
+        }
+        hedgedAbsByExposure.set(exId, sum);
+      });
+
+      const updated = exposures.map((ex) => {
+        const exId = String(ex.id);
+        const hedgedAbs = hedgedAbsByExposure.get(exId) ?? 0;
+        const amountAbs = Math.abs(Number(ex.amount || 0));
+        const ratio = amountAbs > 0 ? Math.min(100, (hedgedAbs / amountAbs) * 100) : 0;
+        const hedgedSigned = ex.type === 'payable' ? -hedgedAbs : hedgedAbs;
+        return { ...ex, hedgedAmount: hedgedSigned, hedgeRatio: ratio };
+      });
+
+      // Replace exposures in the service to keep all downstream metrics consistent
+      serviceRef.current.setExposures(updated as any);
+    } catch (e) {
+      console.warn('applyAutoExposureHedges failed:', e);
+    }
+  };
   
   // State for reactive data
   const [marketData, setMarketData] = useState<MarketData>(() => 
@@ -107,6 +180,9 @@ export const useFinancialData = (): UseFinancialDataReturn => {
         
         // Auto-generate exposures for new currency/maturity pairs only (existing ones are kept)
         autoGenerateExposures();
+
+        // Apply auto hedge computation (unless manual override is enabled)
+        applyAutoExposureHedges();
         
         // Update all state
         refreshAllData();
@@ -566,6 +642,8 @@ export const useFinancialData = (): UseFinancialDataReturn => {
   };
 
   const refreshAllData = useCallback(() => {
+    // Keep exposure hedge ratios consistent with hedging instruments unless manual override is enabled
+    applyAutoExposureHedges();
     setMarketData(serviceRef.current.getMarketData());
     setExposures(serviceRef.current.getExposures());
     setInstruments(serviceRef.current.getInstruments());

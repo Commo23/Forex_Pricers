@@ -61,9 +61,25 @@ interface ExposureFormData {
 const Exposures = () => {
   const baseCurrency = useBaseCurrency();
   const todayYmd = new Date().toISOString().split("T")[0];
+  const isManualExposureHedgeEditingEnabled = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("fxRiskManagerSettings");
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return !!parsed?.fxExposures?.manualHedgeEditing;
+    } catch {
+      return false;
+    }
+  }, []);
   const [selectedTab, setSelectedTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const csvInputRef = useRef<HTMLInputElement>(null);
+  // Debounce/dedupe for auto-sync toast (prevents flicker when events fire in bursts)
+  const autoSyncToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSyncToastKeyRef = useRef<string>("");
+  const lastAutoSyncToastAtRef = useRef<number>(0);
+  // Show the auto-sync toast only once per page open (first auto-sync burst after mount).
+  const hasShownAutoSyncToastRef = useRef<boolean>(false);
   const [importReportOpen, setImportReportOpen] = useState(false);
   const [importReport, setImportReport] = useState<{
     imported: number;
@@ -119,6 +135,47 @@ const Exposures = () => {
     syncWithHedgingInstruments
   } = useFinancialData();
 
+  // Hedge linking stats (Solution B): exposure -> hedge requests -> hedging instruments
+  const [hedgeLinkStats, setHedgeLinkStats] = useState<Record<string, { requestCount: number; instrumentCount: number }>>({});
+  useEffect(() => {
+    const recompute = () => {
+      try {
+        const rawReq = localStorage.getItem("hedgeRequests");
+        const rawInst = localStorage.getItem("hedgingInstruments");
+        const reqs: Array<{ id: string; exposureId: string }> = rawReq ? JSON.parse(rawReq) : [];
+        const insts: Array<{ hedgeRequestId?: string }> = rawInst ? JSON.parse(rawInst) : [];
+
+        const byExposure = new Map<string, { reqIds: Set<string> }>();
+        for (const r of reqs) {
+          const exId = String((r as any).exposureId || "");
+          const id = String((r as any).id || "");
+          if (!exId || !id) continue;
+          const entry = byExposure.get(exId) || { reqIds: new Set<string>() };
+          entry.reqIds.add(id);
+          byExposure.set(exId, entry);
+        }
+
+        const stats: Record<string, { requestCount: number; instrumentCount: number }> = {};
+        for (const [exposureId, entry] of byExposure.entries()) {
+          const reqIds = entry.reqIds;
+          const instrumentCount = insts.filter((i) => i.hedgeRequestId && reqIds.has(String(i.hedgeRequestId))).length;
+          stats[exposureId] = { requestCount: reqIds.size, instrumentCount };
+        }
+        setHedgeLinkStats(stats);
+      } catch {
+        setHedgeLinkStats({});
+      }
+    };
+
+    recompute();
+    window.addEventListener("hedgingInstrumentsUpdated", recompute as EventListener);
+    window.addEventListener("storage", recompute);
+    return () => {
+      window.removeEventListener("hedgingInstrumentsUpdated", recompute as EventListener);
+      window.removeEventListener("storage", recompute);
+    };
+  }, []);
+
   // ✅ NOUVEAU : Gestionnaires d'événements pour les nouvelles détections
   useEffect(() => {
     const handleNewCurrencies = (event: CustomEvent) => {
@@ -169,12 +226,39 @@ const Exposures = () => {
       if (newCurrencyMaturityPairs && newCurrencyMaturityPairs.length > 0) {
         message += `\n• New combinations: ${newCurrencyMaturityPairs.length}`;
       }
-      
-      toast({
-        title: "Auto Synchronization",
-        description: message,
-        duration: 8000,
+
+      // Debounce + dedupe to avoid flickering toasts when auto-sync fires multiple times quickly
+      const toastKey = JSON.stringify({
+        count: Number(count || 0),
+        updated: Number(updated || 0),
+        newCurrencies: Array.isArray(newCurrencies) ? [...newCurrencies].sort() : [],
+        newMaturities: Array.isArray(newMaturities) ? [...newMaturities].sort() : [],
+        newCurrencyMaturityPairs: Array.isArray(newCurrencyMaturityPairs) ? [...newCurrencyMaturityPairs].sort() : [],
       });
+
+      // User preference: don't spam. It's enough to show once when opening FX Exposures.
+      if (hasShownAutoSyncToastRef.current) {
+        return;
+      }
+
+      if (autoSyncToastTimerRef.current) {
+        clearTimeout(autoSyncToastTimerRef.current);
+      }
+      autoSyncToastTimerRef.current = setTimeout(() => {
+        const now = Date.now();
+        // Ignore exact duplicates within a short window
+        if (toastKey === lastAutoSyncToastKeyRef.current && now - lastAutoSyncToastAtRef.current < 1500) {
+          return;
+        }
+        lastAutoSyncToastKeyRef.current = toastKey;
+        lastAutoSyncToastAtRef.current = now;
+        hasShownAutoSyncToastRef.current = true;
+        toast({
+          title: "Auto Synchronization",
+          description: message,
+          duration: 8000,
+        });
+      }, 250);
     };
 
     // ✅ NOUVEAU : Ajout des listeners pour les événements de détection
@@ -186,6 +270,10 @@ const Exposures = () => {
       window.removeEventListener('newCurrenciesDetected', handleNewCurrencies as EventListener);
       window.removeEventListener('newMaturitiesDetected', handleNewMaturities as EventListener);
       window.removeEventListener('exposuresAutoGenerated', handleExposuresAutoGenerated as EventListener);
+      if (autoSyncToastTimerRef.current) {
+        clearTimeout(autoSyncToastTimerRef.current);
+        autoSyncToastTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -1291,6 +1379,8 @@ const Exposures = () => {
                               <TableHead>Maturity</TableHead>
                               <TableHead>Description</TableHead>
                               <TableHead>Subsidiary</TableHead>
+                              <TableHead>Hedge Requests</TableHead>
+                              <TableHead>Hedging Instruments</TableHead>
                               <TableHead>Hedge Ratio</TableHead>
                               <TableHead>Hedged Amount</TableHead>
                               <TableHead>Status</TableHead>
@@ -1329,6 +1419,16 @@ const Exposures = () => {
                                 </TableCell>
                                 <TableCell className="text-muted-foreground">
                                   {exposure.subsidiary || '-'}
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="outline" className="font-mono">
+                                    {hedgeLinkStats[exposure.id]?.requestCount ?? 0}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="secondary" className="font-mono">
+                                    {hedgeLinkStats[exposure.id]?.instrumentCount ?? 0}
+                                  </Badge>
                                 </TableCell>
                                 <TableCell>
                                   <div className="flex items-center gap-2">
@@ -1559,12 +1659,18 @@ const Exposures = () => {
                   value={[newExposure.hedgeRatio]}
                   onValueChange={(value) => handleHedgeRatioChange(value[0])}
                   className="w-full"
+                  disabled={!isManualExposureHedgeEditingEnabled}
                 />
                 <div className="flex justify-between text-xs text-muted-foreground">
                   <span>0%</span>
                   <span>50%</span>
                   <span>100%</span>
                 </div>
+                {!isManualExposureHedgeEditingEnabled && (
+                  <p className="text-xs text-muted-foreground">
+                    Hedge ratio is auto-calculated from hedges. Enable manual override in Settings → FX Exposures to edit.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -1576,7 +1682,8 @@ const Exposures = () => {
                   value={newExposure.hedgedAmount || ''}
                   onChange={(e) => setNewExposure({...newExposure, hedgedAmount: parseFloat(e.target.value) || 0})}
                   className="bg-muted"
-                  readOnly
+                  readOnly={!isManualExposureHedgeEditingEnabled}
+                  disabled={!isManualExposureHedgeEditingEnabled}
                 />
               </div>
             </div>

@@ -4503,6 +4503,38 @@ const Index = () => {
         );
       }
       const importService = StrategyImportService.getInstance();
+
+      // If Strategy Builder used "Load Exposure", link exported instruments to that exposure via a HedgeRequest.
+      let hedgeRequestId: string | undefined = undefined;
+      try {
+        const exposureId = localStorage.getItem('strategyBuilderLoadedExposureId') || '';
+        if (usedLoadExposure && exposureId) {
+          // Try to snapshot current exposure fields for robustness
+          let snap: any = undefined;
+          try {
+            const raw = localStorage.getItem('fxExposures');
+            const list = raw ? JSON.parse(raw) : [];
+            const ex = list.find((e: any) => String(e.id || '') === String(exposureId));
+            if (ex) {
+              snap = {
+                currency: ex.currency,
+                hedgeCurrency: ex.hedgeCurrency,
+                amount: ex.amount,
+                type: ex.type,
+                maturity: typeof ex.maturity === 'string' ? ex.maturity : new Date(ex.maturity).toISOString(),
+                date: ex.date ? (typeof ex.date === 'string' ? ex.date : new Date(ex.date).toISOString()) : undefined,
+                description: ex.description,
+              };
+            }
+          } catch {}
+          const req = importService.getOrCreateHedgeRequest({
+            exposureId,
+            source: 'strategy-builder',
+            exposureSnapshot: snap,
+          });
+          hedgeRequestId = req.id;
+        }
+      } catch {}
       
       // ✅ Utiliser tous les résultats calculés (tous les mois à hedger)
       // Les périodes sont maintenant générées directement à partir de la Hedging Start Date
@@ -4662,7 +4694,12 @@ const Index = () => {
         useCustomPeriods: params.useCustomPeriods,
         customPeriods: params.customPeriods,
         useBootstrappedInterestRates,
-      }, enrichedDetailedResults); // Passer TOUS les résultats enrichis
+      }, enrichedDetailedResults, hedgeRequestId ? { hedgeRequestId } : undefined); // Passer TOUS les résultats enrichis
+
+      // If we created a hedge request, attach strategyId to it for traceability
+      if (hedgeRequestId) {
+        try { importService.updateHedgeRequest(hedgeRequestId, { strategyId }); } catch {}
+      }
 
       // Ne jamais exporter l'exposure si la stratégie vient de "Load Exposure"
       if (usedLoadExposure) {
@@ -4695,6 +4732,7 @@ const Index = () => {
           }
         }
         try { localStorage.removeItem('strategyBuilderUsedLoadExposure'); } catch {}
+        try { localStorage.removeItem('strategyBuilderLoadedExposureId'); } catch {}
       }
 
       // Dispatch custom event to notify HedgingInstruments page
@@ -6446,6 +6484,8 @@ const Index = () => {
     });
     try {
       localStorage.setItem('strategyBuilderUsedLoadExposure', '1');
+      // Persist the actual exposure id so exports can link instruments to this exposure via HedgeRequest
+      localStorage.setItem('strategyBuilderLoadedExposureId', String(selectedExposure.id || ''));
     } catch {}
   };
   
