@@ -86,6 +86,12 @@ interface AppSettings {
     underlyingPriceType: 'spot' | 'forward';
     maturityDateForPricing: 'last-day-of-month' | 'third-friday';
     backtestExerciseType: 'monthly-average' | 'third-friday';
+    /** Barrier pricing method for barrier/digital options */
+    barrierMethod?: 'closed-form' | 'monte-carlo';
+    /** Number of Monte Carlo simulations for barrier/digital pricing */
+    barrierSimulations?: number;
+    /** UI: show/hide pricing parameter blocks inside Strategy Builder */
+    showStrategyBuilderPricingParams?: boolean;
   };
   
   // Interface settings
@@ -198,7 +204,10 @@ const Settings = () => {
       pricingFrequency: "real-time",
       underlyingPriceType: "spot",
       maturityDateForPricing: "last-day-of-month",
-      backtestExerciseType: "monthly-average"
+      backtestExerciseType: "monthly-average",
+      barrierMethod: "closed-form",
+      barrierSimulations: 100,
+      showStrategyBuilderPricingParams: true
     },
     ui: {
       theme: "light",
@@ -2211,6 +2220,86 @@ const Settings = () => {
           </Card>
         </TabsContent>
 
+        {/* Pricing tab additions for option & barrier methods */}
+        <TabsContent value="pricing">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Calculator className="h-5 w-5" />
+                Option & Barrier Pricing
+              </CardTitle>
+              <CardDescription>Configure pricing model and barrier method used across the app (Strategy Builder, Hedging).</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="pricing-model">Option Pricing Model</Label>
+                  <Select
+                    value={settings.pricing.defaultModel}
+                    onValueChange={(v) => updateSettings('pricing', { defaultModel: v })}
+                  >
+                    <SelectTrigger id="pricing-model">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="garman-kohlhagen">Garman–Kohlhagen (FX)</SelectItem>
+                      <SelectItem value="black-scholes">Black–Scholes</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="barrier-method">Barrier Pricing Method</Label>
+                  <Select
+                    value={settings.pricing.barrierMethod || 'closed-form'}
+                    onValueChange={(v: 'closed-form' | 'monte-carlo') => updateSettings('pricing', { barrierMethod: v })}
+                  >
+                    <SelectTrigger id="barrier-method">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="closed-form">Closed-Form Approximation</SelectItem>
+                      <SelectItem value="monte-carlo">Monte Carlo</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Closed-form is faster and recommended for most barrier/digital options. Monte Carlo uses path simulation.
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="barrier-sim">Monte Carlo Simulations</Label>
+                <Input
+                  id="barrier-sim"
+                  type="number"
+                  min={100}
+                  step={100}
+                  value={settings.pricing.barrierSimulations ?? 100}
+                  onChange={(e) => updateSettings('pricing', { barrierSimulations: Math.max(100, parseInt(e.target.value || '0', 10) || 100) })}
+                  disabled={(settings.pricing.barrierMethod || 'closed-form') !== 'monte-carlo'}
+                />
+                <p className="text-xs text-muted-foreground">Only used when Barrier Method is Monte Carlo.</p>
+              </div>
+
+              <Separator />
+
+              <div className="flex items-start space-x-3">
+                <Switch
+                  id="sb-pricing-params"
+                  checked={settings.pricing.showStrategyBuilderPricingParams !== false}
+                  onCheckedChange={(checked) =>
+                    updateSettings("pricing", { showStrategyBuilderPricingParams: checked })
+                  }
+                />
+                <div className="space-y-0.5">
+                  <Label htmlFor="sb-pricing-params">Show pricing parameters in Strategy Builder</Label>
+                  <div className="text-xs text-muted-foreground">
+                    When disabled, Strategy Builder hides the Option Pricing Model and Barrier Pricing controls to save space.
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
         <TabsContent value="hedging">
           {/* Portfolios: create by currency, counterparty, activity, region — then assign in Hedging Instruments */}
           <Card className="mb-6">

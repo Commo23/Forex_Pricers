@@ -19,7 +19,7 @@
  */
 
 // ===========================
-// EXPORTED PRICING 2 FUNCTIONS
+// EXPORTED PRICING FUNCTIONS
 // ===========================
 
 // Fonction d'erreur pour les calculs statistiques
@@ -1730,6 +1730,7 @@ const Index = () => {
   const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
   const [availableExposures, setAvailableExposures] = useState<FxExposureRecord[]>([]);
   const [selectedExposureId, setSelectedExposureId] = useState<string>("");
+  const hasAutoLoadedExposureFromQuery = React.useRef(false);
 
   const strategyBuilderQuoteCcy = params.currencyPair?.quote ?? 'USD';
   const strategyBuilderBaseCcy = params.currencyPair?.base ?? 'EUR';
@@ -1844,6 +1845,34 @@ const Index = () => {
       window.removeEventListener('focus', handleWindowFocus);
     };
   }, [loadAvailableExposures]);
+
+  // If user comes from FX Exposures, auto-load the exposure into Custom Periods and
+  // persist linkage so Export -> Hedging Instruments is linked to the same exposure.
+  React.useEffect(() => {
+    if (hasAutoLoadedExposureFromQuery.current) return;
+    if (availableExposures.length === 0) return;
+
+    let exposureIdFromQuery = "";
+    try {
+      exposureIdFromQuery = new URLSearchParams(window.location.search).get("exposureId") || "";
+    } catch {
+      exposureIdFromQuery = "";
+    }
+    if (!exposureIdFromQuery) return;
+
+    const exists = availableExposures.some((e) => e.id === exposureIdFromQuery);
+    if (!exists) return;
+
+    hasAutoLoadedExposureFromQuery.current = true;
+    setSelectedExposureId(exposureIdFromQuery);
+    // Show load mode briefly; the loader will then switch to custom mode for review.
+    setCustomScheduleMode("load");
+    setParams((prev) => ({ ...prev, useCustomPeriods: true }));
+
+    // Auto-run the load logic (pair creation, volumes, maturity, linkage flags).
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    handleLoadExposureAsCustomPeriod(exposureIdFromQuery);
+  }, [availableExposures]);
 
   // Strategy components state
   const [strategy, setStrategy] = useState(() => {
@@ -4471,7 +4500,7 @@ const Index = () => {
 
     toast({
       title: "Scenario Saved",
-      description: "Your strategy scenario has been saved successfully !",
+      description: "Your strategy scenario has been saved successfully!",
     });
   };
 
@@ -4503,6 +4532,38 @@ const Index = () => {
         );
       }
       const importService = StrategyImportService.getInstance();
+
+      // If Strategy Builder used "Load Exposure", link exported instruments to that exposure via a HedgeRequest.
+      let hedgeRequestId: string | undefined = undefined;
+      try {
+        const exposureId = localStorage.getItem('strategyBuilderLoadedExposureId') || '';
+        if (usedLoadExposure && exposureId) {
+          // Try to snapshot current exposure fields for robustness
+          let snap: any = undefined;
+          try {
+            const raw = localStorage.getItem('fxExposures');
+            const list = raw ? JSON.parse(raw) : [];
+            const ex = list.find((e: any) => String(e.id || '') === String(exposureId));
+            if (ex) {
+              snap = {
+                currency: ex.currency,
+                hedgeCurrency: ex.hedgeCurrency,
+                amount: ex.amount,
+                type: ex.type,
+                maturity: typeof ex.maturity === 'string' ? ex.maturity : new Date(ex.maturity).toISOString(),
+                date: ex.date ? (typeof ex.date === 'string' ? ex.date : new Date(ex.date).toISOString()) : undefined,
+                description: ex.description,
+              };
+            }
+          } catch {}
+          const req = importService.getOrCreateHedgeRequest({
+            exposureId,
+            source: 'strategy-builder',
+            exposureSnapshot: snap,
+          });
+          hedgeRequestId = req.id;
+        }
+      } catch {}
       
       // ✅ Utiliser tous les résultats calculés (tous les mois à hedger)
       // Les périodes sont maintenant générées directement à partir de la Hedging Start Date
@@ -4528,20 +4589,20 @@ const Index = () => {
           result.bootstrapQuoteRatePct != null &&
           Number.isFinite(result.bootstrapQuoteRatePct)
             ? result.bootstrapQuoteRatePct
-            : params.domesticRate;
+            : (Number(params.domesticRate) || 0);
         const foreignPctForPeriod =
           useBootstrappedInterestRates &&
           result.bootstrapBaseRatePct != null &&
           Number.isFinite(result.bootstrapBaseRatePct)
             ? result.bootstrapBaseRatePct
-            : params.foreignRate;
+            : (Number(params.foreignRate) || 0);
         
         // Enrichir chaque résultat avec des informations supplémentaires
         const enrichedResult = {
           ...result,
           // Informations de marché du moment
           marketData: {
-            spotPrice: params.spotPrice,
+            spotPrice: Number(params.spotPrice) || 0,
             domesticRate: domesticPctForPeriod,
             foreignRate: foreignPctForPeriod,
             useBootstrappedRates: useBootstrappedInterestRates,
@@ -4549,19 +4610,20 @@ const Index = () => {
             periodIndex: periodIndex
           },
           // ✅ CORRECTION : Volatilités implicites spécifiques du tableau detailed results
-          impliedVolatilities: impliedVolatilities[monthKey] || {},
+          impliedVolatilities: (impliedVolatilities && impliedVolatilities[monthKey]) || {},
           // Prix personnalisés si utilisés
-          customPrices: useCustomOptionPrices ? (customOptionPrices[monthKey] || {}) : {},
+          customPrices: useCustomOptionPrices ? ((customOptionPrices && customOptionPrices[monthKey]) || {}) : {},
           // Forwards manuels si utilisés
-          manualForward: manualForwards[monthKey],
+          manualForward: manualForwards ? manualForwards[monthKey] : undefined,
           // Prix réels si utilisés
-          realPrice: realPrices[monthKey],
+          realPrice: realPrices ? realPrices[monthKey] : undefined,
           // Informations détaillées sur chaque composant de stratégie
           strategyDetails: strategy.map((component, componentIndex) => {
             // Calculer le strike en valeur absolue
+            const strikeRaw = Number(component.strike) || 0;
             const absoluteStrike = component.strikeType === 'percent' 
-              ? params.spotPrice * (component.strike / 100)
-              : component.strike;
+              ? (Number(params.spotPrice) || 0) * (strikeRaw / 100)
+              : strikeRaw;
             
             // Calculer les barrières en valeur absolue SEULEMENT pour les options barrières
             let absoluteBarrier = undefined;
@@ -4569,16 +4631,16 @@ const Index = () => {
             
             if (component.type.includes('knockout') || component.type.includes('knockin') || 
                 component.type.includes('touch') || component.type.includes('binary')) {
-              absoluteBarrier = component.barrier 
+              absoluteBarrier = component.barrier != null
                 ? (component.barrierType === 'percent' 
-                    ? params.spotPrice * (component.barrier / 100)
-                    : component.barrier)
+                    ? (Number(params.spotPrice) || 0) * (Number(component.barrier) / 100)
+                    : Number(component.barrier))
                 : undefined;
               
-              absoluteSecondBarrier = component.secondBarrier 
+              absoluteSecondBarrier = component.secondBarrier != null
                 ? (component.barrierType === 'percent' 
-                    ? params.spotPrice * (component.secondBarrier / 100)
-                    : component.secondBarrier)
+                    ? (Number(params.spotPrice) || 0) * (Number(component.secondBarrier) / 100)
+                    : Number(component.secondBarrier))
                 : undefined;
             }
 
@@ -6358,8 +6420,9 @@ const Index = () => {
     return syntheticPair;
   };
 
-  const handleLoadExposureAsCustomPeriod = async () => {
-    if (!selectedExposureId) {
+  const handleLoadExposureAsCustomPeriod = async (exposureId?: string) => {
+    const effectiveId = String(exposureId || selectedExposureId || "");
+    if (!effectiveId) {
       toast({
         title: "Select an exposure",
         description: "Choose one exposure from FX Exposures first.",
@@ -6368,7 +6431,7 @@ const Index = () => {
       return;
     }
 
-    const selectedExposure = availableExposures.find((exp) => exp.id === selectedExposureId);
+    const selectedExposure = availableExposures.find((exp) => exp.id === effectiveId);
     if (!selectedExposure) {
       toast({
         title: "Exposure not found",
@@ -6463,6 +6526,18 @@ const Index = () => {
   const [customScheduleMode, setCustomScheduleMode] = useState<'custom' | 'load'>('custom');
   const hedgingMode: 'custom' | 'monthly' | 'load' = params.useCustomPeriods ? customScheduleMode : 'monthly';
   const isMonthlyHedging = hedgingMode === 'monthly';
+
+  const showStrategyBuilderPricingParams = React.useMemo(() => {
+    try {
+      const raw = localStorage.getItem("fxRiskManagerSettings");
+      if (!raw) return true;
+      const parsed = JSON.parse(raw);
+      // Default: show (backward compatible)
+      return parsed?.pricing?.showStrategyBuilderPricingParams !== false;
+    } catch {
+      return true;
+    }
+  }, []);
   const setHedgingMode = (mode: 'custom' | 'monthly' | 'load') => {
     if (mode === 'monthly') {
       setParams((prev) => ({
@@ -8086,7 +8161,7 @@ const pricingFunctions = {
                         <Button
                           type="button"
                           size="sm"
-                          onClick={handleLoadExposureAsCustomPeriod}
+                          onClick={() => handleLoadExposureAsCustomPeriod()}
                           disabled={!selectedExposureId}
                           className="h-8 px-2 text-xs"
                         >
@@ -8237,87 +8312,90 @@ const pricingFunctions = {
               </div>
               
                   {/* Option Pricing Model */}
-                  <div className="bg-muted/30 p-2 rounded-lg space-y-1.5">
-                    <h4 className="text-xs font-semibold text-primary flex items-center gap-2">
-                      <Calculator size={14} />
-                      Option Pricing Model
-                    </h4>
-                    <div className="space-y-1.5">
-                      <label className="text-xs text-muted-foreground">Model Selection</label>
-                  <Select 
-                    value={optionPricingModel} 
-                    onValueChange={(value: string) => setOptionPricingModel(value as 'black-scholes' | 'garman-kohlhagen' | 'monte-carlo')}
-                  >
-                        <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Select pricing model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="black-scholes">Black-Scholes</SelectItem>
-                      <SelectItem value="garman-kohlhagen">Garman-Kohlhagen (FX)</SelectItem>
-                      <SelectItem value="monte-carlo">Monte Carlo (Vanilla Options)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                      <p className="text-xs text-muted-foreground">
-                        Garman-Kohlhagen model is recommended for FX options
-                  </p>
+                  {showStrategyBuilderPricingParams && (
+                    <div className="bg-muted/30 p-2 rounded-lg space-y-1.5">
+                      <h4 className="text-xs font-semibold text-primary flex items-center gap-2">
+                        <Calculator size={14} />
+                        Option Pricing Model
+                      </h4>
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">Model Selection</label>
+                        <Select
+                          value={optionPricingModel}
+                          onValueChange={(value: string) => setOptionPricingModel(value as 'black-scholes' | 'garman-kohlhagen' | 'monte-carlo')}
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Select pricing model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="black-scholes">Black-Scholes</SelectItem>
+                            <SelectItem value="garman-kohlhagen">Garman-Kohlhagen (FX)</SelectItem>
+                            <SelectItem value="monte-carlo">Monte Carlo (Vanilla Options)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          Garman-Kohlhagen model is recommended for FX options
+                        </p>
+                      </div>
                     </div>
-                </div>
+                  )}
               </div>
 
                 {/* Barrier Option Pricing - Full Width Compact */}
-                <div className="bg-muted/30 p-2 rounded-lg">
-                  <h4 className="text-xs font-semibold text-primary flex items-center gap-2 mb-2">
-                    <Shield size={14} />
-                    Barrier Option Pricing
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {/* Simulations */}
-                    <div className="space-y-2">
-                      <label className="text-xs text-muted-foreground">Number of Simulations</label>
-                    <div className="flex items-center gap-2">
-                      <Slider 
-                        value={[barrierOptionSimulations]} 
-                        min={100} 
-                        max={10000} 
-                        step={100}
-                        onValueChange={(value) => setBarrierOptionSimulations(value[0])}
-                        className="flex-1"
-                      />
-                      <Input
-                        type="number"
-                        value={barrierOptionSimulations}
-                        onChange={(e) => setBarrierOptionSimulations(Number(e.target.value))}
-                        min="100"
-                        max="10000"
-                        step="100"
-                          className="w-16 h-7 text-xs text-center"
-                      />
+                {showStrategyBuilderPricingParams && (
+                  <div className="bg-muted/30 p-2 rounded-lg">
+                    <h4 className="text-xs font-semibold text-primary flex items-center gap-2 mb-2">
+                      <Shield size={14} />
+                      Barrier Option Pricing
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {/* Simulations */}
+                      <div className="space-y-2">
+                        <label className="text-xs text-muted-foreground">Number of Simulations</label>
+                        <div className="flex items-center gap-2">
+                          <Slider 
+                            value={[barrierOptionSimulations]} 
+                            min={100} 
+                            max={10000} 
+                            step={100}
+                            onValueChange={(value) => setBarrierOptionSimulations(value[0])}
+                            className="flex-1"
+                          />
+                          <Input
+                            type="number"
+                            value={barrierOptionSimulations}
+                            onChange={(e) => setBarrierOptionSimulations(Number(e.target.value))}
+                            min="100"
+                            max="10000"
+                            step="100"
+                            className="w-16 h-7 text-xs text-center"
+                          />
+                        </div>
+                      </div>
+                      {/* Pricing Method */}
+                      <div className="space-y-2">
+                        <label className="text-xs text-muted-foreground">Pricing Method</label>
+                        <Select 
+                          value={barrierPricingModel} 
+                          onValueChange={(value: string) => setBarrierPricingModel(value as 'monte-carlo' | 'closed-form')}
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Select pricing method" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="monte-carlo">Monte Carlo Simulation</SelectItem>
+                            <SelectItem value="closed-form">Closed-Form Approximation</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">
+                          {barrierPricingModel === 'closed-form' 
+                            ? 'Closed-form provides faster and more accurate pricing for barrier and digital options'
+                            : 'Monte Carlo simulation for barrier and digital options'}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                  
-                    {/* Pricing Method */}
-                    <div className="space-y-2">
-                      <label className="text-xs text-muted-foreground">Pricing Method</label>
-                    <Select 
-                      value={barrierPricingModel} 
-                      onValueChange={(value: string) => setBarrierPricingModel(value as 'monte-carlo' | 'closed-form')}
-                    >
-                        <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Select pricing method" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="monte-carlo">Monte Carlo Simulation</SelectItem>
-                        <SelectItem value="closed-form">Closed-Form Approximation</SelectItem>
-                      </SelectContent>
-                    </Select>
-                      <p className="text-xs text-muted-foreground">
-                        {barrierPricingModel === 'closed-form' 
-                          ? 'Closed-form provides faster and more accurate pricing for barrier and digital options'
-                          : 'Monte Carlo simulation for barrier and digital options'}
-                    </p>
-                    </div>
-                  </div>
-                    </div>
+                )}
               </div>
             </CardContent>
           </Card>

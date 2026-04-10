@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,7 @@ interface ExposureFormData {
 }
 
 const Exposures = () => {
+  const navigate = useNavigate();
   const baseCurrency = useBaseCurrency();
   const todayYmd = new Date().toISOString().split("T")[0];
   const isManualExposureHedgeEditingEnabled = useMemo(() => {
@@ -1444,6 +1446,15 @@ const Exposures = () => {
                                 </TableCell>
                                 <TableCell className="text-right">
                                   <div className="flex items-center justify-end gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => navigate(`/strategy-builder?exposureId=${encodeURIComponent(exposure.id)}`)}
+                                      className="h-8 w-8 p-0"
+                                      title="Hedge in Strategy Builder"
+                                    >
+                                      <Target className="h-4 w-4" />
+                                    </Button>
                                     <Button
                                       variant="ghost"
                                       size="sm"
