@@ -1085,7 +1085,7 @@ const Exposures = () => {
             </div>
                 <h3 className="text-xl font-semibold mb-2">No FX Exposures Found</h3>
                 <p className="text-muted-foreground mb-6">
-                  Get started by adding your first FX exposure or importing hedging strategies from the Strategy Builder.
+                  Get started by adding your first FX exposure (manually or via CSV), then hedge it in Strategy Builder.
                 </p>
                 
                 <div className="space-y-4">
@@ -1095,10 +1095,10 @@ const Exposures = () => {
                       Connected Workflow
                     </h4>
                     <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-                      <li>Create hedging strategies in <strong>Strategy Builder</strong></li>
-                      <li>Export strategies to <strong>Hedging Instruments</strong></li>
-                      <li>Add corresponding exposures here to see hedge ratios</li>
-                      <li>Monitor risk metrics and effectiveness</li>
+                      <li>Add exposures here (manual or CSV)</li>
+                      <li>Open an exposure and hedge it in <strong>Strategy Builder</strong></li>
+                      <li>Hedging instruments will be created and linked automatically</li>
+                      <li>Monitor hedge ratios and risk metrics</li>
                     </ol>
                   </div>
                   

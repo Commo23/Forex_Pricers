@@ -1163,16 +1163,7 @@ import { getFuturesContractForPair, isPairMappableToFuturesInsights } from '@/li
 import { interpolateSurface, interpolateIVAtPoint } from '@/lib/volSurfaceInterpolation';
 import { interpolateAtTenor } from '@/lib/rate-explorer/bootstrapping';
 import { useRateExplorerDiscountFactors } from '@/hooks/useRateExplorerDiscountFactors';
-
-// Currency Pair interface
-interface CurrencyPair {
-  symbol: string;
-  name: string;
-  base: string;
-  quote: string;
-  category: 'majors' | 'crosses' | 'others';
-  defaultSpotRate: number; // Default spot rate for this currency pair
-}
+import { CURRENCY_PAIRS, type CurrencyPair } from "@/constants/currencyPairs";
 
 interface FXStrategyParams {
   startDate: string;           // Hedging Start Date (renamed from startDate)
@@ -1394,31 +1385,6 @@ const DEFAULT_SCENARIOS = {
     isEditable: true
   }
 };
-
-// Currency Pairs Database with current market rates (approximate)
-// Major Pairs: same convention as Futures Insights (all vs USD) — XXX/USD first, then USD/XXX
-export const CURRENCY_PAIRS: CurrencyPair[] = [
-  // Major Pairs (Futures Insights convention: devises vs USD)
-  { symbol: "EUR/USD", name: "Euro/US Dollar", base: "EUR", quote: "USD", category: "majors", defaultSpotRate: 1.0850 },
-  { symbol: "GBP/USD", name: "British Pound/US Dollar", base: "GBP", quote: "USD", category: "majors", defaultSpotRate: 1.2650 },
-  { symbol: "AUD/USD", name: "Australian Dollar/US Dollar", base: "AUD", quote: "USD", category: "majors", defaultSpotRate: 0.6580 },
-  { symbol: "NZD/USD", name: "New Zealand Dollar/US Dollar", base: "NZD", quote: "USD", category: "majors", defaultSpotRate: 0.6020 },
-  { symbol: "USD/JPY", name: "US Dollar/Japanese Yen", base: "USD", quote: "JPY", category: "majors", defaultSpotRate: 149.50 },
-  { symbol: "USD/CHF", name: "US Dollar/Swiss Franc", base: "USD", quote: "CHF", category: "majors", defaultSpotRate: 0.8850 },
-  { symbol: "USD/CAD", name: "US Dollar/Canadian Dollar", base: "USD", quote: "CAD", category: "majors", defaultSpotRate: 1.3650 },
-  { symbol: "USD/MXN", name: "US Dollar/Mexican Peso", base: "USD", quote: "MXN", category: "majors", defaultSpotRate: 17.25 },
-
-  // Cross Rates (Non-USD pairs)
-  { symbol: "EUR/GBP", name: "Euro/British Pound", base: "EUR", quote: "GBP", category: "crosses", defaultSpotRate: 0.8580 },
-  { symbol: "EUR/JPY", name: "Euro/Japanese Yen", base: "EUR", quote: "JPY", category: "crosses", defaultSpotRate: 162.25 },
-  { symbol: "GBP/JPY", name: "British Pound/Japanese Yen", base: "GBP", quote: "JPY", category: "crosses", defaultSpotRate: 189.15 },
-  { symbol: "EUR/CHF", name: "Euro/Swiss Franc", base: "EUR", quote: "CHF", category: "crosses", defaultSpotRate: 0.9605 },
-  { symbol: "EUR/AUD", name: "Euro/Australian Dollar", base: "EUR", quote: "AUD", category: "crosses", defaultSpotRate: 1.6485 },
-  { symbol: "GBP/CHF", name: "British Pound/Swiss Franc", base: "GBP", quote: "CHF", category: "crosses", defaultSpotRate: 1.1195 },
-  { symbol: "AUD/JPY", name: "Australian Dollar/Japanese Yen", base: "AUD", quote: "JPY", category: "crosses", defaultSpotRate: 98.40 },
-  { symbol: "CAD/JPY", name: "Canadian Dollar/Japanese Yen", base: "CAD", quote: "JPY", category: "crosses", defaultSpotRate: 109.52 },
-  { symbol: "CHF/JPY", name: "Swiss Franc/Japanese Yen", base: "CHF", quote: "JPY", category: "crosses", defaultSpotRate: 169.01 },
-];
 
 // State pour les paires de devises personnalisées
 const Index = () => {
@@ -1730,7 +1696,31 @@ const Index = () => {
   const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
   const [availableExposures, setAvailableExposures] = useState<FxExposureRecord[]>([]);
   const [selectedExposureId, setSelectedExposureId] = useState<string>("");
+  const [linkedExposure, setLinkedExposure] = useState<FxExposureRecord | null>(null);
   const hasAutoLoadedExposureFromQuery = React.useRef(false);
+
+  const isLinkedToExposure = React.useMemo(() => {
+    try {
+      return localStorage.getItem("strategyBuilderUsedLoadExposure") === "1" && !!linkedExposure?.id;
+    } catch {
+      return !!linkedExposure?.id;
+    }
+  }, [linkedExposure]);
+
+  // Restore linked exposure banner when coming back / refresh (based on localStorage flag).
+  React.useEffect(() => {
+    if (availableExposures.length === 0) return;
+    if (linkedExposure) return;
+    try {
+      if (localStorage.getItem("strategyBuilderUsedLoadExposure") !== "1") return;
+      const exposureId = localStorage.getItem("strategyBuilderLoadedExposureId") || "";
+      if (!exposureId) return;
+      const ex = availableExposures.find((e) => String(e.id || "") === String(exposureId));
+      if (ex) setLinkedExposure(ex);
+    } catch {
+      // ignore
+    }
+  }, [availableExposures, linkedExposure]);
 
   const strategyBuilderQuoteCcy = params.currencyPair?.quote ?? 'USD';
   const strategyBuilderBaseCcy = params.currencyPair?.base ?? 'EUR';
@@ -4525,12 +4515,6 @@ const Index = () => {
 
     try {
       const usedLoadExposure = localStorage.getItem('strategyBuilderUsedLoadExposure') === '1';
-      let userWantsExportExposure = false;
-      if (usedLoadExposure) {
-        userWantsExportExposure = confirm(
-          "This strategy was built using 'Load Exposure'.\n\nDo you want to ADD the exposure again to 'FX Exposures' when exporting?\n\nOK = Yes, add the exposure\nCancel = No, export instruments only"
-        );
-      }
       const importService = StrategyImportService.getInstance();
 
       // If Strategy Builder used "Load Exposure", link exported instruments to that exposure via a HedgeRequest.
@@ -4733,34 +4717,7 @@ const Index = () => {
 
       // Ne jamais exporter l'exposure si la stratégie vient de "Load Exposure"
       if (usedLoadExposure) {
-        // Optionnel: ajouter l'exposition si l'utilisateur l'a demandé
-        if (userWantsExportExposure) {
-          try {
-            const pair = params.currencyPair;
-            const period = (params.customPeriods && params.customPeriods[0]) || null;
-            const maturityStr = period?.maturityDate || new Date().toISOString().split('T')[0];
-            const exposure = {
-              id: `EXP-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-              date: new Date().toISOString(),
-              currency: pair.base,
-              hedgeCurrency: pair.quote,
-              amount: params.volumeType === 'payable' ? -Math.abs(Number(params.baseVolume || 0)) : Math.abs(Number(params.baseVolume || 0)),
-              type: params.volumeType || 'receivable',
-              maturity: new Date(`${maturityStr}T00:00:00`).toISOString(),
-              description: 'Strategy Export (from Load Exposure)',
-              subsidiary: 'Main Office',
-              hedgeRatio: 0,
-              hedgedAmount: 0,
-            };
-            const raw = localStorage.getItem('fxExposures');
-            const list = raw ? JSON.parse(raw) : [];
-            list.push(exposure);
-            localStorage.setItem('fxExposures', JSON.stringify(list));
-            localStorage.setItem('fxExposuresLastModified', new Date().toISOString());
-          } catch (e) {
-            console.warn('Could not append exposure to fxExposures:', e);
-          }
-        }
+        // Never append an exposure here. Exposures are created/managed in FX Exposures.
         try { localStorage.removeItem('strategyBuilderUsedLoadExposure'); } catch {}
         try { localStorage.removeItem('strategyBuilderLoadedExposureId'); } catch {}
       }
@@ -6498,9 +6455,9 @@ const Index = () => {
         quoteVolume: updatedQuoteVolume,
       };
     });
-    // Treat "Load Exposure" exactly like adding a custom period row:
-    // append period + volume, then keep user on Custom Periods for review/edit.
-    setCustomScheduleMode('custom');
+    // Keep user in "Load Exposure" mode to make the linkage explicit and prevent accidental edits.
+    setCustomScheduleMode('load');
+    setLinkedExposure(selectedExposure);
 
     // Bring user to the custom periods table where maturity/volume were added.
     requestAnimationFrame(() => {
@@ -6508,7 +6465,7 @@ const Index = () => {
       anchor?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
-    setSelectedExposureId("");
+    setSelectedExposureId(String(selectedExposure.id || ""));
     toast({
       title: "Exposure loaded",
       description: `${selectedExposure.currency}/${selectedExposure.hedgeCurrency} (${selectedExposure.type}) added as custom period (${normalizedPeriodDate}).`,
@@ -6519,6 +6476,16 @@ const Index = () => {
       localStorage.setItem('strategyBuilderLoadedExposureId', String(selectedExposure.id || ''));
     } catch {}
   };
+
+  const unlinkFromExposure = React.useCallback(() => {
+    setLinkedExposure(null);
+    try { localStorage.removeItem("strategyBuilderUsedLoadExposure"); } catch {}
+    try { localStorage.removeItem("strategyBuilderLoadedExposureId"); } catch {}
+    toast({
+      title: "Unlinked",
+      description: "This strategy is no longer linked to a specific exposure. You can now edit currency pair and volumes.",
+    });
+  }, [toast]);
   
   // Scheduling source of truth:
   // - params.useCustomPeriods controls calculation behavior
@@ -7595,6 +7562,34 @@ const pricingFunctions = {
               <CardTitle className="text-lg sm:text-xl font-bold text-primary">FX Options Strategy Parameters</CardTitle>
             </CardHeader>
             <CardContent className="pt-3">
+              {isLinkedToExposure && linkedExposure && (
+                <div className="mb-3 rounded-md border bg-primary/5 p-3 text-xs">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="text-muted-foreground">
+                      <span className="font-medium text-foreground">Linked to exposure</span>{" "}
+                      <span className="font-mono">{linkedExposure.id}</span>
+                      {" • "}
+                      <span className="font-mono">
+                        {linkedExposure.currency}/{linkedExposure.hedgeCurrency}
+                      </span>
+                      {" • "}
+                      <span className="font-medium">{linkedExposure.type}</span>
+                      {" • "}
+                      <span className="font-mono">{Math.abs(Number(linkedExposure.amount || 0)).toLocaleString()}</span>
+                      {" • "}
+                      <span className="font-mono">{new Date(linkedExposure.maturity).toISOString().split("T")[0]}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-[11px] text-muted-foreground">
+                        Currency pair / volumes / schedule are locked to reduce operational risk.
+                      </div>
+                      <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={unlinkFromExposure}>
+                        Unlink
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div className="compact-form-group">
                   <label className="compact-label flex items-center gap-2">
@@ -7604,6 +7599,7 @@ const pricingFunctions = {
                   <div className="relative flex items-center gap-1">
                   <Select 
                     value={params.currencyPair?.symbol || 'EUR/USD'} 
+                    disabled={isLinkedToExposure}
                     onValueChange={async (value) => {
                         // Chercher dans les paires standard et personnalisées
                         const allPairs = [...CURRENCY_PAIRS, ...customCurrencyPairs];
@@ -7685,7 +7681,7 @@ const pricingFunctions = {
                       }
                     }}
                   >
-                    <SelectTrigger className="compact-input">
+                    <SelectTrigger className="compact-input" disabled={isLinkedToExposure}>
                       <SelectValue placeholder="Select currency pair">
                         {params.currencyPair && (
                           <div className="flex items-center justify-between w-full">
@@ -7893,6 +7889,7 @@ const pricingFunctions = {
                     value={params.strategyStartDate}
                     onChange={(e) => setParams({...params, strategyStartDate: e.target.value})}
                     className="compact-input"
+                    disabled={isLinkedToExposure}
                   />
                 </div>
                 <div className="compact-form-group">
@@ -7902,6 +7899,7 @@ const pricingFunctions = {
                     value={params.startDate}
                     onChange={(e) => setParams({...params, startDate: e.target.value})}
                     className="compact-input"
+                    disabled={isLinkedToExposure}
                   />
                 </div>
                 {isMonthlyHedging && (
@@ -7977,6 +7975,7 @@ const pricingFunctions = {
                       onChange={(e) => handleBaseVolumeChange(Number(e.target.value))}
                         className="h-8 text-xs"
                       placeholder="Volume in base currency"
+                      disabled={isLinkedToExposure}
                     />
                   </div>
                     
@@ -7991,6 +7990,7 @@ const pricingFunctions = {
                       onChange={(e) => handleQuoteVolumeChange(Number(e.target.value))}
                         className="h-8 text-xs"
                       placeholder="Volume in quote currency"
+                      disabled={isLinkedToExposure}
                     />
                   </div>
 
@@ -8001,11 +8001,12 @@ const pricingFunctions = {
                       </label>
                       <Select
                         value={params.volumeType}
+                        disabled={isLinkedToExposure}
                         onValueChange={(value: 'receivable' | 'payable') => 
                           setParams(prev => ({ ...prev, volumeType: value }))
                         }
                       >
-                        <SelectTrigger className="h-8 text-xs">
+                        <SelectTrigger className="h-8 text-xs" disabled={isLinkedToExposure}>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -8050,6 +8051,7 @@ const pricingFunctions = {
                           className="h-8 text-sm font-mono flex-1 min-w-[100px]"
                           step="0.0001"
                           placeholder={`${params.currencyPair?.defaultSpotRate || 1.0850}`}
+                          disabled={isLinkedToExposure}
                         />
                         <Button
                           variant="outline"
@@ -8062,6 +8064,7 @@ const pricingFunctions = {
                           }}
                           className="h-8 px-2 text-xs"
                           title="Reset to default market rate"
+                          disabled={isLinkedToExposure}
                         >
                           Reset
                         </Button>
@@ -8093,6 +8096,7 @@ const pricingFunctions = {
                           variant={hedgingMode === 'custom' ? "default" : "outline"}
                           className="h-8 text-xs"
                           onClick={() => setHedgingMode('custom')}
+                          disabled={isLinkedToExposure}
                         >
                           Custom Periods
                         </Button>
@@ -8102,6 +8106,7 @@ const pricingFunctions = {
                           variant={isMonthlyHedging ? "default" : "outline"}
                           className="h-8 text-xs"
                           onClick={() => setHedgingMode('monthly')}
+                          disabled={isLinkedToExposure}
                         >
                           Monthly Hedging
                         </Button>
@@ -8198,6 +8203,7 @@ const pricingFunctions = {
                         size="sm" 
                         onClick={addCustomPeriod}
                         className="flex items-center gap-1 h-8 px-2 text-xs"
+                        disabled={isLinkedToExposure}
                       >
                         <Plus size={14} /> Add Period
                       </Button>
@@ -8216,6 +8222,7 @@ const pricingFunctions = {
                                 value={period.maturityDate}
                                 onChange={(e) => updateCustomPeriod(index, 'maturityDate', e.target.value)}
                                 className="compact-input"
+                                disabled={isLinkedToExposure}
                               />
                             </div>
                             <div className="col-span-2">
@@ -8225,6 +8232,7 @@ const pricingFunctions = {
                                 value={period.volume}
                                 onChange={(e) => updateCustomPeriod(index, 'volume', Number(e.target.value))}
                                 className="compact-input"
+                                disabled={isLinkedToExposure}
                               />
                             </div>
                             <div className="flex items-end justify-end">
@@ -8233,6 +8241,7 @@ const pricingFunctions = {
                                 size="icon"
                                 onClick={() => removeCustomPeriod(index)}
                                 className="text-destructive hover:text-destructive hover:bg-destructive/10 h-8 w-8"
+                                disabled={isLinkedToExposure}
                               >
                                 <Trash size={14} />
                               </Button>

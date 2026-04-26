@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useBankRates } from "@/hooks/useBankRates";
 import { useBaseCurrency } from "@/hooks/useBaseCurrency";
 import { getAvailableCurrencies } from "@/utils/currencyList";
-import { CURRENCY_PAIRS } from "@/pages/Index";
+import { CURRENCY_PAIRS } from "@/constants/currencyPairs";
 import { 
   Plus, 
   Shield, 
@@ -400,6 +400,38 @@ export default function HedgingInstruments() {
     foreign: false,
   });
 
+  // Edit Instrument form state (same UI/logic as Add Instrument)
+  const [editForm, setEditForm] = useState(() => ({
+    type: "forward",
+    currencyPair: "",
+    spotPrice: defaultSpot,
+    domesticRate: 5.0,
+    foreignRate: 3.0,
+    volatility: 15.0,
+    notionalBase: 1000000,
+    notionalQuote: Math.round(1000000 * defaultSpot * 100) / 100,
+    quantity: 100,
+    strike: defaultSpot,
+    strikeType: "absolute" as "percent" | "absolute",
+    maturity: "",
+    counterparty: "Manual",
+    barrierType: "absolute" as "percent" | "absolute",
+    barrier: "" as string | number,
+    secondBarrier: "" as string | number,
+    rebate: "" as number | string,
+    realPrice: "" as string | number,
+    portfolioId: undefined as string | undefined,
+    strategyMode: "existing" as "existing" | "new",
+    strategyId: "HSTRAT-UNASSIGNED" as string,
+    newStrategyName: "" as string,
+    exposureId: "" as string,
+    hedgeRequestId: "" as string,
+  }));
+  const [editFormRateOverrides, setEditFormRateOverrides] = useState<{ domestic: boolean; foreign: boolean }>({
+    domestic: false,
+    foreign: false,
+  });
+
   // Sync strategies from service (migration runs there).
   useEffect(() => {
     setStrategies(importService.getHedgingStrategies());
@@ -508,6 +540,45 @@ export default function HedgingInstruments() {
     return null;
   }, [addForm.spotPrice, addForm.maturity, addForm.domesticRate, addForm.foreignRate, addForm.volatility, addForm.strike, addForm.strikeType, addForm.type, addForm.barrier, addForm.secondBarrier, addForm.barrierType, addForm.rebate, valuationDate]);
 
+  const editFormTheoreticalPrice = useMemo(() => {
+    const spot = Number(editForm.spotPrice);
+    const maturity = editForm.maturity;
+    if (!maturity || isNaN(spot) || spot <= 0) return null;
+    const valDate = valuationDate || new Date().toISOString().split("T")[0];
+    const t = PricingService.calculateTimeToMaturity(maturity, valDate);
+    if (t <= 0) return null;
+    const r_d = (Number(editForm.domesticRate) || 0) / 100;
+    const r_f = (Number(editForm.foreignRate) || 0) / 100;
+    const sigma = (Number(editForm.volatility) || 0) / 100;
+    const K = editForm.strikeType === "percent" ? spot * (Number(editForm.strike) || 0) / 100 : (Number(editForm.strike) || spot);
+    const S = PricingService.calculateFXForwardPrice(spot, r_d, r_f, t);
+    const opt = editForm.type.toLowerCase();
+    try {
+      if (opt === "forward") return S - K;
+      if (opt === "swap") return S - K;
+      if (opt.includes("knockout") || opt.includes("knockin") || opt.includes("knock-out") || opt.includes("knock-in")) {
+        const b = editForm.barrierType === "percent" && editForm.barrier !== "" ? spot * (Number(editForm.barrier) / 100) : (Number(editForm.barrier) || 0);
+        const b2 = editForm.barrierType === "percent" && editForm.secondBarrier !== "" ? spot * (Number(editForm.secondBarrier) / 100) : (Number(editForm.secondBarrier) || undefined);
+        let pricingType = "";
+        if (opt.includes("double")) {
+          if (opt.includes("call")) pricingType = opt.includes("knock-out") || opt.includes("knockout") ? "call-double-knockout" : "call-double-knockin";
+          else if (opt.includes("put")) pricingType = opt.includes("knock-out") || opt.includes("knockout") ? "put-double-knockout" : "put-double-knockin";
+        } else if (opt.includes("call")) pricingType = opt.includes("reverse") ? "call-reverse-knockout" : "call-knockout";
+        else if (opt.includes("put")) pricingType = opt.includes("reverse") ? "put-reverse-knockout" : "put-knockout";
+        if (pricingType) return PricingService.calculateBarrierOptionClosedForm(pricingType, S, K, r_d, t, sigma, b, b2, r_f);
+      }
+      if (opt.includes("touch") || opt.includes("binary") || opt.includes("digital")) {
+        const barrier = editForm.barrierType === "percent" && editForm.barrier !== "" ? spot * (Number(editForm.barrier) / 100) : (Number(editForm.barrier) || K);
+        const secondBarrier = editForm.barrierType === "percent" && editForm.secondBarrier !== "" ? spot * (Number(editForm.secondBarrier) / 100) : (Number(editForm.secondBarrier) || undefined);
+        const rebatePct = Number(editForm.rebate) || 100;
+        return PricingService.calculateDigitalOptionPrice(opt, S, K, r_d, r_f, t, sigma, barrier, secondBarrier, 2000, rebatePct, true);
+      }
+      if (opt === "vanilla call" || opt === "call") return PricingService.calculateGarmanKohlhagenPrice("call", spot, K, r_d, r_f, t, sigma);
+      if (opt === "vanilla put" || opt === "put") return PricingService.calculateGarmanKohlhagenPrice("put", spot, K, r_d, r_f, t, sigma);
+    } catch (_) {}
+    return null;
+  }, [editForm.spotPrice, editForm.maturity, editForm.domesticRate, editForm.foreignRate, editForm.volatility, editForm.strike, editForm.strikeType, editForm.type, editForm.barrier, editForm.secondBarrier, editForm.barrierType, editForm.rebate, valuationDate]);
+
   // Devises base/quote pour les libellés dynamiques du formulaire Add Instrument
   const addFormBaseCcy = useMemo(() => {
     if (!addForm.currencyPair) return "base";
@@ -519,6 +590,72 @@ export default function HedgingInstruments() {
     const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p: { symbol: string; base?: string; quote?: string }) => p.symbol === addForm.currencyPair);
     return pair?.quote ?? addForm.currencyPair.split("/")[1] ?? "quote";
   }, [addForm.currencyPair, customCurrencyPairs]);
+
+  const editFormBaseCcy = useMemo(() => {
+    if (!editForm.currencyPair) return "base";
+    const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p: { symbol: string; base?: string; quote?: string }) => p.symbol === editForm.currencyPair);
+    return pair?.base ?? editForm.currencyPair.split("/")[0] ?? "base";
+  }, [editForm.currencyPair, customCurrencyPairs]);
+  const editFormQuoteCcy = useMemo(() => {
+    if (!editForm.currencyPair) return "quote";
+    const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p: { symbol: string; base?: string; quote?: string }) => p.symbol === editForm.currencyPair);
+    return pair?.quote ?? editForm.currencyPair.split("/")[1] ?? "quote";
+  }, [editForm.currencyPair, customCurrencyPairs]);
+
+  const editFormBaseForCurve = useMemo(
+    () => (/^[A-Z]{3}$/.test(editFormBaseCcy) ? editFormBaseCcy : "EUR"),
+    [editFormBaseCcy]
+  );
+  const editFormQuoteForCurve = useMemo(
+    () => (/^[A-Z]{3}$/.test(editFormQuoteCcy) ? editFormQuoteCcy : "USD"),
+    [editFormQuoteCcy]
+  );
+
+  const editDomesticCurve = useRateExplorerDiscountFactors(editFormQuoteForCurve, "cubic_spline");
+  const editForeignCurve = useRateExplorerDiscountFactors(editFormBaseForCurve, "cubic_spline");
+
+  const editFormTimeToMaturity = useMemo(() => {
+    if (!editForm.maturity) return 0;
+    return PricingService.calculateTimeToMaturity(editForm.maturity, valuationDate);
+  }, [editForm.maturity, valuationDate]);
+
+  const interpolatedEditDomestic = useMemo(() => {
+    if (!editDomesticCurve.discountFactors || editFormTimeToMaturity <= 0) return null;
+    return interpolateAtTenor(editDomesticCurve.discountFactors, editFormTimeToMaturity);
+  }, [editDomesticCurve.discountFactors, editFormTimeToMaturity]);
+
+  const interpolatedEditForeign = useMemo(() => {
+    if (!editForeignCurve.discountFactors || editFormTimeToMaturity <= 0) return null;
+    return interpolateAtTenor(editForeignCurve.discountFactors, editFormTimeToMaturity);
+  }, [editForeignCurve.discountFactors, editFormTimeToMaturity]);
+
+  useEffect(() => {
+    if (readPricingInterestRateSource() !== "bootstrapping") return;
+
+    const nextDomestic = interpolatedEditDomestic ? interpolatedEditDomestic.zeroRate * 100 : null;
+    const nextForeign = interpolatedEditForeign ? interpolatedEditForeign.zeroRate * 100 : null;
+    const eps = 1e-7;
+
+    setEditForm((prev) => {
+      let updated = prev;
+      if (nextDomestic !== null && !editFormRateOverrides.domestic) {
+        if (Math.abs((prev.domesticRate || 0) - nextDomestic) > eps) {
+          updated = { ...updated, domesticRate: nextDomestic };
+        }
+      }
+      if (nextForeign !== null && !editFormRateOverrides.foreign) {
+        if (Math.abs((prev.foreignRate || 0) - nextForeign) > eps) {
+          updated = { ...updated, foreignRate: nextForeign };
+        }
+      }
+      return updated;
+    });
+  }, [
+    interpolatedEditDomestic?.zeroRate,
+    interpolatedEditForeign?.zeroRate,
+    editFormRateOverrides.domestic,
+    editFormRateOverrides.foreign,
+  ]);
 
   const addFormBaseForCurve = useMemo(
     () => (/^[A-Z]{3}$/.test(addFormBaseCcy) ? addFormBaseCcy : "EUR"),
@@ -621,6 +758,18 @@ export default function HedgingInstruments() {
   }, []);
 
   const [isRecalculating, setIsRecalculating] = useState(false);
+  const [hasComputedMTM, setHasComputedMTM] = useState(false);
+  const [mtmLastUpdatedAt, setMtmLastUpdatedAt] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem("hedgingMTMTotal");
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const ts = Number(parsed?.updatedAt);
+      return Number.isFinite(ts) && ts > 0 ? ts : null;
+    } catch {
+      return null;
+    }
+  });
 
   // Dialog states for view and edit actions
   const [selectedInstrument, setSelectedInstrument] = useState<HedgingInstrument | null>(null);
@@ -726,7 +875,8 @@ export default function HedgingInstruments() {
       setPortfolios(service.getPortfolios());
       setCounterparties(service.getCounterparties());
       
-      // Initialiser les données de marché pour les nouvelles devises depuis les instruments exportés
+      // Initialize non-spot market params (vol/rates) from export.
+      // Spot should follow Strategy Builder (snapshot/API) and must not be overwritten by export implicitly.
       const uniqueCurrencies = getUniqueCurrencies(loadedInstruments);
       setCurrencyMarketData(prevData => {
         const newData = { ...prevData };
@@ -735,27 +885,24 @@ export default function HedgingInstruments() {
         uniqueCurrencies.forEach(currency => {
           const exportData = getMarketDataFromInstruments(currency);
           if (exportData) {
-            // TOUJOURS mettre à jour avec les données d'export (pas seulement si absent)
             const currentData = newData[currency];
-            if (!currentData || 
-                currentData.spot !== exportData.spot ||
-                currentData.domesticRate !== exportData.domesticRate ||
-                currentData.foreignRate !== exportData.foreignRate) {
-              
-              console.log(`[DEBUG] Updating market data for ${currency} with export data:`, exportData);
-              const locks = (() => {
-                try {
-                  const saved = localStorage.getItem("currencyMarketSpotLocks");
-                  return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
-                } catch {
-                  return {};
-                }
-              })();
-              newData[currency] = locks[currency]
-                ? { ...exportData, spot: currentData?.spot ?? exportData.spot }
-                : exportData;
-              hasUpdates = true;
-            }
+            const next: CurrencyMarketData = {
+              ...MARKET_DEFAULTS,
+              ...(currentData || {}),
+              volatility: exportData.volatility,
+              domesticRate: exportData.domesticRate,
+              foreignRate: exportData.foreignRate,
+            };
+            const changed =
+              !currentData ||
+              currentData.volatility !== next.volatility ||
+              currentData.domesticRate !== next.domesticRate ||
+              currentData.foreignRate !== next.foreignRate;
+            if (!changed) return;
+
+            console.log(`[DEBUG] Updating market data (non-spot) for ${currency} with export data:`, exportData);
+            newData[currency] = next;
+            hasUpdates = true;
           }
         });
         
@@ -891,6 +1038,9 @@ export default function HedgingInstruments() {
 
   // Live sync with Forex Market snapshot + refresh if stale (Forex page refreshes every 30s)
   React.useEffect(() => {
+    // Do not do any automatic market sync until the user explicitly triggers a valuation.
+    if (!hasComputedMTM) return;
+    if (instruments.length === 0) return;
     const onSnap = (e: Event) => {
       const ce = e as CustomEvent<ForexMarketRateSnapshot>;
       if (ce.detail) applyForexMarketSnapshotToState(ce.detail);
@@ -943,13 +1093,15 @@ export default function HedgingInstruments() {
       window.removeEventListener("storage", onStorage);
       clearInterval(id);
     };
-  }, [baseCurrency, exchangeRateService, applyForexMarketSnapshotToState]);
+  }, [hasComputedMTM, instruments.length, baseCurrency, exchangeRateService, applyForexMarketSnapshotToState]);
 
   // Synchronize spot price and rates with market data on initial load
   const hasSyncedOnMount = React.useRef(false);
   React.useEffect(() => {
     // Only sync once on initial mount
     if (hasSyncedOnMount.current) return;
+    // Do not auto-sync at mount; wait for a manual valuation.
+    if (!hasComputedMTM) return;
     if (instruments.length === 0) return;
     
     const syncMarketData = async () => {
@@ -1037,7 +1189,7 @@ export default function HedgingInstruments() {
     }, 500);
     
     return () => clearTimeout(timeoutId);
-  }, []); // Only run once on mount
+  }, [hasComputedMTM, instruments.length]); // Run only after first manual valuation
 
   // ✅ Synchronisation automatique des taux d'AllRates vers HedgingInstruments
   useEffect(() => {
@@ -1944,6 +2096,68 @@ export default function HedgingInstruments() {
     }
   };
 
+  const applyIvFromFuturesInsightsForEditForm = async () => {
+    if (!editForm.currencyPair || !editForm.maturity || !isPairMappableToFuturesInsights(editForm.currencyPair)) return;
+    if (!instrumentTypeUsesVolatility(editForm.type)) return;
+    setFetchingIvFromFi(true);
+    try {
+      const currenciesRes = await fetchCurrencies(false);
+      if (!currenciesRes.success || !currenciesRes.data?.length) {
+        toast({ title: "Futures Insights", description: "Could not load futures list.", variant: "destructive" });
+        return;
+      }
+      const contract = getFuturesContractForPair(editForm.currencyPair, currenciesRes.data);
+      if (!contract) {
+        toast({ title: "No mapping", description: `No Futures contract for ${editForm.currencyPair}.`, variant: "destructive" });
+        return;
+      }
+      const surfaceRes = await fetchVolSurface(contract, contract, 50, false, undefined, undefined);
+      if (!surfaceRes.success || !surfaceRes.surfacePoints?.length) {
+        toast({ title: "Surface fetch failed", description: surfaceRes.error || "Could not load vol surface.", variant: "destructive" });
+        return;
+      }
+      const points: SurfacePoint[] = surfaceRes.surfacePoints;
+      const optionTypeForSurface: "call" | "put" =
+        editForm.type === "put" || editForm.type.startsWith("put-") ? "put" : "call";
+      const filtered = points.filter((p) => p.type === optionTypeForSurface);
+      if (filtered.length === 0) {
+        toast({ title: "No IV data", description: `No ${optionTypeForSurface} surface points.`, variant: "destructive" });
+        return;
+      }
+      const strikes = [...new Set(filtered.map((p) => p.strike))].sort((a, b) => a - b);
+      const dtes = [...new Set(filtered.map((p) => p.dte))].sort((a, b) => a - b);
+      const key = (dte: number, strike: number) => `${dte}-${strike}`;
+      const pointMap = new Map<string, SurfacePoint>();
+      for (const p of filtered) pointMap.set(key(p.dte, p.strike), p);
+      let z: (number | null)[][] = dtes.map((dte) =>
+        strikes.map((strike) => {
+          const point = pointMap.get(key(dte, strike));
+          const iv = point?.iv ?? null;
+          return iv !== null && iv > 0 ? iv : null;
+        })
+      );
+      z = interpolateSurface(z, strikes, dtes);
+      const strikeAbs =
+        editForm.strikeType === "percent"
+          ? (Number(editForm.spotPrice) || 0) * (Number(editForm.strike) || 0) / 100
+          : Number(editForm.strike) || 0;
+      const valDate = valuationDate || new Date().toISOString().split("T")[0];
+      const dte = Math.max(0, Math.round(PricingService.calculateTimeToMaturity(editForm.maturity, valDate) * 365));
+      const interpolated = interpolateVolSurfacePoint(strikes, dtes, z, strikeAbs, dte);
+      if (!interpolated || !Number.isFinite(interpolated) || interpolated <= 0) {
+        toast({ title: "IV not found", description: "Could not interpolate implied volatility.", variant: "destructive" });
+        return;
+      }
+      setEditForm((f) => ({ ...f, volatility: interpolated }));
+      toast({ title: "IV applied", description: `Volatility updated to ${interpolated.toFixed(2)}%` });
+    } catch (err) {
+      console.error("Futures Insights IV (edit) failed:", err);
+      toast({ title: "Futures Insights", description: "IV fetch failed.", variant: "destructive" });
+    } finally {
+      setFetchingIvFromFi(false);
+    }
+  };
+
   const applyIvFromFuturesInsightsForInstrument = async (instrument: HedgingInstrument): Promise<number | null> => {
     if (!isPairMappableToFuturesInsights(instrument.currency) || !instrumentTypeUsesVolatility(instrument.type)) return null;
     setFetchingIvInstrumentId(instrument.id);
@@ -2132,11 +2346,127 @@ export default function HedgingInstruments() {
     });
   };
 
-  /** Refresh market data for one currency from instruments (export data) or keep current; safe number fallbacks to avoid crashes. */
-  const refreshMarketDataForCurrency = (currency: string) => {
+  const getDefaultSpotLikeStrategyBuilder = React.useCallback(
+    async (pairSymbol: string): Promise<number | null> => {
+      try {
+        const snap = readForexMarketRateSnapshot();
+        if (snap && snap.base === baseCurrency && snap.rates) {
+          const s = computeSpotForCurrencyPair(pairSymbol, snap.base, snap.rates);
+          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) return Number(s);
+        }
+
+        const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+        const rates = exchangeData?.rates || {};
+        const [base, quote] = String(pairSymbol || "").split("/");
+        if (!base || !quote) return null;
+        if (base === baseCurrency) return Number(rates[quote] ?? null);
+        if (quote === baseCurrency) return rates[base] ? 1 / Number(rates[base]) : null;
+        const baseRate = Number(rates[base] ?? 1);
+        const quoteRate = Number(rates[quote] ?? 1);
+        const cross = quoteRate / baseRate;
+        return Number.isFinite(cross) && cross > 0 ? cross : null;
+      } catch {
+        return null;
+      }
+    },
+    [baseCurrency, exchangeRateService]
+  );
+
+  // Seed global market spot defaults to match Strategy Builder behavior (live snapshot / FX rates).
+  // This avoids showing "exportSpotPrice" as the default global spot unless explicitly refreshed from export.
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const pairs = getUniqueCurrencies(instruments);
+      if (pairs.length === 0) return;
+
+      // Determine which pairs need a seeded spot.
+      const needs = pairs.filter((p) => {
+        if (marketSpotLocks[p]) return false;
+        const cur = currencyMarketData[p];
+        const s = Number(cur?.spot);
+        return !(Number.isFinite(s) && s > 0);
+      });
+      if (needs.length === 0) return;
+
+      // Prefer snapshot if present (same as Forex Market).
+      const snap = readForexMarketRateSnapshot();
+      const fromSnap: Record<string, number> = {};
+      if (snap && snap.base && snap.rates) {
+        for (const p of needs) {
+          const s = computeSpotForCurrencyPair(p, snap.base, snap.rates);
+          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) fromSnap[p] = Number(s);
+        }
+      }
+
+      // For any missing, fall back to Strategy Builder style API rate.
+      const fromApi: Record<string, number> = {};
+      const remaining = needs.filter((p) => fromSnap[p] == null);
+      if (remaining.length > 0) {
+        try {
+          const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+          const rates = exchangeData?.rates || {};
+          for (const pairSymbol of remaining) {
+            const [base, quote] = String(pairSymbol || "").split("/");
+            if (!base || !quote) continue;
+            let spot: number | null = null;
+            if (base === baseCurrency) spot = Number(rates[quote] ?? null);
+            else if (quote === baseCurrency) spot = rates[base] ? 1 / Number(rates[base]) : null;
+            else {
+              const baseRate = Number(rates[base] ?? 1);
+              const quoteRate = Number(rates[quote] ?? 1);
+              const cross = quoteRate / baseRate;
+              spot = Number.isFinite(cross) && cross > 0 ? cross : null;
+            }
+            if (spot != null && Number.isFinite(spot) && spot > 0) fromApi[pairSymbol] = spot;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (cancelled) return;
+      setCurrencyMarketData((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const p of needs) {
+          const spot =
+            fromSnap[p] ??
+            fromApi[p] ??
+            (() => {
+              const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((x) => x.symbol === p) as any;
+              const d = Number(pair?.defaultSpotRate);
+              return Number.isFinite(d) && d > 0 ? d : null;
+            })();
+          if (spot == null) continue;
+          const cur = next[p] || MARKET_DEFAULTS;
+          const curSpot = Number(cur.spot);
+          if (Number.isFinite(curSpot) && Math.abs(curSpot - spot) < 1e-12) continue;
+          next[p] = { ...MARKET_DEFAULTS, ...cur, spot };
+          changed = true;
+        }
+        if (!changed) return prev;
+        try {
+          localStorage.setItem("currencyMarketData", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseCurrency, customCurrencyPairs, currencyMarketData, exchangeRateService, instruments, marketSpotLocks]);
+
+  /** Refresh market data for one currency (default = Strategy Builder spot; does not overwrite locked spots). */
+  const refreshMarketDataForCurrency = async (currency: string) => {
     const fromInstruments = getMarketDataFromInstruments(currency);
     const current = currencyMarketData[currency] || { spot: 1.0, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-    const spot = marketSpotLocks[currency] ? (Number(current.spot) || 1.0) : (Number(fromInstruments?.spot ?? current.spot) || 1.0);
+    const spot =
+      marketSpotLocks[currency]
+        ? (Number(current.spot) || 1.0)
+        : (await getDefaultSpotLikeStrategyBuilder(currency)) ??
+          (Number(fromInstruments?.spot ?? current.spot) || 1.0);
     const volatilityRaw = Number(fromInstruments?.volatility ?? current.volatility);
     const domesticRaw = Number(fromInstruments?.domesticRate ?? current.domesticRate);
     const foreignRaw = Number(fromInstruments?.foreignRate ?? current.foreignRate);
@@ -2170,9 +2500,15 @@ export default function HedgingInstruments() {
         const exportData = getMarketDataFromInstruments(currency);
         if (exportData) {
           console.log(`[DEBUG] Refreshing ${currency} with export data:`, exportData);
-          newData[currency] = marketSpotLocks[currency]
-            ? { ...exportData, spot: (newData[currency]?.spot ?? exportData.spot) }
-            : exportData;
+          // Keep spot stable (Strategy Builder spot). Only refresh vol/rates from export snapshot.
+          const cur = newData[currency] || MARKET_DEFAULTS;
+          newData[currency] = {
+            ...MARKET_DEFAULTS,
+            ...cur,
+            volatility: exportData.volatility,
+            domesticRate: exportData.domesticRate,
+            foreignRate: exportData.foreignRate,
+          };
           updatedCount++;
         }
       });
@@ -2204,6 +2540,8 @@ export default function HedgingInstruments() {
       
       // Force re-render by updating state
       setInstruments([...instruments]);
+      setHasComputedMTM(true);
+      setMtmLastUpdatedAt(Date.now());
       
       toast({
         title: "MTM Recalculated",
@@ -2401,6 +2739,25 @@ export default function HedgingInstruments() {
   type RiskSeverity = "info" | "warning" | "critical";
   type RiskAlert = { key: string; severity: RiskSeverity; short: string; detail: string };
 
+  const barrierAlertThresholds = React.useMemo(() => {
+    // Percent distances to barrier, in % (e.g. 0.5 means 0.5%)
+    const defaults = { criticalPct: 0.5, warningPct: 2 };
+    try {
+      const raw = localStorage.getItem("fxRiskManagerSettings");
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      const t = parsed?.notifications?.alertThresholds || {};
+      const criticalPct = Number(t.barrierCriticalPct);
+      const warningPct = Number(t.barrierWarningPct);
+      return {
+        criticalPct: Number.isFinite(criticalPct) && criticalPct >= 0 ? criticalPct : defaults.criticalPct,
+        warningPct: Number.isFinite(warningPct) && warningPct >= 0 ? warningPct : defaults.warningPct,
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
+
   const computeInstantBadges = (instrument: HedgingInstrument): { main: React.ReactNode; risks: RiskAlert[]; dte: number | null } => {
     const statusRaw = String(instrument.status || "").toLowerCase();
     const valuationDateObj = new Date(valuationDate);
@@ -2424,8 +2781,23 @@ export default function HedgingInstruments() {
       const ds = barriers.map((b) => Math.abs(spot - b) / spot);
       const d = Math.min(...ds);
       const pct = d * 100;
-      if (d < 0.005) risks.push({ key: "barrier-critical", severity: "critical", short: `BARR<0.5%`, detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})` });
-      else if (d < 0.02) risks.push({ key: "barrier-warning", severity: "warning", short: `BARR<2%`, detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})` });
+      const criticalDec = barrierAlertThresholds.criticalPct / 100;
+      const warningDec = barrierAlertThresholds.warningPct / 100;
+      if (criticalDec > 0 && d < criticalDec) {
+        risks.push({
+          key: "barrier-critical",
+          severity: "critical",
+          short: `BARR<${barrierAlertThresholds.criticalPct}%`,
+          detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
+        });
+      } else if (warningDec > 0 && d < warningDec) {
+        risks.push({
+          key: "barrier-warning",
+          severity: "warning",
+          short: `BARR<${barrierAlertThresholds.warningPct}%`,
+          detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
+        });
+      }
 
       // Digital jump risk near trigger
       const t = String(instrument.type || "").toLowerCase();
@@ -2597,6 +2969,48 @@ export default function HedgingInstruments() {
 
   // Edit instrument function
   const editInstrument = (instrument: HedgingInstrument) => {
+    const typeValue =
+      INSTRUMENT_TYPES.find((t) => t.label === instrument.type)?.value ||
+      INSTRUMENT_TYPES.find((t) => t.value === String(instrument.type || "").toLowerCase())?.value ||
+      "forward";
+    const currencyPair = String(instrument.currency || "");
+    const spot =
+      Number((instrument as any).exportSpotPrice) ||
+      Number((instrument as any).impliedSpotPrice) ||
+      Number((instrument as any).spotPrice) ||
+      defaultSpot;
+    const notionalBase = Number(instrument.notional || 0) || 0;
+    const strikeAbs = Number((instrument as any).strike) || spot;
+    const isDigital = String(typeValue).includes("touch") || String(typeValue).includes("binary");
+    const maturity = String(instrument.maturity || "");
+
+    setEditForm({
+      type: typeValue,
+      currencyPair,
+      spotPrice: spot,
+      domesticRate: Number((instrument as any).exportDomesticRate ?? (instrument as any).domesticRate ?? 5.0) || 0,
+      foreignRate: Number((instrument as any).exportForeignRate ?? (instrument as any).foreignRate ?? 3.0) || 0,
+      volatility: Number((instrument as any).exportVolatility ?? instrument.volatility ?? (instrument as any).impliedVolatility ?? 15.0) || 0,
+      notionalBase,
+      notionalQuote: Math.round(notionalBase * (Number.isFinite(spot) && spot > 0 ? spot : 1) * 100) / 100,
+      quantity: Number(instrument.quantity ?? 100) || 0,
+      strike: isDigital ? spot : strikeAbs,
+      strikeType: "absolute",
+      maturity,
+      counterparty: String(instrument.counterparty || "Manual"),
+      barrierType: "absolute",
+      barrier: instrument.barrier == null ? "" : Number(instrument.barrier),
+      secondBarrier: instrument.secondBarrier == null ? "" : Number(instrument.secondBarrier),
+      rebate: instrument.rebate == null ? "" : Number(instrument.rebate),
+      realPrice: (instrument as any).realOptionPrice == null ? "" : Number((instrument as any).realOptionPrice),
+      portfolioId: (instrument as any).portfolioId || undefined,
+      strategyMode: "existing",
+      strategyId: (instrument as any).strategyId || "HSTRAT-UNASSIGNED",
+      newStrategyName: "",
+      exposureId: String((instrument as any).exposureId || ""),
+      hedgeRequestId: String((instrument as any).hedgeRequestId || ""),
+    });
+    setEditFormRateOverrides({ domestic: false, foreign: false });
     setSelectedInstrument(instrument);
     setIsEditDialogOpen(true);
   };
@@ -2941,9 +3355,11 @@ export default function HedgingInstruments() {
   const [convertedTotalMTM, setConvertedTotalMTM] = React.useState<number>(0);
   
   React.useEffect(() => {
+    if (!hasComputedMTM) return;
+    let cancelled = false;
     const convertTotal = async () => {
       if (Object.keys(mtmByCurrency).length === 0) {
-        setConvertedTotalMTM(0);
+        if (!cancelled) setConvertedTotalMTM(0);
         return;
       }
       
@@ -2991,7 +3407,7 @@ export default function HedgingInstruments() {
             }
           }
           
-          setConvertedTotalMTM(totalUSD);
+          if (!cancelled) setConvertedTotalMTM(totalUSD);
         } else {
           // Convert all to reference currency via USD
           let totalInRef = 0;
@@ -3037,16 +3453,19 @@ export default function HedgingInstruments() {
             }
           }
           
-          setConvertedTotalMTM(totalInRef);
+          if (!cancelled) setConvertedTotalMTM(totalInRef);
         }
       } catch (error) {
         console.error('Error converting MTM total:', error);
-        setConvertedTotalMTM(0);
+        if (!cancelled) setConvertedTotalMTM(0);
       }
     };
     
     convertTotal();
-  }, [mtmByCurrency, referenceCurrency, currencyMarketData]);
+    return () => {
+      cancelled = true;
+    };
+  }, [hasComputedMTM, mtmByCurrency, referenceCurrency, currencyMarketData]);
 
   // Persist the converted MTM total to localStorage so the Dashboard can read it
   React.useEffect(() => {
@@ -3140,6 +3559,15 @@ export default function HedgingInstruments() {
                   )}
                   {isRecalculating ? "Calculating..." : "Recalculate All MTM"}
                 </Button>
+
+                <div className="flex flex-col justify-center px-2">
+                  <div className="text-xs text-muted-foreground whitespace-nowrap">
+                    Last update:{" "}
+                    <span className="font-mono">
+                      {mtmLastUpdatedAt ? new Date(mtmLastUpdatedAt).toLocaleString() : "—"}
+                    </span>
+                  </div>
+                </div>
                 
 
                 
@@ -3183,7 +3611,9 @@ export default function HedgingInstruments() {
                     <span className="text-center">IV</span>
                   </div>
                   {getUniqueCurrencies(instruments).map((currency) => {
-                    const data = currencyMarketData[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
+                    // Default spot should match Strategy Builder (live snapshot / exchange rates),
+                    // not necessarily the export snapshot, unless user explicitly refreshes from export.
+                    const data = currencyMarketData[currency] || { ...MARKET_DEFAULTS, ...(getMarketDataFromInstruments(currency) || {} as any) };
                     const count = instruments.filter(inst => inst.currency === currency).length;
                     const mappable = isPairMappableToFuturesInsights(currency);
                     return (
@@ -5773,19 +6203,705 @@ export default function HedgingInstruments() {
 
       {/* Edit Instrument Dialog */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>Edit Instrument</DialogTitle>
+        <DialogContent className="sm:max-w-[640px] max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Edit Hedging Instrument</DialogTitle>
             <DialogDescription>
-              Modify the parameters of this hedging instrument
+              Modify the instrument entry. Fields and behavior match the “Add New Hedging Instrument” form.
             </DialogDescription>
           </DialogHeader>
+
           {selectedInstrument && (
-            <InstrumentEditForm 
-              instrument={selectedInstrument}
-              onSave={saveInstrumentChanges}
-              onCancel={() => setIsEditDialogOpen(false)}
-            />
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!editForm.currencyPair || !editForm.maturity) {
+                  toast({
+                    title: "Validation",
+                    description: "Please select a currency pair and enter maturity date.",
+                    variant: "destructive",
+                  });
+                  return;
+                }
+                const notionalBaseVal = Number(editForm.notionalBase) || 0;
+                if (notionalBaseVal <= 0) {
+                  toast({
+                    title: "Validation",
+                    description: "Notional (base) must be greater than 0.",
+                    variant: "destructive",
+                  });
+                  return;
+                }
+                const spotForBarrier = Number(editForm.spotPrice) || 1;
+                const isDigital = editForm.type.includes("touch") || editForm.type.includes("binary");
+                const strikeAbs = isDigital
+                  ? spotForBarrier
+                  : (editForm.strikeType === "percent"
+                      ? spotForBarrier * (Number(editForm.strike) || 0) / 100
+                      : (Number(editForm.strike) || 0));
+                const maturityDate = new Date(editForm.maturity);
+                if (isNaN(maturityDate.getTime())) {
+                  toast({
+                    title: "Validation",
+                    description: "Invalid maturity date.",
+                    variant: "destructive",
+                  });
+                  return;
+                }
+                const barrierNum = editForm.barrier === "" ? undefined : Number(editForm.barrier);
+                const secondBarrierNum = editForm.secondBarrier === "" ? undefined : Number(editForm.secondBarrier);
+                const barrier = barrierNum == null ? undefined : editForm.barrierType === "percent" ? (spotForBarrier * (barrierNum / 100)) : barrierNum;
+                const secondBarrier = secondBarrierNum == null ? undefined : editForm.barrierType === "percent" ? (spotForBarrier * (secondBarrierNum / 100)) : secondBarrierNum;
+                const rebate = editForm.rebate === "" ? undefined : Number(editForm.rebate);
+                const displayType = INSTRUMENT_TYPES.find((t) => t.value === editForm.type)?.label ?? editForm.type;
+                const notionalBase = Number(editForm.notionalBase) || 0;
+                const quantity = Number(editForm.quantity) || 0;
+                const unitPrice =
+                  editForm.realPrice !== "" && editForm.realPrice !== undefined && !isNaN(Number(editForm.realPrice))
+                    ? Number(editForm.realPrice)
+                    : (editFormTheoreticalPrice ?? 0);
+                const ttm = editForm.maturity
+                  ? PricingService.calculateTimeToMaturity(editForm.maturity, valuationDate || new Date().toISOString().split("T")[0])
+                  : 0;
+
+                // Resolve strategy association (existing or create new)
+                let strategyId = editForm.strategyId || "HSTRAT-UNASSIGNED";
+                let strategyName = strategies.find((s) => s.id === strategyId)?.name ?? "Unassigned";
+                if (editForm.strategyMode === "new") {
+                  const name = editForm.newStrategyName.trim();
+                  const created = importService.addHedgingStrategy({
+                    name: name || `New Strategy ${new Date().toLocaleDateString()}`,
+                    source: "manual",
+                    currencyPair: editForm.currencyPair || undefined,
+                    portfolioId: editForm.portfolioId || undefined,
+                    counterparty: editForm.counterparty,
+                  });
+                  strategyId = created.id;
+                  strategyName = created.name;
+                }
+
+                saveInstrumentChanges({
+                  ...selectedInstrument,
+                  type: displayType,
+                  currency: editForm.currencyPair,
+                  notional: notionalBase,
+                  quantity,
+                  strike: !isNaN(strikeAbs) ? strikeAbs : undefined,
+                  maturity: editForm.maturity,
+                  counterparty: editForm.counterparty,
+                  portfolioId: editForm.portfolioId || undefined,
+                  barrier,
+                  secondBarrier,
+                  rebate,
+                  // Pricing / export fields (same as Add)
+                  premium: unitPrice,
+                  realOptionPrice: unitPrice,
+                  volatility: Number(editForm.volatility) || undefined,
+                  exportSpotPrice: Number(editForm.spotPrice) || undefined,
+                  exportDomesticRate: Number(editForm.domesticRate) || undefined,
+                  exportForeignRate: Number(editForm.foreignRate) || undefined,
+                  exportVolatility: Number(editForm.volatility) || undefined,
+                  exportTimeToMaturity: ttm > 0 ? ttm : undefined,
+                  // Do not force an individual "current" spot override on edit.
+                  // Keep any existing impliedSpotPrice as-is; exportSpotPrice captures the edited snapshot.
+                  impliedSpotPrice: (selectedInstrument as any).impliedSpotPrice,
+                  strategyId,
+                  strategyName,
+                  exposureId: editForm.exposureId || undefined,
+                  hedgeRequestId: editForm.hedgeRequestId || undefined,
+                } as any);
+              }}
+              className="flex flex-col gap-4 py-4 overflow-y-auto min-h-0"
+            >
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Strategy</Label>
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Select value={editForm.strategyMode} onValueChange={(v) => setEditForm((f) => ({ ...f, strategyMode: v as "existing" | "new" }))}>
+                      <SelectTrigger className="w-full sm:w-[180px]">
+                        <SelectValue placeholder="Mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="existing">Use existing</SelectItem>
+                        <SelectItem value="new">Create new</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {editForm.strategyMode === "existing" ? (
+                      <Select value={editForm.strategyId} onValueChange={(v) => setEditForm((f) => ({ ...f, strategyId: v }))}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select strategy" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {strategyOptions.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={editForm.newStrategyName}
+                        onChange={(e) => setEditForm((f) => ({ ...f, newStrategyName: e.target.value }))}
+                        placeholder="New strategy name"
+                      />
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">A strategy groups one or more instruments. New instruments must be associated to a strategy.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Load exposure</Label>
+                <div className="flex gap-2 items-center">
+                  <Select
+                    onValueChange={async (val) => {
+                      if (val === "__none__") return;
+                      const exp = exposures.find((e) => (e.id || "") === val) || exposures[Number(val)] || undefined;
+                      if (!exp) return;
+                      const exposureId = String(exp.id || "");
+                      const base = String(exp.currency || "").toUpperCase();
+                      const hedge = String(exp.hedgeCurrency || (base === "USD" ? "EUR" : "USD")).toUpperCase();
+                      const pairSymbol = `${base}/${hedge}`;
+                      const ensuredPair = ensurePairExists(base, hedge, Number(editForm.spotPrice) || 1);
+                      let spot = ensuredPair && "defaultSpotRate" in ensuredPair ? (ensuredPair as any).defaultSpotRate : (Number(editForm.spotPrice) || 1);
+                      try {
+                        const live = await fetchRealTimeRate(ensuredPair as any);
+                        if (live && isFinite(live) && live > 0) spot = live;
+                      } catch {}
+                      const amountAbs = Math.abs(Number(exp.amount || 0));
+                      const maturityYmd = (() => {
+                        const d = typeof exp.maturity === "string" ? new Date(exp.maturity) : (exp.maturity as Date);
+                        return isNaN(d?.getTime?.() || NaN) ? "" : d.toISOString().split("T")[0];
+                      })();
+                      const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
+                      const domesticRate = fromBootstrapSettings ? undefined : (bankRates[hedge as keyof typeof bankRates] ?? editForm.domesticRate);
+                      const foreignRate = fromBootstrapSettings ? undefined : (bankRates[base as keyof typeof bankRates] ?? editForm.foreignRate);
+
+                      let hedgeRequestId = "";
+                      if (exposureId) {
+                        try {
+                          const req = importService.getOrCreateHedgeRequest({
+                            exposureId,
+                            source: "manual",
+                            exposureSnapshot: {
+                              currency: base,
+                              hedgeCurrency: hedge,
+                              amount: Number(exp.amount || 0),
+                              type: exp.type,
+                              maturity: typeof exp.maturity === "string" ? exp.maturity : new Date(exp.maturity as any).toISOString(),
+                              date: (exp as any).date ? (typeof (exp as any).date === "string" ? (exp as any).date : new Date((exp as any).date).toISOString()) : undefined,
+                              description: exp.description,
+                            },
+                          });
+                          hedgeRequestId = req.id;
+                        } catch {}
+                      }
+
+                      setEditForm((f) => ({
+                        ...f,
+                        exposureId,
+                        hedgeRequestId,
+                        currencyPair: ensuredPair.symbol,
+                        spotPrice: spot,
+                        strike: f.strikeType === "absolute" ? spot : (Number(f.strike) || 0),
+                        maturity: maturityYmd || f.maturity,
+                        notionalBase: amountAbs,
+                        notionalQuote: Math.round(amountAbs * spot * 100) / 100,
+                        ...(fromBootstrapSettings ? {} : { domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate, foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate }),
+                      }));
+                      setEditFormRateOverrides({ domestic: false, foreign: false });
+                      toast({
+                        title: "Exposure loaded",
+                        description: `${pairSymbol} • ${amountAbs.toLocaleString()} ${base} • ${maturityYmd || "no maturity"}`,
+                      });
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={exposures.length > 0 ? "Select an exposure" : "No exposures available"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {exposures.length === 0 ? (
+                        <SelectItem value="__none__" disabled>
+                          No exposures
+                        </SelectItem>
+                      ) : (
+                        exposures.map((e, idx) => {
+                          const base = String(e.currency || "").toUpperCase();
+                          const hedge = String(e.hedgeCurrency || (base === "USD" ? "EUR" : "USD")).toUpperCase();
+                          const key = (e.id as string) || String(idx);
+                          const maturity = typeof e.maturity === "string" ? e.maturity : (e.maturity as Date)?.toISOString?.().split?.("T")[0];
+                          const label = `${base}/${hedge} • ${e.type || ""} • ${Math.abs(Number(e.amount || 0)).toLocaleString()} • ${maturity || ""}`;
+                          return (
+                            <SelectItem key={key} value={key}>
+                              {label}
+                            </SelectItem>
+                          );
+                        })
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-[10px] text-muted-foreground">Fill pair, maturity, notional, rates</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label htmlFor="edit-instrument-type" className="text-right font-medium whitespace-nowrap">Type</Label>
+                <Select
+                  value={editForm.type}
+                  onValueChange={(value) => {
+                    const spotVal = Number(editForm.spotPrice) || 1.085;
+                    setEditForm((f) => {
+                      const next = { ...f, type: value };
+                      if (value.includes("touch") || value.includes("binary")) {
+                        next.barrierType = "absolute";
+                        (next as any).barrier = (f.barrier === "" || f.barrier === undefined) ? spotVal * 1.05 : f.barrier;
+                        (next as any).secondBarrier = (value.includes("double") || value.includes("range") || value.includes("outside"))
+                          ? ((f.secondBarrier === "" || f.secondBarrier === undefined) ? spotVal * 0.95 : f.secondBarrier)
+                          : "";
+                        (next as any).rebate = (f.rebate === "" || f.rebate === undefined) ? 100 : f.rebate;
+                      } else {
+                        (next as any).barrier = "";
+                        (next as any).secondBarrier = "";
+                        (next as any).rebate = "";
+                      }
+                      return next;
+                    });
+                  }}
+                >
+                  <SelectTrigger className="w-full min-w-[180px]">
+                    <SelectValue placeholder="Select instrument type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INSTRUMENT_TYPES.map((instrument) => (
+                      <SelectItem key={instrument.value} value={instrument.value}>
+                        {instrument.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label htmlFor="edit-currency-pair" className="text-right font-medium whitespace-nowrap">Currency Pair</Label>
+                <div className="flex flex-col gap-1">
+                  <Select
+                    value={editForm.currencyPair || undefined}
+                    onValueChange={async (value) => {
+                      try {
+                        const safeValue = String(value || "");
+                        const pair = [...CURRENCY_PAIRS, ...customCurrencyPairs].find((p) => p.symbol === safeValue) as
+                          | { symbol: string; base?: string; quote?: string; defaultSpotRate: number }
+                          | undefined;
+                        const initialSpot = Number(pair?.defaultSpotRate ?? editForm.spotPrice ?? 1);
+                        const [base, quote] = (pair?.base && pair?.quote) ? [pair.base, pair.quote] : safeValue.includes("/") ? safeValue.split("/") : ["", ""];
+                        const fromBootstrapSettings = readPricingInterestRateSource() === "bootstrapping";
+                        const domesticRate = fromBootstrapSettings
+                          ? undefined
+                          : (quote ? (bankRates?.[quote as keyof typeof bankRates] as number | null | undefined) : undefined) ?? editForm.domesticRate;
+                        const foreignRate = fromBootstrapSettings
+                          ? undefined
+                          : (base ? (bankRates?.[base as keyof typeof bankRates] as number | null | undefined) : undefined) ?? editForm.foreignRate;
+
+                        setEditForm((f) => {
+                          const safeSpot = isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1);
+                          return {
+                            ...f,
+                            currencyPair: safeValue,
+                            spotPrice: safeSpot,
+                            strike: safeSpot,
+                            ...(fromBootstrapSettings ? {} : { domesticRate: typeof domesticRate === "number" ? domesticRate : f.domesticRate, foreignRate: typeof foreignRate === "number" ? foreignRate : f.foreignRate }),
+                            notionalQuote: Math.round((f.notionalBase || 0) * safeSpot * 100) / 100,
+                          };
+                        });
+                        setEditFormRateOverrides({ domestic: false, foreign: false });
+
+                        if (pair) {
+                          try {
+                            const realTimeRate = await fetchRealTimeRate(pair);
+                            if (realTimeRate != null && isFinite(realTimeRate) && realTimeRate > 0) {
+                              setEditForm((f) => ({
+                                ...f,
+                                spotPrice: realTimeRate,
+                                strike: f.strikeType === "absolute" ? f.strike : realTimeRate * ((Number(f.strike) || 0) / 100),
+                                notionalQuote: Math.round((f.notionalBase || 0) * realTimeRate * 100) / 100,
+                              }));
+                              const formatted = (Math.abs(realTimeRate) > 10 ? realTimeRate.toFixed(3) : realTimeRate.toFixed(4));
+                              toast({ title: "Rate updated", description: `${pair.symbol}: ${formatted}` });
+                            }
+                          } catch (err) {
+                            console.warn("Live rate fetch failed:", err);
+                          }
+                        }
+                      } catch (err) {
+                        console.error("Error while applying live rates to form:", err);
+                        toast({ title: "Live rates unavailable", description: "Using default rates for now.", variant: "destructive" as any });
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="w-full min-w-[180px]">
+                      <SelectValue placeholder="Select currency pair" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b flex items-center gap-2">
+                        <span>Major Pairs</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter((p) => p.category === "majors").map((pair) => (
+                        <SelectItem key={pair.symbol} value={pair.symbol}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Cross Rates</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter((p) => p.category === "crosses").map((pair) => (
+                        <SelectItem key={pair.symbol} value={pair.symbol}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                      <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                        <span>Other Currencies</span>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                      </div>
+                      {CURRENCY_PAIRS.filter((p) => p.category === "others").map((pair) => (
+                        <SelectItem key={pair.symbol} value={pair.symbol}>
+                          <div className="flex flex-col">
+                            <span className="font-medium">{pair.symbol}</span>
+                            <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                      {customCurrencyPairs.length > 0 && (
+                        <>
+                          <div className="p-2 text-xs font-medium text-muted-foreground border-b border-t flex items-center gap-2">
+                            <span>Custom Pairs</span>
+                            <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Live Rates</span>
+                          </div>
+                          {customCurrencyPairs.map((pair) => (
+                            <SelectItem key={pair.symbol} value={pair.symbol}>
+                              <div className="flex flex-col">
+                                <span className="font-medium">{pair.symbol}</span>
+                                <span className="text-xs text-muted-foreground">{pair.name || "Custom"}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </>
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-[10px] text-muted-foreground">Synced with Pricers</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Spot ({editForm.currencyPair || "—"})</Label>
+                <Input
+                  type="number"
+                  step="0.0001"
+                  className="w-full"
+                  value={editForm.spotPrice ?? ""}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      spotPrice: parseFloat(e.target.value) || 0,
+                      notionalQuote: Math.round((f.notionalBase || 0) * (parseFloat(e.target.value) || 1) * 100) / 100,
+                    }))
+                  }
+                />
+              </div>
+
+              {!(editForm.type.includes("touch") || editForm.type.includes("binary")) && (
+                <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                  <Label className="text-right font-medium whitespace-nowrap">Strike</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={editForm.strike ?? ""}
+                      onChange={(e) => setEditForm((f) => ({ ...f, strike: e.target.value === "" ? (Number(f.spotPrice) || 0) : (parseFloat(e.target.value) || 0) }))}
+                      className="flex-1"
+                    />
+                    <Select value={editForm.strikeType} onValueChange={(v: "percent" | "absolute") => setEditForm((f) => ({ ...f, strikeType: v }))}>
+                      <SelectTrigger className="w-20">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">
+                          <span className="flex items-center gap-1">
+                            <Percent className="w-3 h-3" /> %
+                          </span>
+                        </SelectItem>
+                        <SelectItem value="absolute">
+                          <span className="flex items-center gap-1">
+                            <Hash className="w-3 h-3" /> Abs
+                          </span>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p className="col-span-2 text-xs text-muted-foreground">
+                    {editForm.strikeType === "percent"
+                      ? `Absolute: ${((Number(editForm.spotPrice) || 0) * (Number(editForm.strike) || 0) / 100).toFixed(4)}`
+                      : `% of spot: ${((Number(editForm.strike) || 0) / (Number(editForm.spotPrice) || 1) * 100).toFixed(2)}%`}
+                  </p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Maturity</Label>
+                <Input type="date" className="w-full" value={editForm.maturity} onChange={(e) => setEditForm((f) => ({ ...f, maturity: e.target.value }))} />
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Notional ({editFormBaseCcy})</Label>
+                <Input
+                  type="number"
+                  step="1000"
+                  className="w-full"
+                  value={editForm.notionalBase ?? ""}
+                  onChange={(e) => {
+                    const base = Number(e.target.value) || 0;
+                    const spot = Number(editForm.spotPrice) || 1;
+                    setEditForm((f) => ({ ...f, notionalBase: base, notionalQuote: Math.round(base * spot * 100) / 100 }));
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Notional ({editFormQuoteCcy})</Label>
+                <Input
+                  type="number"
+                  step="1000"
+                  className="w-full"
+                  value={editForm.notionalQuote ?? ""}
+                  onChange={(e) => {
+                    const quote = Number(e.target.value) || 0;
+                    const spot = Number(editForm.spotPrice) || 1;
+                    if (spot > 0) setEditForm((f) => ({ ...f, notionalQuote: quote, notionalBase: Math.round(quote / spot * 100) / 100 }));
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Quantity (%)</Label>
+                <Input type="number" step="1" className="w-full" value={editForm.quantity ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, quantity: Number(e.target.value) || 0 }))} />
+              </div>
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4">
+                <span />
+                <p className="text-xs text-muted-foreground">
+                  Volume hedged = Notional ({editFormBaseCcy}) × Quantity% = {(Number(editForm.notionalBase) || 0) * (Number(editForm.quantity) || 0) / 100} {editFormBaseCcy}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Volatility (%)</Label>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <Input type="number" step="0.1" className="w-full" value={editForm.volatility ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, volatility: parseFloat(e.target.value) || 0 }))} />
+                    {instrumentTypeUsesVolatility(editForm.type) && isPairMappableToFuturesInsights(editForm.currencyPair) && editForm.currencyPair && editForm.maturity && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={applyIvFromFuturesInsightsForEditForm}
+                        disabled={fetchingIvFromFi}
+                        className="shrink-0"
+                      >
+                        {fetchingIvFromFi ? "…" : "Apply IV from Futures"}
+                      </Button>
+                    )}
+                  </div>
+                  {instrumentTypeUsesVolatility(editForm.type) && isPairMappableToFuturesInsights(editForm.currencyPair) && (
+                    <p className="text-xs text-muted-foreground">Strike × DTE → IV from Futures Insights (EUR/USD, GBP/USD, etc.)</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">{editFormQuoteCcy} rate (%)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  className="w-full"
+                  value={editForm.domesticRate ?? ""}
+                  onChange={(e) => {
+                    setEditForm((f) => ({ ...f, domesticRate: parseFloat(e.target.value) ?? 0 }));
+                    setEditFormRateOverrides((prev) => ({ ...prev, domestic: true }));
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">{editFormBaseCcy} rate (%)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  className="w-full"
+                  value={editForm.foreignRate ?? ""}
+                  onChange={(e) => {
+                    setEditForm((f) => ({ ...f, foreignRate: parseFloat(e.target.value) ?? 0 }));
+                    setEditFormRateOverrides((prev) => ({ ...prev, foreign: true }));
+                  }}
+                />
+              </div>
+
+              {(editForm.type.includes("knockout") || editForm.type.includes("knockin") || editForm.type.includes("touch")) && (
+                <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                  <Label className="text-right font-medium whitespace-nowrap">{editForm.type.includes("touch") || editForm.type.includes("binary") ? "Barrier (trigger)" : "Barrier"}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={editForm.barrier === "" ? "" : editForm.barrier}
+                      onChange={(e) => setEditForm((f) => ({ ...f, barrier: e.target.value === "" ? "" : parseFloat(e.target.value) }))}
+                      className="flex-1 min-w-0"
+                    />
+                    <Select value={editForm.barrierType} onValueChange={(v: "percent" | "absolute") => setEditForm((f) => ({ ...f, barrierType: v }))}>
+                      <SelectTrigger className="w-20">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">
+                          <div className="flex items-center gap-1">
+                            <Percent className="w-3 h-3" /> %
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="absolute">
+                          <div className="flex items-center gap-1">
+                            <Hash className="w-3 h-3" /> Abs
+                          </div>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
+              {editForm.type.includes("double") && (
+                <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                  <Label className="text-right font-medium whitespace-nowrap">{editForm.type.includes("touch") || editForm.type.includes("binary") ? "Second Barrier (trigger)" : "Second Barrier"}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={editForm.secondBarrier === "" ? "" : editForm.secondBarrier}
+                      onChange={(e) => setEditForm((f) => ({ ...f, secondBarrier: e.target.value === "" ? "" : parseFloat(e.target.value) }))}
+                      className="flex-1 min-w-0"
+                    />
+                    <Select value={editForm.barrierType} onValueChange={(v: "percent" | "absolute") => setEditForm((f) => ({ ...f, barrierType: v }))}>
+                      <SelectTrigger className="w-20">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">
+                          <div className="flex items-center gap-1">
+                            <Percent className="w-3 h-3" /> %
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="absolute">
+                          <div className="flex items-center gap-1">
+                            <Hash className="w-3 h-3" /> Abs
+                          </div>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+
+              {(editForm.type.includes("touch") || editForm.type.includes("binary")) && (
+                <>
+                  <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                    <Label className="text-right font-medium whitespace-nowrap">Rebate (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      placeholder="100.0"
+                      className="w-full"
+                      value={editForm.rebate === "" ? "" : editForm.rebate}
+                      onChange={(e) => setEditForm((f) => ({ ...f, rebate: e.target.value === "" ? "" : parseFloat(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4">
+                    <span />
+                    <p className="text-xs text-muted-foreground">Rebate as % of notional (default 100%)</p>
+                  </div>
+                </>
+              )}
+
+              <div className="border-t pt-4 mt-1 space-y-3">
+                <p className="text-xs font-medium text-muted-foreground">Pricing</p>
+                <div className="rounded-lg border bg-muted/40 p-3 space-y-1">
+                  <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 items-center">
+                    <span className="text-sm font-medium text-muted-foreground text-right">Theoretical price</span>
+                    <div className="font-mono font-semibold text-foreground break-all">
+                      {editFormTheoreticalPrice != null ? `${editFormTheoreticalPrice.toFixed(6)} (quote/unit)` : "— Enter spot, maturity and params"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Real price (optional)</Label>
+                <div>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    placeholder="Leave empty to use theoretical"
+                    className="w-full"
+                    value={editForm.realPrice === "" ? "" : editForm.realPrice}
+                    onChange={(e) => setEditForm((f) => ({ ...f, realPrice: e.target.value === "" ? "" : parseFloat(e.target.value) }))}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">If filled, used for MTM (e.g. traded price). Otherwise theoretical.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Counterparty</Label>
+                <Select value={editForm.counterparty} onValueChange={(v) => setEditForm((f) => ({ ...f, counterparty: v }))}>
+                  <SelectTrigger className="w-full min-w-[180px]">
+                    <SelectValue placeholder="Select counterparty" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {counterpartyOptions.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-[minmax(0,160px)_1fr] gap-x-4 gap-y-1 items-center">
+                <Label className="text-right font-medium whitespace-nowrap">Portfolio</Label>
+                <Select value={editForm.portfolioId ?? "__none__"} onValueChange={(v) => setEditForm((f) => ({ ...f, portfolioId: v === "__none__" ? undefined : v }))}>
+                  <SelectTrigger className="w-full min-w-[180px]">
+                    <SelectValue placeholder="No portfolio" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No portfolio</SelectItem>
+                    {portfolios.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setIsEditDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit">Save Changes</Button>
+              </DialogFooter>
+            </form>
           )}
         </DialogContent>
       </Dialog>
@@ -5837,181 +6953,4 @@ export default function HedgingInstruments() {
   );
 };
 
-// Component for editing instrument details
-const InstrumentEditForm: React.FC<{
-  instrument: HedgingInstrument;
-  onSave: (instrument: HedgingInstrument) => void;
-  onCancel: () => void;
-}> = ({ instrument, onSave, onCancel }) => {
-  const [editedInstrument, setEditedInstrument] = useState<HedgingInstrument>({ ...instrument });
-
-  const handleSave = () => {
-    onSave(editedInstrument);
-  };
-
-  const updateField = (field: keyof HedgingInstrument, value: any) => {
-    setEditedInstrument(prev => ({ ...prev, [field]: value }));
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <Label htmlFor="edit-quantity">Quantity (%)</Label>
-          <Input
-            id="edit-quantity"
-            type="number"
-            step="0.1"
-            value={editedInstrument.quantity || 0}
-            onChange={(e) => updateField('quantity', parseFloat(e.target.value) || 0)}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-strike">Strike</Label>
-          <Input
-            id="edit-strike"
-            type="number"
-            step="0.0001"
-            value={editedInstrument.strike || 0}
-            onChange={(e) => updateField('strike', parseFloat(e.target.value) || 0)}
-          />
-        </div>
-        {editedInstrument.barrier !== undefined && (
-          <div>
-            <Label htmlFor="edit-barrier">Barrier 1</Label>
-            <Input
-              id="edit-barrier"
-              type="number"
-              step="0.0001"
-              value={editedInstrument.barrier || 0}
-              onChange={(e) => updateField('barrier', parseFloat(e.target.value) || 0)}
-            />
-          </div>
-        )}
-        {editedInstrument.secondBarrier !== undefined && (
-          <div>
-            <Label htmlFor="edit-second-barrier">Barrier 2</Label>
-            <Input
-              id="edit-second-barrier"
-              type="number"
-              step="0.0001"
-              value={editedInstrument.secondBarrier || 0}
-              onChange={(e) => updateField('secondBarrier', parseFloat(e.target.value) || 0)}
-            />
-          </div>
-        )}
-        {editedInstrument.rebate !== undefined && (
-          <div>
-            <Label htmlFor="edit-rebate">Rebate (%)</Label>
-            <Input
-              id="edit-rebate"
-              type="number"
-              step="0.01"
-              value={editedInstrument.rebate || 0}
-              onChange={(e) => updateField('rebate', parseFloat(e.target.value) || 0)}
-            />
-          </div>
-        )}
-        <div>
-          <Label htmlFor="edit-notional">Notional</Label>
-          <Input
-            id="edit-notional"
-            type="number"
-            step="1000"
-            value={editedInstrument.notional || 0}
-            onChange={(e) => updateField('notional', parseFloat(e.target.value) || 0)}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-maturity">Maturity Date</Label>
-          <Input
-            id="edit-maturity"
-            type="date"
-            value={editedInstrument.maturity}
-            onChange={(e) => updateField('maturity', e.target.value)}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-status">Status</Label>
-          <Select value={editedInstrument.status} onValueChange={(value) => updateField('status', value)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Active">Active</SelectItem>
-              <SelectItem value="Inactive">Inactive</SelectItem>
-              <SelectItem value="Expired">Expired</SelectItem>
-              <SelectItem value="Settled">Settled</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor="edit-spot">Spot ({editedInstrument.currency})</Label>
-          <Input
-            id="edit-spot"
-            type="number"
-            step="0.0001"
-            value={editedInstrument.impliedSpotPrice ?? ''}
-            onChange={(e) => updateField('impliedSpotPrice', e.target.value === '' ? undefined : parseFloat(e.target.value))}
-          />
-          <p className="text-xs text-muted-foreground mt-1">
-            Notional (quote):{" "}
-            {(() => {
-              const spot = Number(editedInstrument.impliedSpotPrice || 0) || 0;
-              const base = Number(editedInstrument.notional || 0) || 0;
-              return isFinite(spot) ? (base * spot).toLocaleString() : "N/A";
-            })()}
-          </p>
-        </div>
-        <div>
-          <Label htmlFor="edit-volatility">Volatility (%)</Label>
-          <Input
-            id="edit-volatility"
-            type="number"
-            step="0.1"
-            value={editedInstrument.volatility ?? editedInstrument.impliedVolatility ?? ''}
-            onChange={(e) => updateField('volatility', e.target.value === '' ? undefined : parseFloat(e.target.value))}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-export-domestic">Export Domestic Rate (%)</Label>
-          <Input
-            id="edit-export-domestic"
-            type="number"
-            step="0.01"
-            value={editedInstrument.exportDomesticRate ?? ''}
-            onChange={(e) => updateField('exportDomesticRate', e.target.value === '' ? undefined : parseFloat(e.target.value))}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-export-foreign">Export Foreign Rate (%)</Label>
-          <Input
-            id="edit-export-foreign"
-            type="number"
-            step="0.01"
-            value={editedInstrument.exportForeignRate ?? ''}
-            onChange={(e) => updateField('exportForeignRate', e.target.value === '' ? undefined : parseFloat(e.target.value))}
-          />
-        </div>
-        <div>
-          <Label htmlFor="edit-real-price">Real price (optional)</Label>
-          <Input
-            id="edit-real-price"
-            type="number"
-            step="0.0001"
-            value={editedInstrument.realOptionPrice ?? ''}
-            onChange={(e) => updateField('realOptionPrice', e.target.value === '' ? undefined : parseFloat(e.target.value))}
-          />
-        </div>
-      </div>
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button onClick={handleSave}>
-          Save Changes
-        </Button>
-      </DialogFooter>
-    </div>
-  );
-}
+// (InstrumentEditForm removed: edit dialog now reuses the Add form UI/behavior.)

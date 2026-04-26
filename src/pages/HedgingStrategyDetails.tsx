@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ArrowLeft, CalendarDays, ExternalLink, Sigma, Activity } from "lucide-react";
 import StrategyImportService from "@/services/StrategyImportService";
-import { CURRENCY_PAIRS } from "@/pages/Index";
+import { CURRENCY_PAIRS } from "@/constants/currencyPairs";
 import PayoffChart from "@/components/PayoffChart";
 import { PricingService } from "@/services/PricingService";
 

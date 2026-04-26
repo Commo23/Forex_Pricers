@@ -114,6 +114,8 @@ interface AppSettings {
       varExceeded: number;
       hedgeRatioBelow: number;
       maturityWithin: number;
+      barrierCriticalPct: number;
+      barrierWarningPct: number;
     };
   };
   
@@ -225,7 +227,9 @@ const Settings = () => {
       alertThresholds: {
         varExceeded: 110,
         hedgeRatioBelow: 60,
-        maturityWithin: 30
+        maturityWithin: 30,
+        barrierCriticalPct: 0.5,
+        barrierWarningPct: 2
       }
     },
     data: {
@@ -1631,6 +1635,44 @@ const Settings = () => {
                       })}
                       min="1"
                       max="365"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="barrier-critical">Barrier Critical (distance %)</Label>
+                    <Input
+                      id="barrier-critical"
+                      type="number"
+                      value={settings.notifications.alertThresholds.barrierCriticalPct}
+                      onChange={(e) =>
+                        updateSettings("notifications", {
+                          alertThresholds: {
+                            ...settings.notifications.alertThresholds,
+                            barrierCriticalPct: Number(e.target.value),
+                          },
+                        })
+                      }
+                      min="0"
+                      step="0.1"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="barrier-warning">Barrier Warning (distance %)</Label>
+                    <Input
+                      id="barrier-warning"
+                      type="number"
+                      value={settings.notifications.alertThresholds.barrierWarningPct}
+                      onChange={(e) =>
+                        updateSettings("notifications", {
+                          alertThresholds: {
+                            ...settings.notifications.alertThresholds,
+                            barrierWarningPct: Number(e.target.value),
+                          },
+                        })
+                      }
+                      min="0"
+                      step="0.1"
                     />
                   </div>
                 </div>

@@ -21,7 +21,7 @@ import {
   Hash
 } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
-import { CURRENCY_PAIRS } from '@/pages/Index';
+import { CURRENCY_PAIRS } from "@/constants/currencyPairs";
 import PayoffChart from '@/components/PayoffChart';
 import { PricingService, Greeks } from '@/services/PricingService';
 import ExchangeRateService from '@/services/ExchangeRateService';

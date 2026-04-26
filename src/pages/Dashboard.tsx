@@ -8,6 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { useFinancialData } from "@/hooks/useFinancialData";
 import { useTheme } from "@/hooks/useTheme";
 import ExchangeRateService from "@/services/ExchangeRateService";
+import { computeSpotForCurrencyPair, readForexMarketRateSnapshot } from "@/lib/forexMarketSpotSync";
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -60,6 +61,59 @@ const Dashboard = () => {
     return () => {
       window.removeEventListener('baseCurrencyChanged', update);
       window.removeEventListener('storage', update);
+    };
+  }, []);
+
+  const [alertThresholds, setAlertThresholds] = useState<{
+    hedgeRatioBelow: number;
+    varExceededAbs: number;
+    barrierCriticalPct: number;
+    barrierWarningPct: number;
+  }>(() => {
+    const defaults = { hedgeRatioBelow: 60, varExceededAbs: 500000, barrierCriticalPct: 0.5, barrierWarningPct: 2 };
+    try {
+      const raw = localStorage.getItem("fxRiskManagerSettings");
+      if (!raw) return defaults;
+      const s = JSON.parse(raw);
+      const t = s?.notifications?.alertThresholds || {};
+      const hedgeRatioBelow = Number(t.hedgeRatioBelow);
+      const varExceededPct = Number(t.varExceeded);
+      // existing varExceeded is % in settings; dashboard alert is absolute, keep current default unless user changes later
+      const barrierCriticalPct = Number(t.barrierCriticalPct);
+      const barrierWarningPct = Number(t.barrierWarningPct);
+      return {
+        hedgeRatioBelow: Number.isFinite(hedgeRatioBelow) ? hedgeRatioBelow : defaults.hedgeRatioBelow,
+        varExceededAbs: defaults.varExceededAbs,
+        barrierCriticalPct: Number.isFinite(barrierCriticalPct) ? barrierCriticalPct : defaults.barrierCriticalPct,
+        barrierWarningPct: Number.isFinite(barrierWarningPct) ? barrierWarningPct : defaults.barrierWarningPct,
+      };
+    } catch {
+      return defaults;
+    }
+  });
+
+  useEffect(() => {
+    const sync = () => {
+      try {
+        const raw = localStorage.getItem("fxRiskManagerSettings");
+        if (!raw) return;
+        const s = JSON.parse(raw);
+        const t = s?.notifications?.alertThresholds || {};
+        setAlertThresholds((prev) => ({
+          ...prev,
+          hedgeRatioBelow: Number.isFinite(Number(t.hedgeRatioBelow)) ? Number(t.hedgeRatioBelow) : prev.hedgeRatioBelow,
+          barrierCriticalPct: Number.isFinite(Number(t.barrierCriticalPct)) ? Number(t.barrierCriticalPct) : prev.barrierCriticalPct,
+          barrierWarningPct: Number.isFinite(Number(t.barrierWarningPct)) ? Number(t.barrierWarningPct) : prev.barrierWarningPct,
+        }));
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("storage", sync);
+    window.addEventListener("fxRiskManagerSettingsSaved", sync as EventListener);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("fxRiskManagerSettingsSaved", sync as EventListener);
     };
   }, []);
 
@@ -243,7 +297,7 @@ const Dashboard = () => {
 
     // Check hedge ratio alerts
     currencyExposures.forEach(exp => {
-      if (exp.hedgeRatio < 60 && exp.grossExposure > 1000000) {
+      if (exp.hedgeRatio < alertThresholds.hedgeRatioBelow && exp.grossExposure > 1000000) {
         alerts.push({
           type: "medium",
           message: `${exp.currency} hedge ratio below target (${exp.hedgeRatio.toFixed(1)}%)`,
@@ -253,13 +307,58 @@ const Dashboard = () => {
     });
 
     // Check VaR alerts
-    if (riskMetrics.var95 > 500000) {
+    if (riskMetrics.var95 > alertThresholds.varExceededAbs) {
       const varSym = refCurrency === "EUR" ? "€" : refCurrency === "GBP" ? "£" : refCurrency === "JPY" ? "¥" : "$";
       alerts.push({
         type: "high",
         message: `VaR exceeds ${varSym}${(riskMetrics.var95 / 1000).toFixed(0)}K threshold`,
         time: "Real-time"
       });
+    }
+
+    // Barrier proximity alerts from hedging instruments (linked instruments only)
+    try {
+      const rawInst = localStorage.getItem("hedgingInstruments");
+      const insts: any[] = rawInst ? JSON.parse(rawInst) : [];
+      const crit = Math.max(0, alertThresholds.barrierCriticalPct) / 100;
+      const warn = Math.max(0, alertThresholds.barrierWarningPct) / 100;
+      const barrierAlerts: Array<{ type: "high" | "medium"; message: string; time: string }> = [];
+      const snap = readForexMarketRateSnapshot();
+      for (const inst of insts) {
+        const barrierVals: number[] = [];
+        if (inst?.barrier != null && Number.isFinite(Number(inst.barrier))) barrierVals.push(Number(inst.barrier));
+        if (inst?.secondBarrier != null && Number.isFinite(Number(inst.secondBarrier))) barrierVals.push(Number(inst.secondBarrier));
+        if (barrierVals.length === 0) continue;
+        const pair = String(inst.currency || "");
+        const spotKey = pair.replace("/", "");
+        let spot = Number(marketData.spotRates?.[spotKey]);
+        if ((!Number.isFinite(spot) || spot <= 0) && snap?.base && snap?.rates) {
+          const s = computeSpotForCurrencyPair(pair, snap.base, snap.rates);
+          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) spot = Number(s);
+        }
+        if (!Number.isFinite(spot) || spot <= 0) continue;
+        const d = Math.min(...barrierVals.map((b) => Math.abs(spot - b) / spot));
+        if (!(d >= 0)) continue;
+        const pct = d * 100;
+        if (crit > 0 && d < crit) {
+          barrierAlerts.push({
+            type: "high",
+            message: `${pair} barrier within ${pct.toFixed(2)}% (${inst.id || "instrument"})`,
+            time: "Real-time",
+          });
+        } else if (warn > 0 && d < warn) {
+          barrierAlerts.push({
+            type: "medium",
+            message: `${pair} barrier within ${pct.toFixed(2)}% (${inst.id || "instrument"})`,
+            time: "Real-time",
+          });
+        }
+        if (barrierAlerts.length >= 2) break;
+      }
+      // Surface barrier alerts with higher priority (operational risk)
+      if (barrierAlerts.length > 0) alerts.unshift(...barrierAlerts);
+    } catch {
+      // ignore
     }
 
     return alerts.slice(0, 3); // Show only top 3 alerts

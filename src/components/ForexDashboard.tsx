@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { AlertCircle, RefreshCcw, Globe, Clock } from 'lucide-react';
-import { CURRENCY_PAIRS } from '@/pages/Index';
+import { CURRENCY_PAIRS } from "@/constants/currencyPairs";
 import CurrencyTable from './CurrencyTable';
 import ExchangeRateService, { ExchangeRateData, CurrencyInfo } from '@/services/ExchangeRateService';
 import { toast } from '@/hooks/use-toast';
