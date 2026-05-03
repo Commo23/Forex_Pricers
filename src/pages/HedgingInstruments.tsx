@@ -124,11 +124,20 @@ function mapVanillaGreeksType(type: string): "call" | "put" | null {
   return null;
 }
 
+/** Match Strategy Builder FX spot display / grid rounding (4 dp). */
+const STRATEGY_BUILDER_SPOT_DECIMALS = 4;
+function roundSpotLikeStrategyBuilder(n: number): number {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return x;
+  return parseFloat(x.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS));
+}
+
 export default function HedgingInstruments() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const bankRates = useBankRates(); // ✅ Synchronisation avec AllRates
   const baseCurrency = useBaseCurrency(); // Get base currency from settings
+  const FX_SPOT_BASE = "USD";
   
   // Get ExchangeRateService instance for real-time rate fetching
   const exchangeRateService = React.useMemo(() => {
@@ -358,16 +367,19 @@ export default function HedgingInstruments() {
       const quote = pair.quote || pair.symbol.split("/")[1];
       const exchangeData = await exchangeRateService.getExchangeRates("USD");
       const rates = exchangeData.rates || {};
-      if (base === "USD") return rates[quote] ?? pair.defaultSpotRate;
-      if (quote === "USD") return rates[base] ? 1 / rates[base] : pair.defaultSpotRate;
-      return (rates[quote] || 1) / (rates[base] || 1);
+      let v: number | null = null;
+      if (base === "USD") v = rates[quote] ?? null;
+      else if (quote === "USD") v = rates[base] ? 1 / rates[base] : null;
+      else v = (rates[quote] || 1) / (rates[base] || 1);
+      if (v == null || !Number.isFinite(v) || v <= 0) return null;
+      return roundSpotLikeStrategyBuilder(v);
     } catch {
       return null;
     }
   }, [exchangeRateService]);
 
   // Add Instrument form state (aligned with Pricers: spot, vol, rates, notional base/quote, quantity, strikeType, real price)
-  const defaultSpot = CURRENCY_PAIRS[0]?.defaultSpotRate ?? 1.085;
+  const defaultSpot = roundSpotLikeStrategyBuilder(CURRENCY_PAIRS[0]?.defaultSpotRate ?? 1.085);
   const [addForm, setAddForm] = useState(() => ({
     type: "forward",
     currencyPair: "",
@@ -845,7 +857,7 @@ export default function HedgingInstruments() {
     const firstInstrument = currencyInstruments[0];
     
     return {
-      spot: firstInstrument.exportSpotPrice || 1.0000,
+      spot: roundSpotLikeStrategyBuilder(Number(firstInstrument.exportSpotPrice) || 1.0),
       volatility: firstInstrument.exportVolatility || 20,
       domesticRate: firstInstrument.exportDomesticRate || 1.0,
       foreignRate: firstInstrument.exportForeignRate || 1.0
@@ -962,27 +974,28 @@ export default function HedgingInstruments() {
       const base = parts[0];
       const quote = parts[1];
       
-      // Get exchange rates from API using base currency from settings
-      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+      // Always compute FX spot from USD-based rates for consistency (Strategy Builder alignment)
+      const exchangeData = await exchangeRateService.getExchangeRates(FX_SPOT_BASE);
       const rates = exchangeData.rates;
       
       // Calculate the cross rate for the selected pair
       let rate: number;
       
-      if (base === baseCurrency) {
-        // Direct rate: BASE_CURRENCY/XXX
-        rate = rates[quote] || null;
-      } else if (quote === baseCurrency) {
-        // Inverted rate: XXX/BASE_CURRENCY = 1 / (BASE_CURRENCY/XXX)
+      if (base === FX_SPOT_BASE) {
+        // Direct rate: USD/XXX
+        rate = rates[quote] ?? null;
+      } else if (quote === FX_SPOT_BASE) {
+        // Inverted rate: XXX/USD = 1 / (USD/XXX)
         rate = rates[base] ? 1 / rates[base] : null;
       } else {
-        // Cross rate: BASE/QUOTE = (BASE_CURRENCY/QUOTE) / (BASE_CURRENCY/BASE)
+        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
         const baseRate = rates[base] || 1;
         const quoteRate = rates[quote] || 1;
         rate = quoteRate / baseRate;
       }
-      
-      return rate;
+
+      if (rate == null || isNaN(rate) || !isFinite(rate) || rate <= 0) return null;
+      return roundSpotLikeStrategyBuilder(rate);
     } catch (error) {
       console.error('Error fetching real-time spot price:', error);
       return null;
@@ -992,7 +1005,7 @@ export default function HedgingInstruments() {
   /** Align spots with the same rate snapshot as Forex Market (localStorage + custom event). */
   const applyForexMarketSnapshotToState = React.useCallback(
     (snap: ForexMarketRateSnapshot) => {
-      if (snap.base !== baseCurrency) return;
+      if (snap.base !== FX_SPOT_BASE) return;
       if (instruments.length === 0) return;
 
       const uniqueCurrencies = getUniqueCurrencies(instruments);
@@ -1005,9 +1018,11 @@ export default function HedgingInstruments() {
           if (marketSpotLocks[pair]) continue;
           const spot = computeSpotForCurrencyPair(pair, snap.base, snap.rates);
           if (spot == null || !(spot > 0) || isNaN(spot)) continue;
+          const spotRounded = roundSpotLikeStrategyBuilder(spot);
           const cur = next[pair] || getMarketDataFromInstruments(pair) || MARKET_DEFAULTS;
-          if (Math.abs((cur.spot ?? 0) - spot) < 1e-10) continue;
-          next[pair] = { ...MARKET_DEFAULTS, ...cur, spot };
+          const curSpotRounded = roundSpotLikeStrategyBuilder(Number(cur.spot));
+          if (Math.abs(curSpotRounded - spotRounded) < 1e-10) continue;
+          next[pair] = { ...MARKET_DEFAULTS, ...cur, spot: spotRounded };
           changed = true;
         }
         if (!changed) return prev;
@@ -1033,7 +1048,7 @@ export default function HedgingInstruments() {
         return next;
       });
     },
-    [baseCurrency, instruments, marketSpotLocks]
+    [FX_SPOT_BASE, instruments, marketSpotLocks]
   );
 
   // Live sync with Forex Market snapshot + refresh if stale (Forex page refreshes every 30s)
@@ -1065,10 +1080,10 @@ export default function HedgingInstruments() {
     const refreshSnapshotIfNeeded = async (): Promise<ForexMarketRateSnapshot | null> => {
       let snap = readForexMarketRateSnapshot();
       const now = Date.now();
-      const stale = !snap || snap.base !== baseCurrency || now - snap.updatedAt > 35000;
+      const stale = !snap || snap.base !== FX_SPOT_BASE || now - snap.updatedAt > 35000;
       if (stale) {
         try {
-          const ex = await exchangeRateService.getExchangeRates(baseCurrency);
+          const ex = await exchangeRateService.getExchangeRates(FX_SPOT_BASE);
           snap = { base: ex.base, rates: ex.rates, updatedAt: Date.now() };
           writeForexMarketRateSnapshot(snap);
         } catch {
@@ -1093,7 +1108,7 @@ export default function HedgingInstruments() {
       window.removeEventListener("storage", onStorage);
       clearInterval(id);
     };
-  }, [hasComputedMTM, instruments.length, baseCurrency, exchangeRateService, applyForexMarketSnapshotToState]);
+  }, [hasComputedMTM, instruments.length, FX_SPOT_BASE, exchangeRateService, applyForexMarketSnapshotToState]);
 
   // Synchronize spot price and rates with market data on initial load
   const hasSyncedOnMount = React.useRef(false);
@@ -1127,7 +1142,7 @@ export default function HedgingInstruments() {
           // Spot: même snapshot que Forex Market si disponible, sinon API
           const snap = readForexMarketRateSnapshot();
           let realTimeSpot: number | null = null;
-          if (snap && snap.base === baseCurrency) {
+          if (snap && snap.base === FX_SPOT_BASE) {
             realTimeSpot = computeSpotForCurrencyPair(currencyPair, snap.base, snap.rates);
           }
           if (realTimeSpot == null || isNaN(realTimeSpot) || realTimeSpot <= 0) {
@@ -1147,7 +1162,7 @@ export default function HedgingInstruments() {
           let pairUpdated = false;
           
           if (!marketSpotLocks[currencyPair] && realTimeSpot !== null && !isNaN(realTimeSpot) && realTimeSpot > 0) {
-            updatedData.spot = realTimeSpot;
+            updatedData.spot = roundSpotLikeStrategyBuilder(realTimeSpot);
             pairUpdated = true;
           }
           
@@ -1943,6 +1958,7 @@ export default function HedgingInstruments() {
     if (isNaN(parsed)) return;
     if (field === 'volatility' && (parsed < 0.01 || parsed > 200)) return;
     if (field === 'spot' && parsed <= 0) return;
+    const value = field === "spot" ? roundSpotLikeStrategyBuilder(parsed) : parsed;
 
     if (field === "spot") {
       // Manual simulation override: lock this spot against auto-sync.
@@ -1953,7 +1969,7 @@ export default function HedgingInstruments() {
       const base = prev[currency] || getMarketDataFromInstruments(currency) || MARKET_DEFAULTS;
       const newData = {
         ...prev,
-        [currency]: { ...MARKET_DEFAULTS, ...base, [field]: parsed },
+        [currency]: { ...MARKET_DEFAULTS, ...base, [field]: value },
       };
       try { localStorage.setItem('currencyMarketData', JSON.stringify(newData)); } catch (_) {}
       return newData;
@@ -1964,7 +1980,7 @@ export default function HedgingInstruments() {
 
     const labels: Record<string, string> = { volatility: 'Volatility', spot: 'Spot Rate', domesticRate: 'Domestic Rate', foreignRate: 'Foreign Rate' };
     const units: Record<string, string> = { volatility: '%', spot: '', domesticRate: '%', foreignRate: '%' };
-    toast({ title: `${labels[field] || field} Updated`, description: `${labels[field] || field} → ${parsed}${units[field] || ''} for ${currency}. Prices recalculated.` });
+    toast({ title: `${labels[field] || field} Updated`, description: `${labels[field] || field} → ${value}${units[field] || ''} for ${currency}. Prices recalculated.` });
   };
 
   // onChange handler for currency market inputs: local state + debounced commit
@@ -2303,10 +2319,11 @@ export default function HedgingInstruments() {
 
   // Fonction pour mettre à jour le spot price d'un instrument spécifique
   const updateInstrumentSpotPrice = (instrumentId: string, spotPrice: number) => {
+    const rounded = roundSpotLikeStrategyBuilder(spotPrice);
     setInstruments(prevInstruments => {
       const updated = prevInstruments.map(instrument =>
         instrument.id === instrumentId
-          ? { ...instrument, impliedSpotPrice: spotPrice }
+          ? { ...instrument, impliedSpotPrice: rounded }
           : instrument
       );
       // Sauvegarde dans le localStorage
@@ -2320,7 +2337,7 @@ export default function HedgingInstruments() {
 
     toast({
       title: "Individual Spot Price Updated",
-      description: `Updated spot price to ${spotPrice.toFixed(6)} for instrument ${instrumentId}`,
+      description: `Updated spot price to ${rounded.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)} for instrument ${instrumentId}`,
     });
   };
 
@@ -2350,26 +2367,32 @@ export default function HedgingInstruments() {
     async (pairSymbol: string): Promise<number | null> => {
       try {
         const snap = readForexMarketRateSnapshot();
-        if (snap && snap.base === baseCurrency && snap.rates) {
+        if (snap && snap.base === FX_SPOT_BASE && snap.rates) {
           const s = computeSpotForCurrencyPair(pairSymbol, snap.base, snap.rates);
-          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) return Number(s);
+          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) return roundSpotLikeStrategyBuilder(Number(s));
         }
 
-        const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+        const exchangeData = await exchangeRateService.getExchangeRates(FX_SPOT_BASE);
         const rates = exchangeData?.rates || {};
         const [base, quote] = String(pairSymbol || "").split("/");
         if (!base || !quote) return null;
-        if (base === baseCurrency) return Number(rates[quote] ?? null);
-        if (quote === baseCurrency) return rates[base] ? 1 / Number(rates[base]) : null;
+        if (base === FX_SPOT_BASE) {
+          const v = Number(rates[quote] ?? NaN);
+          return Number.isFinite(v) && v > 0 ? roundSpotLikeStrategyBuilder(v) : null;
+        }
+        if (quote === FX_SPOT_BASE) {
+          const v = rates[base] ? 1 / Number(rates[base]) : NaN;
+          return Number.isFinite(v) && v > 0 ? roundSpotLikeStrategyBuilder(v) : null;
+        }
         const baseRate = Number(rates[base] ?? 1);
         const quoteRate = Number(rates[quote] ?? 1);
         const cross = quoteRate / baseRate;
-        return Number.isFinite(cross) && cross > 0 ? cross : null;
+        return Number.isFinite(cross) && cross > 0 ? roundSpotLikeStrategyBuilder(cross) : null;
       } catch {
         return null;
       }
     },
-    [baseCurrency, exchangeRateService]
+    [FX_SPOT_BASE, exchangeRateService]
   );
 
   // Seed global market spot defaults to match Strategy Builder behavior (live snapshot / FX rates).
@@ -2395,7 +2418,7 @@ export default function HedgingInstruments() {
       if (snap && snap.base && snap.rates) {
         for (const p of needs) {
           const s = computeSpotForCurrencyPair(p, snap.base, snap.rates);
-          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) fromSnap[p] = Number(s);
+          if (s != null && Number.isFinite(Number(s)) && Number(s) > 0) fromSnap[p] = roundSpotLikeStrategyBuilder(Number(s));
         }
       }
 
@@ -2404,21 +2427,21 @@ export default function HedgingInstruments() {
       const remaining = needs.filter((p) => fromSnap[p] == null);
       if (remaining.length > 0) {
         try {
-          const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+          const exchangeData = await exchangeRateService.getExchangeRates(FX_SPOT_BASE);
           const rates = exchangeData?.rates || {};
           for (const pairSymbol of remaining) {
             const [base, quote] = String(pairSymbol || "").split("/");
             if (!base || !quote) continue;
             let spot: number | null = null;
-            if (base === baseCurrency) spot = Number(rates[quote] ?? null);
-            else if (quote === baseCurrency) spot = rates[base] ? 1 / Number(rates[base]) : null;
+            if (base === FX_SPOT_BASE) spot = Number(rates[quote] ?? null);
+            else if (quote === FX_SPOT_BASE) spot = rates[base] ? 1 / Number(rates[base]) : null;
             else {
               const baseRate = Number(rates[base] ?? 1);
               const quoteRate = Number(rates[quote] ?? 1);
               const cross = quoteRate / baseRate;
               spot = Number.isFinite(cross) && cross > 0 ? cross : null;
             }
-            if (spot != null && Number.isFinite(spot) && spot > 0) fromApi[pairSymbol] = spot;
+            if (spot != null && Number.isFinite(spot) && spot > 0) fromApi[pairSymbol] = roundSpotLikeStrategyBuilder(spot);
           }
         } catch {
           // ignore
@@ -2430,7 +2453,7 @@ export default function HedgingInstruments() {
         let changed = false;
         const next = { ...prev };
         for (const p of needs) {
-          const spot =
+          const spotRaw =
             fromSnap[p] ??
             fromApi[p] ??
             (() => {
@@ -2438,10 +2461,11 @@ export default function HedgingInstruments() {
               const d = Number(pair?.defaultSpotRate);
               return Number.isFinite(d) && d > 0 ? d : null;
             })();
-          if (spot == null) continue;
+          if (spotRaw == null) continue;
+          const spot = roundSpotLikeStrategyBuilder(spotRaw);
           const cur = next[p] || MARKET_DEFAULTS;
           const curSpot = Number(cur.spot);
-          if (Number.isFinite(curSpot) && Math.abs(curSpot - spot) < 1e-12) continue;
+          if (Number.isFinite(curSpot) && Math.abs(roundSpotLikeStrategyBuilder(curSpot) - spot) < 1e-12) continue;
           next[p] = { ...MARKET_DEFAULTS, ...cur, spot };
           changed = true;
         }
@@ -2462,11 +2486,12 @@ export default function HedgingInstruments() {
   const refreshMarketDataForCurrency = async (currency: string) => {
     const fromInstruments = getMarketDataFromInstruments(currency);
     const current = currencyMarketData[currency] || { spot: 1.0, volatility: 20, domesticRate: 1.0, foreignRate: 1.0 };
-    const spot =
+    const spot = roundSpotLikeStrategyBuilder(
       marketSpotLocks[currency]
         ? (Number(current.spot) || 1.0)
         : (await getDefaultSpotLikeStrategyBuilder(currency)) ??
-          (Number(fromInstruments?.spot ?? current.spot) || 1.0);
+          (Number(fromInstruments?.spot ?? current.spot) || 1.0)
+    );
     const volatilityRaw = Number(fromInstruments?.volatility ?? current.volatility);
     const domesticRaw = Number(fromInstruments?.domesticRate ?? current.domesticRate);
     const foreignRaw = Number(fromInstruments?.foreignRate ?? current.foreignRate);
@@ -2484,7 +2509,7 @@ export default function HedgingInstruments() {
     });
     toast({
       title: "Data refreshed",
-      description: `${currency}: Spot ${spot.toFixed(6)}, Vol ${volatility}%`,
+      description: `${currency}: Spot ${spot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}, Vol ${volatility}%`,
     });
   };
 
@@ -2788,14 +2813,14 @@ export default function HedgingInstruments() {
           key: "barrier-critical",
           severity: "critical",
           short: `BARR<${barrierAlertThresholds.criticalPct}%`,
-          detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
+          detail: `Barrier within ${pct.toFixed(2)}% (S=${roundSpotLikeStrategyBuilder(spot).toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
         });
       } else if (warningDec > 0 && d < warningDec) {
         risks.push({
           key: "barrier-warning",
           severity: "warning",
           short: `BARR<${barrierAlertThresholds.warningPct}%`,
-          detail: `Barrier within ${pct.toFixed(2)}% (S=${spot.toFixed(6)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
+          detail: `Barrier within ${pct.toFixed(2)}% (S=${roundSpotLikeStrategyBuilder(spot).toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}, B=${barriers.map((x) => x.toFixed(6)).join(" / ")})`,
         });
       }
 
@@ -3633,7 +3658,10 @@ export default function HedgingInstruments() {
                               id={`spot-${currency}`}
                               type="number"
                               step="0.0001"
-                              value={editingMarketCells[currency]?.spot ?? data.spot}
+                              value={
+                                editingMarketCells[currency]?.spot ??
+                                roundSpotLikeStrategyBuilder(Number(data.spot))
+                              }
                               onChange={(e) => onMarketFieldChange(currency, 'spot', e.target.value)}
                               onBlur={() => onMarketFieldBlur(currency, 'spot')}
                               className="font-mono text-sm h-8 w-full"
@@ -3717,7 +3745,10 @@ export default function HedgingInstruments() {
                 .filter(inst => inst.impliedSpotPrice)
                 .map(inst => (
                   <Badge key={inst.id} variant="secondary" className="text-xs bg-primary/15 text-primary">
-                    {inst.id}: {inst.impliedSpotPrice?.toFixed(6)}
+                    {inst.id}:{" "}
+                    {inst.impliedSpotPrice != null
+                      ? roundSpotLikeStrategyBuilder(Number(inst.impliedSpotPrice)).toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)
+                      : ""}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -4322,7 +4353,9 @@ export default function HedgingInstruments() {
 
                           // Prime UI with known/default spot
                           setAddForm((f) => {
-                            const safeSpot = isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1);
+                            const safeSpot = roundSpotLikeStrategyBuilder(
+                              isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1)
+                            );
                             return {
                               ...f,
                               currencyPair: safeValue,
@@ -4344,15 +4377,17 @@ export default function HedgingInstruments() {
                             try {
                               const realTimeRate = await fetchRealTimeRate(pair);
                               if (realTimeRate != null && isFinite(realTimeRate) && realTimeRate > 0) {
+                                const spot = roundSpotLikeStrategyBuilder(realTimeRate);
                                 setAddForm((f) => ({
                                   ...f,
-                                  spotPrice: realTimeRate,
-                                  strike: f.strikeType === "absolute" ? f.strike : realTimeRate * ((Number(f.strike) || 0) / 100),
-                                  notionalQuote: Math.round((f.notionalBase || 0) * realTimeRate * 100) / 100,
+                                  spotPrice: spot,
+                                  strike: f.strikeType === "absolute" ? f.strike : spot * ((Number(f.strike) || 0) / 100),
+                                  notionalQuote: Math.round((f.notionalBase || 0) * spot * 100) / 100,
                                 }));
-                                // Use safe formatting
-                                const formatted = (Math.abs(realTimeRate) > 10 ? realTimeRate.toFixed(3) : realTimeRate.toFixed(4));
-                                toast({ title: "Rate updated", description: `${pair.symbol}: ${formatted}` });
+                                toast({
+                                  title: "Rate updated",
+                                  description: `${pair.symbol}: ${spot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}`,
+                                });
                               }
                             } catch (err) {
                               // Silent fallback to default spot
@@ -4846,14 +4881,16 @@ export default function HedgingInstruments() {
                           currencyMarketData[instrument.currency] ||
                           getMarketDataFromInstruments(instrument.currency) ||
                           MARKET_DEFAULTS;
-                        const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
+                        const currentSpot = roundSpotLikeStrategyBuilder(
+                          Number(instrument.impliedSpotPrice || marketData.spot) || 1
+                        );
                         const volatility = instrument.impliedVolatility || instrument.volatility || 0;
 
                         const spotDisplayValue =
                           editingTableCells[instrument.id]?.spot ??
                           (instrument.impliedSpotPrice != null
-                            ? String(instrument.impliedSpotPrice)
-                            : currentSpot.toFixed(6));
+                            ? String(roundSpotLikeStrategyBuilder(Number(instrument.impliedSpotPrice)))
+                            : currentSpot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS));
                         const volDisplayValue =
                           editingTableCells[instrument.id]?.vol ??
                           (instrument.impliedVolatility != null ? String(instrument.impliedVolatility) : "");
@@ -5010,7 +5047,7 @@ export default function HedgingInstruments() {
                                           return next;
                                         });
                                       }}
-                                      placeholder={currentSpot.toFixed(6)}
+                                      placeholder={currentSpot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}
                                       className="h-8 text-xs font-mono"
                                       step="0.0001"
                                       min="0"
@@ -5328,7 +5365,7 @@ export default function HedgingInstruments() {
                              <TableCell className="text-center bg-primary/10 dark:bg-primary/15 border-r border-slate-200 dark:border-slate-700">
                                <div className="text-sm font-mono font-semibold text-primary">
                               {instrument.exportSpotPrice ? 
-                                instrument.exportSpotPrice.toFixed(6) : 
+                                roundSpotLikeStrategyBuilder(Number(instrument.exportSpotPrice)).toFixed(STRATEGY_BUILDER_SPOT_DECIMALS) : 
                                    <span className="text-primary/60 italic">N/A</span>
                               }
                             </div>
@@ -5339,8 +5376,14 @@ export default function HedgingInstruments() {
                            <TableCell className="text-center bg-green-50/80 dark:bg-green-900/20 border-r border-slate-200 dark:border-slate-700">
                             {(() => {
                               const marketData = currencyMarketData[instrument.currency] || getMarketDataFromInstruments(instrument.currency) || MARKET_DEFAULTS;
-                              const currentSpot = Number(instrument.impliedSpotPrice || marketData.spot) || 1;
-                              const spotDisplayValue = editingTableCells[instrument.id]?.spot ?? (instrument.impliedSpotPrice != null ? String(instrument.impliedSpotPrice) : currentSpot.toFixed(6));
+                              const currentSpot = roundSpotLikeStrategyBuilder(
+                                Number(instrument.impliedSpotPrice || marketData.spot) || 1
+                              );
+                              const spotDisplayValue =
+                                editingTableCells[instrument.id]?.spot ??
+                                (instrument.impliedSpotPrice != null
+                                  ? String(roundSpotLikeStrategyBuilder(Number(instrument.impliedSpotPrice)))
+                                  : currentSpot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS));
                               return (
                                 <div className="space-y-1">
                                   <div className="flex items-center gap-1">
@@ -5382,7 +5425,7 @@ export default function HedgingInstruments() {
                                           return next;
                                         });
                                       }}
-                                      placeholder={currentSpot.toFixed(6)}
+                                      placeholder={currentSpot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}
                                       className="w-20 h-6 text-xs text-center bg-background border-green-200 dark:border-green-700 focus:border-green-400 focus:ring-green-400/20"
                                       step="0.0001"
                                       min="0"
@@ -6505,7 +6548,9 @@ export default function HedgingInstruments() {
                           : (base ? (bankRates?.[base as keyof typeof bankRates] as number | null | undefined) : undefined) ?? editForm.foreignRate;
 
                         setEditForm((f) => {
-                          const safeSpot = isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1);
+                          const safeSpot = roundSpotLikeStrategyBuilder(
+                            isFinite(initialSpot) && initialSpot > 0 ? initialSpot : (Number(f.spotPrice) || 1)
+                          );
                           return {
                             ...f,
                             currencyPair: safeValue,
@@ -6521,14 +6566,17 @@ export default function HedgingInstruments() {
                           try {
                             const realTimeRate = await fetchRealTimeRate(pair);
                             if (realTimeRate != null && isFinite(realTimeRate) && realTimeRate > 0) {
+                              const spot = roundSpotLikeStrategyBuilder(realTimeRate);
                               setEditForm((f) => ({
                                 ...f,
-                                spotPrice: realTimeRate,
-                                strike: f.strikeType === "absolute" ? f.strike : realTimeRate * ((Number(f.strike) || 0) / 100),
-                                notionalQuote: Math.round((f.notionalBase || 0) * realTimeRate * 100) / 100,
+                                spotPrice: spot,
+                                strike: f.strikeType === "absolute" ? f.strike : spot * ((Number(f.strike) || 0) / 100),
+                                notionalQuote: Math.round((f.notionalBase || 0) * spot * 100) / 100,
                               }));
-                              const formatted = (Math.abs(realTimeRate) > 10 ? realTimeRate.toFixed(3) : realTimeRate.toFixed(4));
-                              toast({ title: "Rate updated", description: `${pair.symbol}: ${formatted}` });
+                              toast({
+                                title: "Rate updated",
+                                description: `${pair.symbol}: ${spot.toFixed(STRATEGY_BUILDER_SPOT_DECIMALS)}`,
+                              });
                             }
                           } catch (err) {
                             console.warn("Live rate fetch failed:", err);

@@ -1556,29 +1556,30 @@ const Index = () => {
     };
   }, [toast]);
   
-  // Get base currency from settings
+  // Get base currency from settings (still used elsewhere), but spot computation is always USD-based for consistency.
   const baseCurrency = useBaseCurrency();
+  const FX_SPOT_BASE = "USD";
   
   // Function to fetch real-time rate from Market Data
   const fetchRealTimeRate = async (currencyPair: CurrencyPair): Promise<number | null> => {
     try {
       const { base, quote } = currencyPair;
       
-      // Get exchange rates from API using base currency from settings
-      const exchangeData = await exchangeRateService.getExchangeRates(baseCurrency);
+      // Always compute FX spot from USD-based rates for consistency across the app
+      const exchangeData = await exchangeRateService.getExchangeRates(FX_SPOT_BASE);
       const rates = exchangeData.rates;
       
       // Calculate the cross rate for the selected pair
       let rate: number;
       
-      if (base === baseCurrency) {
-        // Direct rate: BASE_CURRENCY/XXX
+      if (base === FX_SPOT_BASE) {
+        // Direct rate: USD/XXX
         rate = rates[quote] || currencyPair.defaultSpotRate;
-      } else if (quote === baseCurrency) {
-        // Inverted rate: XXX/BASE_CURRENCY = 1 / (BASE_CURRENCY/XXX)
+      } else if (quote === FX_SPOT_BASE) {
+        // Inverted rate: XXX/USD = 1 / (USD/XXX)
         rate = rates[base] ? 1 / rates[base] : currencyPair.defaultSpotRate;
       } else {
-        // Cross rate: BASE/QUOTE = (BASE_CURRENCY/QUOTE) / (BASE_CURRENCY/BASE)
+        // Cross rate: BASE/QUOTE = (USD/QUOTE) / (USD/BASE)
         const baseRate = rates[base] || 1;
         const quoteRate = rates[quote] || 1;
         rate = quoteRate / baseRate;
